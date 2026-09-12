@@ -189,3 +189,30 @@ def _require_authenticated_principal(
         raise AuthenticationBoundaryError(
             "operation principal was not minted by a trusted issuer"
         )
+
+
+def require_operation_context(
+    context: OperationContext,
+    *,
+    expected_operation_class: OperationClass | None = None,
+) -> None:
+    """Validate that a context was minted by HOME's trusted context factory."""
+
+    if not isinstance(context, OperationContext):
+        raise AuthenticationBoundaryError(
+            "operation requires a trusted OperationContext"
+        )
+    if context._context_marker is not _OPERATION_CONTEXT_MARKER:
+        raise AuthenticationBoundaryError(
+            "operation context was not minted by the trusted context factory"
+        )
+    _require_authenticated_principal(context.principal)
+    if expected_operation_class is not None:
+        if not isinstance(expected_operation_class, OperationClass):
+            raise AuthenticationBoundaryError(
+                "expected operation class must use OperationClass"
+            )
+        if context.operation_class is not expected_operation_class:
+            raise AuthenticationBoundaryError(
+                "operation context class does not match requested operation"
+            )

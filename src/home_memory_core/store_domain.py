@@ -72,6 +72,18 @@ def assert_synthetic_store_domain(connection: sqlite3.Connection) -> None:
         )
 
 
+def assert_real_store_domain(connection: sqlite3.Connection) -> None:
+    existing = _read_domain_from_connection(connection)
+    if existing != REAL_STORE_DOMAIN:
+        if existing == SYNTHETIC_STORE_DOMAIN:
+            raise StoreDomainError(
+                "real-data path refuses a synthetic-domain database"
+            )
+        raise StoreDomainError(
+            "database has no valid HOME real store-domain marker"
+        )
+
+
 def read_store_domain(db_path: str | Path) -> str | None:
     path = Path(db_path)
     if not path.exists():
