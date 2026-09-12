@@ -1,8 +1,11 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import wraps
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock, RLock
+from typing import Any, Callable, TypeVar
 
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.lineage import (
@@ -31,9 +34,42 @@ from home_memory_core.thread import (
 )
 
 
+_WRITE_RESULT = TypeVar("_WRITE_RESULT")
+_AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
+_AUTHORITY_LOCKS: dict[str, RLock] = {}
+
+
+def _authority_lock_for_path(db_path: Path) -> RLock:
+    key = str(db_path.expanduser().resolve())
+    with _AUTHORITY_LOCK_REGISTRY_GUARD:
+        lock = _AUTHORITY_LOCKS.get(key)
+        if lock is None:
+            lock = RLock()
+            _AUTHORITY_LOCKS[key] = lock
+        return lock
+
+
+def _authority_ordered_write(
+    method: Callable[..., _WRITE_RESULT],
+) -> Callable[..., _WRITE_RESULT]:
+    """Serialize authority-affecting writes with request handoff.
+
+    This is intentionally a same-process v0.1 coordination primitive. Raw
+    SQLite access and other processes remain outside this contract.
+    """
+
+    @wraps(method)
+    def wrapper(self: "MemoryStore", *args: Any, **kwargs: Any) -> _WRITE_RESULT:
+        with self._authority_ordering_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self._authority_ordering_lock = _authority_lock_for_path(self.db_path)
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +219,7 @@ class MemoryStore:
                 """
             )
 
+    @_authority_ordered_write
     def add_source(self, source: SourceRecord) -> None:
         self._validate_source_record_integrity(source=source)
 
@@ -237,6 +274,7 @@ class MemoryStore:
                 source_id=source_id,
             )
 
+    @_authority_ordered_write
     def suppress_source(
         self,
         suppression: SuppressionRecord,
@@ -291,6 +329,7 @@ class MemoryStore:
 
             return source_id not in suppressed_ids
 
+    @_authority_ordered_write
     def add_interpretation(
         self,
         interpretation: InterpretationRecord,
@@ -423,6 +462,7 @@ class MemoryStore:
                 suppressions=suppressions,
             )
 
+    @_authority_ordered_write
     def add_thread(self, thread: InterpretationThread) -> None:
         self._validate_thread_record(thread=thread)
 
@@ -464,6 +504,7 @@ class MemoryStore:
                 thread_id=thread_id,
             )
 
+    @_authority_ordered_write
     def admit_interpretation(
         self,
         admission: ThreadAdmissionRecord,
@@ -555,6 +596,7 @@ class MemoryStore:
                 thread_id=thread_id,
             )
 
+    @_authority_ordered_write
     def add_supersession(
         self,
         supersession: SupersessionRecord,
@@ -776,6 +818,16 @@ class MemoryStore:
                 new=new,
                 suppressions=suppressions,
             )
+
+    @contextmanager
+    def _request_delivery_ordering_guard(self) -> Iterator[None]:
+        """Serialize one request handoff against authority-affecting writes.
+
+        v0.1 scope: one Python process. The guard is shared by MemoryStore
+        instances that address the same resolved SQLite path.
+        """
+        with self._authority_ordering_lock:
+            yield
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
