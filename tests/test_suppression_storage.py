@@ -13,6 +13,10 @@ from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.revision import create_supersession_record
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
+from home_memory_core.thread import (
+    create_interpretation_thread,
+    create_thread_admission,
+)
 from home_memory_core.suppression import (
     SuppressedMemoryError,
     create_suppression_record,
@@ -196,6 +200,8 @@ class SuppressionStorageTest(unittest.TestCase):
             interpretation_text="新理解。",
         )
 
+        self._admit_same_thread(previous, new)
+
         supersession = create_supersession_record(
             previous=previous,
             new=new,
@@ -250,6 +256,8 @@ class SuppressionStorageTest(unittest.TestCase):
             interpretation_text="新理解。",
         )
 
+        self._admit_same_thread(previous, new)
+
         suppression = create_suppression_record(
             suppression_id="stored-suppression-007",
             source_id=new.evidence[0].source_id,
@@ -299,6 +307,26 @@ class SuppressionStorageTest(unittest.TestCase):
         self.assertFalse(
             reopened_store.is_source_usable(source.source_id)
         )
+
+    def _admit_same_thread(self, *interpretations) -> None:
+        first = interpretations[0]
+
+        thread = create_interpretation_thread(
+            question="测试：这些 interpretation 是否在修订同一件事？",
+            perspective_owner=first.perspective_owner,
+            perspective_instance_id="lior-window-test",
+            about_subject=first.about_subject,
+            scope=first.scope,
+        )
+        self.store.add_thread(thread)
+
+        for interpretation in interpretations:
+            admission = create_thread_admission(
+                thread=thread,
+                interpretation=interpretation,
+                admitted_by_instance_id="lior-window-test",
+            )
+            self.store.admit_interpretation(admission)
 
     def _stored_interpretation(
         self,

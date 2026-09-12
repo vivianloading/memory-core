@@ -5,6 +5,12 @@ from home_memory_core.source import SourceRecord
 
 @dataclass(frozen=True)
 class EvidenceRef:
+    """Exact source span using zero-based half-open Python str indices.
+
+    start_char and end_char count Unicode code points in the exact,
+    unnormalized SourceRecord.content string used to create the reference.
+    """
+
     source_id: str
     source_sha256: str
     start_char: int
@@ -19,13 +25,10 @@ def create_evidence_ref(
 ) -> EvidenceRef:
     if start_char < 0:
         raise ValueError("start_char cannot be negative")
-
     if end_char <= start_char:
         raise ValueError("end_char must be greater than start_char")
-
     if end_char > len(source.content):
         raise ValueError("evidence range exceeds source content")
-
     return EvidenceRef(
         source_id=source.source_id,
         source_sha256=source.content_sha256,
@@ -41,8 +44,6 @@ def read_evidence(
 ) -> str:
     if evidence.source_id != source.source_id:
         raise ValueError("evidence points to a different source")
-
     if evidence.source_sha256 != source.content_sha256:
         raise ValueError("source content no longer matches evidence snapshot")
-
     return source.content[evidence.start_char:evidence.end_char]

@@ -1,6 +1,7 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 
 from home_memory_core.evidence import EvidenceRef
@@ -16,6 +17,11 @@ from home_memory_core.suppression import (
     SuppressionRecord,
     is_interpretation_usable as interpretation_is_usable,
     is_supersession_usable as supersession_is_usable,
+)
+from home_memory_core.thread import (
+    InterpretationThread,
+    ThreadAdmissionRecord,
+    ThreadTopology,
 )
 
 
@@ -78,9 +84,34 @@ class MemoryStore:
                         ON DELETE RESTRICT
                 );
 
+                CREATE TABLE IF NOT EXISTS interpretation_threads (
+                    thread_id TEXT PRIMARY KEY,
+                    question TEXT NOT NULL,
+                    perspective_owner TEXT NOT NULL,
+                    perspective_instance_id TEXT NOT NULL,
+                    about_subject TEXT NOT NULL,
+                    scope TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS interpretation_thread_memberships (
+                    admission_id TEXT PRIMARY KEY,
+                    interpretation_id TEXT NOT NULL UNIQUE,
+                    thread_id TEXT NOT NULL,
+                    perspective_instance_id TEXT NOT NULL,
+                    admitted_by_instance_id TEXT NOT NULL,
+
+                    FOREIGN KEY (interpretation_id)
+                        REFERENCES interpretations(interpretation_id)
+                        ON DELETE RESTRICT,
+
+                    FOREIGN KEY (thread_id)
+                        REFERENCES interpretation_threads(thread_id)
+                        ON DELETE RESTRICT
+                );
+
                 CREATE TABLE IF NOT EXISTS supersessions (
                     previous_interpretation_id TEXT NOT NULL,
-                    new_interpretation_id TEXT NOT NULL,
+                    new_interpretation_id TEXT NOT NULL UNIQUE,
 
                     PRIMARY KEY (
                         previous_interpretation_id,
@@ -129,6 +160,8 @@ class MemoryStore:
             )
 
     def add_source(self, source: SourceRecord) -> None:
+        self._validate_source_record_integrity(source=source)
+
         with self._connection() as connection:
             try:
                 connection.execute(
@@ -252,6 +285,7 @@ class MemoryStore:
                 self._validate_evidence_against_stored_source(
                     connection=connection,
                     evidence=evidence,
+                    expected_scope=interpretation.scope,
                 )
 
                 if evidence.source_id in suppressed_ids:
@@ -364,6 +398,161 @@ class MemoryStore:
                 suppressions=suppressions,
             )
 
+    def add_thread(self, thread: InterpretationThread) -> None:
+        with self._connection() as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO interpretation_threads (
+                        thread_id,
+                        question,
+                        perspective_owner,
+                        perspective_instance_id,
+                        about_subject,
+                        scope
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        thread.thread_id,
+                        thread.question,
+                        thread.perspective_owner,
+                        thread.perspective_instance_id,
+                        thread.about_subject,
+                        thread.scope,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError(
+                    f"thread_id already exists: {thread.thread_id}"
+                ) from error
+
+    def get_thread(
+        self,
+        thread_id: str,
+    ) -> InterpretationThread:
+        with self._connection() as connection:
+            return self._get_thread_from_connection(
+                connection=connection,
+                thread_id=thread_id,
+            )
+
+    def admit_interpretation(
+        self,
+        admission: ThreadAdmissionRecord,
+    ) -> None:
+        with self._connection() as connection:
+            thread = self._get_thread_from_connection(
+                connection=connection,
+                thread_id=admission.thread_id,
+            )
+
+            interpretation = self._get_interpretation_from_connection(
+                connection=connection,
+                interpretation_id=admission.interpretation_id,
+            )
+
+            self._validate_interpretation_against_thread(
+                interpretation=interpretation,
+                thread=thread,
+            )
+
+            if (
+                admission.perspective_instance_id
+                != thread.perspective_instance_id
+            ):
+                raise ValueError(
+                    "thread admission perspective instance "
+                    "does not match the thread"
+                )
+
+            for evidence in interpretation.evidence:
+                self._validate_evidence_against_stored_source(
+                    connection=connection,
+                    evidence=evidence,
+                    expected_scope=thread.scope,
+                )
+
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO interpretation_thread_memberships (
+                        admission_id,
+                        interpretation_id,
+                        thread_id,
+                        perspective_instance_id,
+                        admitted_by_instance_id
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        admission.admission_id,
+                        admission.interpretation_id,
+                        admission.thread_id,
+                        admission.perspective_instance_id,
+                        admission.admitted_by_instance_id,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError(
+                    "interpretation thread admission could not be stored"
+                ) from error
+
+    def get_thread_topology(
+        self,
+        thread_id: str,
+    ) -> ThreadTopology:
+        with self._connection() as connection:
+            self._get_thread_from_connection(
+                connection=connection,
+                thread_id=thread_id,
+            )
+
+            interpretation_rows = connection.execute(
+                """
+                SELECT interpretation_id
+                FROM interpretation_thread_memberships
+                WHERE thread_id = ?
+                ORDER BY rowid
+                """,
+                (thread_id,),
+            ).fetchall()
+
+            edge_rows = connection.execute(
+                """
+                SELECT
+                    supersessions.previous_interpretation_id,
+                    supersessions.new_interpretation_id
+                FROM supersessions
+                JOIN interpretation_thread_memberships AS previous_membership
+                    ON previous_membership.interpretation_id
+                    = supersessions.previous_interpretation_id
+                JOIN interpretation_thread_memberships AS new_membership
+                    ON new_membership.interpretation_id
+                    = supersessions.new_interpretation_id
+                WHERE
+                    previous_membership.thread_id = ?
+                    AND new_membership.thread_id = ?
+                ORDER BY supersessions.rowid
+                """,
+                (thread_id, thread_id),
+            ).fetchall()
+
+            return ThreadTopology(
+                thread_id=thread_id,
+                interpretation_ids=frozenset(
+                    row["interpretation_id"]
+                    for row in interpretation_rows
+                ),
+                supersession_edges=frozenset(
+                    (
+                        row["previous_interpretation_id"],
+                        row["new_interpretation_id"],
+                    )
+                    for row in edge_rows
+                ),
+            )
+
     def add_supersession(
         self,
         supersession: SupersessionRecord,
@@ -405,10 +594,60 @@ class MemoryStore:
                     "supersession must stay about the same subject"
                 )
 
+            if previous.scope != new.scope:
+                raise ValueError(
+                    "supersession must stay within the same scope"
+                )
+
+            previous_admission = (
+                self._get_thread_admission_from_connection(
+                    connection=connection,
+                    interpretation_id=previous.interpretation_id,
+                )
+            )
+
+            new_admission = (
+                self._get_thread_admission_from_connection(
+                    connection=connection,
+                    interpretation_id=new.interpretation_id,
+                )
+            )
+
+            if previous_admission.thread_id != new_admission.thread_id:
+                raise ValueError(
+                    "supersession must stay within "
+                    "the same interpretation thread"
+                )
+
+            thread = self._get_thread_from_connection(
+                connection=connection,
+                thread_id=previous_admission.thread_id,
+            )
+
+            self._validate_interpretation_against_thread(
+                interpretation=previous,
+                thread=thread,
+            )
+            self._validate_interpretation_against_thread(
+                interpretation=new,
+                thread=thread,
+            )
+
+            if (
+                previous_admission.perspective_instance_id
+                != thread.perspective_instance_id
+                or new_admission.perspective_instance_id
+                != thread.perspective_instance_id
+            ):
+                raise ValueError(
+                    "supersession crosses a perspective instance boundary"
+                )
+
             for evidence in supersession.reason_evidence:
                 self._validate_evidence_against_stored_source(
                     connection=connection,
                     evidence=evidence,
+                    expected_scope=thread.scope,
                 )
 
             suppressions = self._get_suppressions_from_connection(
@@ -543,6 +782,20 @@ class MemoryStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    def _validate_source_record_integrity(
+        self,
+        *,
+        source: SourceRecord,
+    ) -> None:
+        actual_digest = sha256(
+            source.content.encode("utf-8")
+        ).hexdigest()
+
+        if actual_digest != source.content_sha256:
+            raise ValueError(
+                "source content hash does not match source content"
+            )
+
     def _get_source_from_connection(
         self,
         *,
@@ -566,6 +819,15 @@ class MemoryStore:
         if row is None:
             raise KeyError(source_id)
 
+        actual_digest = sha256(
+            row["content"].encode("utf-8")
+        ).hexdigest()
+
+        if actual_digest != row["content_sha256"]:
+            raise ValueError(
+                "stored source content hash does not match content"
+            )
+
         return SourceRecord(
             source_id=row["source_id"],
             content=row["content"],
@@ -579,11 +841,13 @@ class MemoryStore:
         *,
         connection: sqlite3.Connection,
         evidence: EvidenceRef,
+        expected_scope: str | None = None,
     ) -> None:
         row = connection.execute(
             """
             SELECT
                 content,
+                scope,
                 content_sha256
             FROM sources
             WHERE source_id = ?
@@ -597,10 +861,28 @@ class MemoryStore:
                 f"{evidence.source_id}"
             )
 
+        actual_digest = sha256(
+            row["content"].encode("utf-8")
+        ).hexdigest()
+
+        if actual_digest != row["content_sha256"]:
+            raise ValueError(
+                "stored source content hash does not match content"
+            )
+
         if row["content_sha256"] != evidence.source_sha256:
             raise ValueError(
                 "evidence source hash does not match "
                 "the stored source snapshot"
+            )
+
+        if (
+            expected_scope is not None
+            and row["scope"] != expected_scope
+        ):
+            raise ValueError(
+                "evidence source scope does not match "
+                "the derived record scope"
             )
 
         if evidence.start_char < 0:
@@ -673,6 +955,99 @@ class MemoryStore:
             scope=row["scope"],
             evidence=evidence,
         )
+
+    def _get_thread_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        thread_id: str,
+    ) -> InterpretationThread:
+        row = connection.execute(
+            """
+            SELECT
+                thread_id,
+                question,
+                perspective_owner,
+                perspective_instance_id,
+                about_subject,
+                scope
+            FROM interpretation_threads
+            WHERE thread_id = ?
+            """,
+            (thread_id,),
+        ).fetchone()
+
+        if row is None:
+            raise KeyError(thread_id)
+
+        return InterpretationThread(
+            thread_id=row["thread_id"],
+            question=row["question"],
+            perspective_owner=row["perspective_owner"],
+            perspective_instance_id=row["perspective_instance_id"],
+            about_subject=row["about_subject"],
+            scope=row["scope"],
+        )
+
+    def _get_thread_admission_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        interpretation_id: str,
+    ) -> ThreadAdmissionRecord:
+        row = connection.execute(
+            """
+            SELECT
+                admission_id,
+                thread_id,
+                interpretation_id,
+                perspective_instance_id,
+                admitted_by_instance_id
+            FROM interpretation_thread_memberships
+            WHERE interpretation_id = ?
+            """,
+            (interpretation_id,),
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(
+                "interpretation must be admitted to a thread "
+                "before it can participate in supersession"
+            )
+
+        return ThreadAdmissionRecord(
+            admission_id=row["admission_id"],
+            thread_id=row["thread_id"],
+            interpretation_id=row["interpretation_id"],
+            perspective_instance_id=row[
+                "perspective_instance_id"
+            ],
+            admitted_by_instance_id=row[
+                "admitted_by_instance_id"
+            ],
+        )
+
+    def _validate_interpretation_against_thread(
+        self,
+        *,
+        interpretation: InterpretationRecord,
+        thread: InterpretationThread,
+    ) -> None:
+        if interpretation.perspective_owner != thread.perspective_owner:
+            raise ValueError(
+                "interpretation perspective owner "
+                "does not match the thread"
+            )
+
+        if interpretation.about_subject != thread.about_subject:
+            raise ValueError(
+                "interpretation subject does not match the thread"
+            )
+
+        if interpretation.scope != thread.scope:
+            raise ValueError(
+                "interpretation scope does not match the thread"
+            )
 
     def _get_suppressions_from_connection(
         self,

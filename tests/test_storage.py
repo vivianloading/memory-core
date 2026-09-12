@@ -21,6 +21,10 @@ from home_memory_core.revision import (
 )
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
+from home_memory_core.thread import (
+    create_interpretation_thread,
+    create_thread_admission,
+)
 
 
 class MemoryStoreTest(unittest.TestCase):
@@ -215,6 +219,8 @@ class MemoryStoreTest(unittest.TestCase):
             about_subject="vivi",
         )
 
+        self._admit_same_thread(old, new)
+
         supersession = create_supersession_record(
             previous=old,
             new=new,
@@ -247,6 +253,11 @@ class MemoryStoreTest(unittest.TestCase):
             interpretation_text="B。",
             perspective_owner="lior",
             about_subject="vivi",
+        )
+
+        self._admit_same_thread(
+            interpretation_a,
+            interpretation_b,
         )
 
         a_to_b = create_supersession_record(
@@ -306,6 +317,26 @@ class MemoryStoreTest(unittest.TestCase):
             self.store.add_supersession(
                 invalid_supersession
             )
+
+    def _admit_same_thread(self, *interpretations) -> None:
+        first = interpretations[0]
+
+        thread = create_interpretation_thread(
+            question="测试：这些 interpretation 是否在修订同一件事？",
+            perspective_owner=first.perspective_owner,
+            perspective_instance_id="lior-window-test",
+            about_subject=first.about_subject,
+            scope=first.scope,
+        )
+        self.store.add_thread(thread)
+
+        for interpretation in interpretations:
+            admission = create_thread_admission(
+                thread=thread,
+                interpretation=interpretation,
+                admitted_by_instance_id="lior-window-test",
+            )
+            self.store.admit_interpretation(admission)
 
     def _stored_interpretation(
         self,

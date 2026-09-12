@@ -49,6 +49,7 @@ def validate_supersession_graph(
 ) -> None:
     seen_edges: set[tuple[str, str]] = set()
     adjacency: dict[str, set[str]] = {}
+    incoming_parent: dict[str, str] = {}
     all_ids: set[str] = set()
 
     for supersession in supersessions:
@@ -59,6 +60,17 @@ def validate_supersession_graph(
         if edge in seen_edges:
             raise ValueError("supersession graph contains a duplicate edge")
 
+        existing_parent = incoming_parent.get(new_id)
+
+        if (
+            existing_parent is not None
+            and existing_parent != previous_id
+        ):
+            raise ValueError(
+                "supersession graph contains an implicit merge"
+            )
+
+        incoming_parent[new_id] = previous_id
         seen_edges.add(edge)
         adjacency.setdefault(previous_id, set()).add(new_id)
         all_ids.add(previous_id)
