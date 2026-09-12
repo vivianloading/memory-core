@@ -87,6 +87,7 @@ class LineageFoundationTest(unittest.TestCase):
             interpretation_id="shared-interpretation",
             text="derived text",
             perspective_owner="lior",
+            perspective_instance_id="lior-window-a",
             about_subject="vivi",
             scope="shared",
             evidence=(evidence,),
@@ -130,22 +131,28 @@ class LineageFoundationTest(unittest.TestCase):
     def test_different_perspective_instances_cannot_share_revision_edge(
         self,
     ) -> None:
-        previous = self._stored_interpretation("instance-a", "source-instance-a")
-        new = self._stored_interpretation("instance-b", "source-instance-b")
+        previous = self._stored_interpretation(
+            "instance-a",
+            "source-instance-a",
+            perspective_instance_id="lior-window-a",
+        )
+        new = self._stored_interpretation(
+            "instance-b",
+            "source-instance-b",
+            perspective_instance_id="lior-window-b",
+        )
 
         first_thread = self._thread(instance_id="lior-window-a")
         second_thread = self._thread(instance_id="lior-window-b")
         self._admit(first_thread, previous)
         self._admit(second_thread, new)
 
-        supersession = create_supersession_record(
-            previous=previous,
-            new=new,
-            reason_evidence=new.evidence,
-        )
-
         with self.assertRaises(ValueError):
-            self.store.add_supersession(supersession)
+            create_supersession_record(
+                previous=previous,
+                new=new,
+                reason_evidence=new.evidence,
+            )
 
     def test_direct_fork_is_allowed_inside_one_thread(self) -> None:
         root = self._stored_interpretation("fork-a", "source-fork-a")
@@ -384,6 +391,7 @@ class LineageFoundationTest(unittest.TestCase):
         source_id,
         *,
         perspective_owner="lior",
+        perspective_instance_id="lior-window-a",
         about_subject="vivi",
         scope="shared",
     ):
@@ -405,6 +413,7 @@ class LineageFoundationTest(unittest.TestCase):
             interpretation_id=interpretation_id,
             text=f"interpretation {interpretation_id}",
             perspective_owner=perspective_owner,
+            perspective_instance_id=perspective_instance_id,
             about_subject=about_subject,
             scope=scope,
             evidence=(evidence,),
@@ -417,6 +426,7 @@ class LineageFoundationTest(unittest.TestCase):
         interpretation_id,
         *,
         perspective_owner="lior",
+        perspective_instance_id="lior-window-a",
         about_subject="vivi",
         scope="shared",
     ):
@@ -435,6 +445,7 @@ class LineageFoundationTest(unittest.TestCase):
             interpretation_id=interpretation_id,
             text=f"interpretation {interpretation_id}",
             perspective_owner=perspective_owner,
+            perspective_instance_id=perspective_instance_id,
             about_subject=about_subject,
             scope=scope,
             evidence=(evidence,),

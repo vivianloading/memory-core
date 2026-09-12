@@ -7,6 +7,7 @@ from pathlib import Path
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.interpretation import (
     InterpretationRecord,
+    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
     create_interpretation_record,
 )
 from home_memory_core.revision import SupersessionRecord
@@ -55,11 +56,18 @@ class MemoryStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS interpretations (
-                    interpretation_id TEXT PRIMARY KEY,
-                    text TEXT NOT NULL,
-                    perspective_owner TEXT NOT NULL,
-                    about_subject TEXT NOT NULL,
+                    interpretation_id TEXT PRIMARY KEY
+                        CHECK (length(trim(interpretation_id)) > 0),
+                    text TEXT NOT NULL
+                        CHECK (length(trim(text)) > 0),
+                    perspective_owner TEXT NOT NULL
+                        CHECK (length(trim(perspective_owner)) > 0),
+                    perspective_instance_id TEXT NOT NULL
+                        CHECK (length(trim(perspective_instance_id)) > 0),
+                    about_subject TEXT NOT NULL
+                        CHECK (length(trim(about_subject)) > 0),
                     scope TEXT NOT NULL
+                        CHECK (length(trim(scope)) > 0)
                 );
 
                 CREATE TABLE IF NOT EXISTS interpretation_evidence (
@@ -85,20 +93,31 @@ class MemoryStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS interpretation_threads (
-                    thread_id TEXT PRIMARY KEY,
-                    question TEXT NOT NULL,
-                    perspective_owner TEXT NOT NULL,
-                    perspective_instance_id TEXT NOT NULL,
-                    about_subject TEXT NOT NULL,
+                    thread_id TEXT PRIMARY KEY
+                        CHECK (length(trim(thread_id)) > 0),
+                    question TEXT NOT NULL
+                        CHECK (length(trim(question)) > 0),
+                    perspective_owner TEXT NOT NULL
+                        CHECK (length(trim(perspective_owner)) > 0),
+                    perspective_instance_id TEXT NOT NULL
+                        CHECK (length(trim(perspective_instance_id)) > 0),
+                    about_subject TEXT NOT NULL
+                        CHECK (length(trim(about_subject)) > 0),
                     scope TEXT NOT NULL
+                        CHECK (length(trim(scope)) > 0)
                 );
 
                 CREATE TABLE IF NOT EXISTS interpretation_thread_memberships (
-                    admission_id TEXT PRIMARY KEY,
-                    interpretation_id TEXT NOT NULL UNIQUE,
-                    thread_id TEXT NOT NULL,
-                    perspective_instance_id TEXT NOT NULL,
-                    admitted_by_instance_id TEXT NOT NULL,
+                    admission_id TEXT PRIMARY KEY
+                        CHECK (length(trim(admission_id)) > 0),
+                    interpretation_id TEXT NOT NULL UNIQUE
+                        CHECK (length(trim(interpretation_id)) > 0),
+                    thread_id TEXT NOT NULL
+                        CHECK (length(trim(thread_id)) > 0),
+                    perspective_instance_id TEXT NOT NULL
+                        CHECK (length(trim(perspective_instance_id)) > 0),
+                    admitted_by_instance_id TEXT NOT NULL
+                        CHECK (length(trim(admitted_by_instance_id)) > 0),
 
                     FOREIGN KEY (interpretation_id)
                         REFERENCES interpretations(interpretation_id)
@@ -271,10 +290,9 @@ class MemoryStore:
         self,
         interpretation: InterpretationRecord,
     ) -> None:
-        if not interpretation.evidence:
-            raise ValueError(
-                "interpretation must have at least one evidence reference"
-            )
+        self._validate_interpretation_record(
+            interpretation=interpretation,
+        )
 
         with self._connection() as connection:
             suppressed_ids = self._get_suppressed_source_ids_from_connection(
@@ -301,15 +319,17 @@ class MemoryStore:
                         interpretation_id,
                         text,
                         perspective_owner,
+                        perspective_instance_id,
                         about_subject,
                         scope
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         interpretation.interpretation_id,
                         interpretation.text,
                         interpretation.perspective_owner,
+                        interpretation.perspective_instance_id,
                         interpretation.about_subject,
                         interpretation.scope,
                     ),
@@ -399,6 +419,8 @@ class MemoryStore:
             )
 
     def add_thread(self, thread: InterpretationThread) -> None:
+        self._validate_thread_record(thread=thread)
+
         with self._connection() as connection:
             try:
                 connection.execute(
@@ -441,6 +463,8 @@ class MemoryStore:
         self,
         admission: ThreadAdmissionRecord,
     ) -> None:
+        self._validate_thread_admission_record(admission=admission)
+
         with self._connection() as connection:
             thread = self._get_thread_from_connection(
                 connection=connection,
@@ -460,10 +484,12 @@ class MemoryStore:
             if (
                 admission.perspective_instance_id
                 != thread.perspective_instance_id
+                or admission.perspective_instance_id
+                != interpretation.perspective_instance_id
             ):
                 raise ValueError(
                     "thread admission perspective instance "
-                    "does not match the thread"
+                    "does not match persisted interpretation and thread"
                 )
 
             for evidence in interpretation.evidence:
@@ -518,25 +544,39 @@ class MemoryStore:
                 (thread_id,),
             ).fetchall()
 
-            edge_rows = connection.execute(
+            touching_edge_rows = connection.execute(
                 """
                 SELECT
                     supersessions.previous_interpretation_id,
-                    supersessions.new_interpretation_id
+                    supersessions.new_interpretation_id,
+                    previous_membership.thread_id AS previous_thread_id,
+                    new_membership.thread_id AS new_thread_id
                 FROM supersessions
-                JOIN interpretation_thread_memberships AS previous_membership
+                LEFT JOIN interpretation_thread_memberships
+                    AS previous_membership
                     ON previous_membership.interpretation_id
                     = supersessions.previous_interpretation_id
-                JOIN interpretation_thread_memberships AS new_membership
+                LEFT JOIN interpretation_thread_memberships
+                    AS new_membership
                     ON new_membership.interpretation_id
                     = supersessions.new_interpretation_id
                 WHERE
                     previous_membership.thread_id = ?
-                    AND new_membership.thread_id = ?
+                    OR new_membership.thread_id = ?
                 ORDER BY supersessions.rowid
                 """,
                 (thread_id, thread_id),
             ).fetchall()
+
+            for row in touching_edge_rows:
+                if (
+                    row["previous_thread_id"] != thread_id
+                    or row["new_thread_id"] != thread_id
+                ):
+                    raise ValueError(
+                        "thread topology is not closed under "
+                        "known supersession edges"
+                    )
 
             return ThreadTopology(
                 thread_id=thread_id,
@@ -549,7 +589,7 @@ class MemoryStore:
                         row["previous_interpretation_id"],
                         row["new_interpretation_id"],
                     )
-                    for row in edge_rows
+                    for row in touching_edge_rows
                 ),
             )
 
@@ -587,6 +627,15 @@ class MemoryStore:
                 raise ValueError(
                     "supersession must stay within "
                     "the same perspective owner"
+                )
+
+            if (
+                previous.perspective_instance_id
+                != new.perspective_instance_id
+            ):
+                raise ValueError(
+                    "supersession must stay within "
+                    "the same perspective instance"
                 )
 
             if previous.about_subject != new.about_subject:
@@ -912,6 +961,7 @@ class MemoryStore:
                 interpretation_id,
                 text,
                 perspective_owner,
+                perspective_instance_id,
                 about_subject,
                 scope
             FROM interpretations
@@ -951,6 +1001,7 @@ class MemoryStore:
             interpretation_id=row["interpretation_id"],
             text=row["text"],
             perspective_owner=row["perspective_owner"],
+            perspective_instance_id=row["perspective_instance_id"],
             about_subject=row["about_subject"],
             scope=row["scope"],
             evidence=evidence,
@@ -1039,6 +1090,15 @@ class MemoryStore:
                 "does not match the thread"
             )
 
+        if (
+            interpretation.perspective_instance_id
+            != thread.perspective_instance_id
+        ):
+            raise ValueError(
+                "interpretation perspective instance "
+                "does not match the thread"
+            )
+
         if interpretation.about_subject != thread.about_subject:
             raise ValueError(
                 "interpretation subject does not match the thread"
@@ -1048,6 +1108,79 @@ class MemoryStore:
             raise ValueError(
                 "interpretation scope does not match the thread"
             )
+
+    def _validate_interpretation_record(
+        self,
+        *,
+        interpretation: InterpretationRecord,
+    ) -> None:
+        values = {
+            "interpretation_id": interpretation.interpretation_id,
+            "text": interpretation.text,
+            "perspective_owner": interpretation.perspective_owner,
+            "perspective_instance_id": (
+                interpretation.perspective_instance_id
+            ),
+            "about_subject": interpretation.about_subject,
+            "scope": interpretation.scope,
+        }
+
+        for field_name, value in values.items():
+            if not value.strip():
+                raise ValueError(f"{field_name} cannot be empty")
+
+        if not interpretation.evidence:
+            raise ValueError(
+                "interpretation must have at least one evidence reference"
+            )
+
+    def _validate_thread_record(
+        self,
+        *,
+        thread: InterpretationThread,
+    ) -> None:
+        values = {
+            "thread_id": thread.thread_id,
+            "question": thread.question,
+            "perspective_owner": thread.perspective_owner,
+            "perspective_instance_id": thread.perspective_instance_id,
+            "about_subject": thread.about_subject,
+            "scope": thread.scope,
+        }
+
+        for field_name, value in values.items():
+            if not value.strip():
+                raise ValueError(f"{field_name} cannot be empty")
+
+        if (
+            thread.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise ValueError(
+                "a real interpretation thread needs a concrete "
+                "perspective instance"
+            )
+
+    def _validate_thread_admission_record(
+        self,
+        *,
+        admission: ThreadAdmissionRecord,
+    ) -> None:
+        values = {
+            "admission_id": admission.admission_id,
+            "thread_id": admission.thread_id,
+            "interpretation_id": admission.interpretation_id,
+            "perspective_instance_id": (
+                admission.perspective_instance_id
+            ),
+            "admitted_by_instance_id": (
+                admission.admitted_by_instance_id
+            ),
+        }
+
+        for field_name, value in values.items():
+            if not value.strip():
+                raise ValueError(f"{field_name} cannot be empty")
 
     def _get_suppressions_from_connection(
         self,

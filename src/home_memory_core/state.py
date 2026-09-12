@@ -1,45 +1,33 @@
-from home_memory_core.interpretation import InterpretationRecord
 from home_memory_core.revision import SupersessionRecord
 
 
-def resolve_interpretation_status(
+def resolve_connected_component_terminal_ids(
     *,
-    interpretation: InterpretationRecord,
+    interpretation_id: str,
     supersessions: tuple[SupersessionRecord, ...],
-) -> str:
+) -> frozenset[str]:
+    """Return structural terminals in one connected revision component.
+
+    This helper deliberately does not claim that any terminal is the
+    thread-level current truth. A thread may contain multiple disconnected
+    roots, so Task #04 must resolve the complete thread topology instead.
+    """
     validate_supersession_graph(supersessions=supersessions)
 
-    interpretation_id = interpretation.interpretation_id
+    component_ids = _find_connected_component_ids(
+        interpretation_id=interpretation_id,
+        supersessions=supersessions,
+    )
 
     outgoing_ids = {
         supersession.previous_interpretation_id
         for supersession in supersessions
     }
 
-    if interpretation_id in outgoing_ids:
-        return "superseded"
-
-    terminal_ids = _resolve_lineage_terminal_ids_unchecked(
-        interpretation_id=interpretation_id,
-        supersessions=supersessions,
-    )
-
-    if len(terminal_ids) > 1:
-        return "conflicting"
-
-    return "current"
-
-
-def resolve_lineage_terminal_ids(
-    *,
-    interpretation_id: str,
-    supersessions: tuple[SupersessionRecord, ...],
-) -> frozenset[str]:
-    validate_supersession_graph(supersessions=supersessions)
-
-    return _resolve_lineage_terminal_ids_unchecked(
-        interpretation_id=interpretation_id,
-        supersessions=supersessions,
+    return frozenset(
+        candidate_id
+        for candidate_id in component_ids
+        if candidate_id not in outgoing_ids
     )
 
 
@@ -56,6 +44,9 @@ def validate_supersession_graph(
         previous_id = supersession.previous_interpretation_id
         new_id = supersession.new_interpretation_id
         edge = (previous_id, new_id)
+
+        if previous_id == new_id:
+            raise ValueError("supersession graph contains a self-loop")
 
         if edge in seen_edges:
             raise ValueError("supersession graph contains a duplicate edge")
@@ -98,34 +89,12 @@ def validate_supersession_graph(
         visit(interpretation_id)
 
 
-def _resolve_lineage_terminal_ids_unchecked(
-    *,
-    interpretation_id: str,
-    supersessions: tuple[SupersessionRecord, ...],
-) -> frozenset[str]:
-    lineage_ids = _find_lineage_ids(
-        interpretation_id=interpretation_id,
-        supersessions=supersessions,
-    )
-
-    outgoing_ids = {
-        supersession.previous_interpretation_id
-        for supersession in supersessions
-    }
-
-    return frozenset(
-        candidate_id
-        for candidate_id in lineage_ids
-        if candidate_id not in outgoing_ids
-    )
-
-
-def _find_lineage_ids(
+def _find_connected_component_ids(
     *,
     interpretation_id: str,
     supersessions: tuple[SupersessionRecord, ...],
 ) -> set[str]:
-    lineage_ids = {interpretation_id}
+    component_ids = {interpretation_id}
     pending = [interpretation_id]
 
     while pending:
@@ -141,9 +110,9 @@ def _find_lineage_ids(
 
             if (
                 connected_id is not None
-                and connected_id not in lineage_ids
+                and connected_id not in component_ids
             ):
-                lineage_ids.add(connected_id)
+                component_ids.add(connected_id)
                 pending.append(connected_id)
 
-    return lineage_ids
+    return component_ids

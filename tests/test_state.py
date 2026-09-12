@@ -12,423 +12,217 @@ from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.revision import create_supersession_record
 from home_memory_core.source import create_source_record
 from home_memory_core.state import (
-    resolve_interpretation_status,
-    resolve_lineage_terminal_ids,
+    resolve_connected_component_terminal_ids,
+    validate_supersession_graph,
 )
 
 
-class InterpretationStateTest(unittest.TestCase):
-    def test_resolves_a_to_b_to_c_without_mutating_history(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-012",
-            text="A：最初的理解。",
-            source_id="message-015",
-            source_text="第一段证据。",
-        )
+class ConnectedComponentTopologyTest(unittest.TestCase):
+    def test_linear_component_reports_one_terminal(self) -> None:
+        a = self._make_interpretation("interpretation-012", "message-015")
+        b = self._make_interpretation("interpretation-013", "message-016")
+        c = self._make_interpretation("interpretation-014", "message-017")
 
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-013",
-            text="B：后来修正的理解。",
-            source_id="message-016",
-            source_text="第二段证据。",
-        )
-
-        interpretation_c = self._make_interpretation(
-            interpretation_id="interpretation-014",
-            text="C：现在的理解。",
-            source_id="message-017",
-            source_text="第三段证据。",
-        )
-
-        a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
-        )
-
-        b_to_c = create_supersession_record(
-            previous=interpretation_b,
-            new=interpretation_c,
-            reason_evidence=interpretation_c.evidence,
-        )
-
-        supersessions = (a_to_b, b_to_c)
-
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_a,
-                supersessions=supersessions,
+        edges = (
+            create_supersession_record(
+                previous=a,
+                new=b,
+                reason_evidence=b.evidence,
             ),
-            "superseded",
+            create_supersession_record(
+                previous=b,
+                new=c,
+                reason_evidence=c.evidence,
+            ),
         )
 
         self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_b,
-                supersessions=supersessions,
+            resolve_connected_component_terminal_ids(
+                interpretation_id=a.interpretation_id,
+                supersessions=edges,
             ),
-            "superseded",
+            frozenset({c.interpretation_id}),
         )
 
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_c,
-                supersessions=supersessions,
-            ),
-            "current",
-        )
-
-        self.assertEqual(interpretation_a.text, "A：最初的理解。")
-        self.assertEqual(interpretation_b.text, "B：后来修正的理解。")
-        self.assertEqual(interpretation_c.text, "C：现在的理解。")
-
-    def test_unrevised_interpretation_is_current(self) -> None:
+    def test_singleton_component_reports_itself_as_terminal(self) -> None:
         interpretation = self._make_interpretation(
-            interpretation_id="interpretation-015",
-            text="这条理解还没有被修订。",
-            source_id="message-018",
-            source_text="这是一段证据。",
+            "interpretation-015",
+            "message-018",
         )
 
         self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation,
+            resolve_connected_component_terminal_ids(
+                interpretation_id=interpretation.interpretation_id,
                 supersessions=(),
             ),
-            "current",
+            frozenset({interpretation.interpretation_id}),
         )
 
-    def test_branching_revisions_are_conflicting(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-016",
-            text="A：最初的理解。",
-            source_id="message-019",
-            source_text="最初的证据。",
-        )
+    def test_direct_fork_reports_all_component_terminals(self) -> None:
+        a = self._make_interpretation("interpretation-016", "message-019")
+        b = self._make_interpretation("interpretation-017", "message-020")
+        c = self._make_interpretation("interpretation-018", "message-021")
 
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-017",
-            text="B：第一种修订。",
-            source_id="message-020",
-            source_text="支持 B 的新证据。",
-        )
-
-        interpretation_c = self._make_interpretation(
-            interpretation_id="interpretation-018",
-            text="C：另一种修订。",
-            source_id="message-021",
-            source_text="支持 C 的新证据。",
-        )
-
-        a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
-        )
-
-        a_to_c = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_c,
-            reason_evidence=interpretation_c.evidence,
-        )
-
-        supersessions = (a_to_b, a_to_c)
-
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_a,
-                supersessions=supersessions,
+        edges = (
+            create_supersession_record(
+                previous=a,
+                new=b,
+                reason_evidence=b.evidence,
             ),
-            "superseded",
-        )
-
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_b,
-                supersessions=supersessions,
+            create_supersession_record(
+                previous=a,
+                new=c,
+                reason_evidence=c.evidence,
             ),
-            "conflicting",
         )
 
         self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_c,
-                supersessions=supersessions,
+            resolve_connected_component_terminal_ids(
+                interpretation_id=a.interpretation_id,
+                supersessions=edges,
             ),
-            "conflicting",
+            frozenset({b.interpretation_id, c.interpretation_id}),
         )
 
-    def test_indirect_branching_revisions_are_conflicting(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-019",
-            text="A：最初的理解。",
-            source_id="message-022",
-            source_text="最初证据。",
-        )
+    def test_indirect_fork_reports_all_component_terminals(self) -> None:
+        a = self._make_interpretation("interpretation-019", "message-022")
+        b = self._make_interpretation("interpretation-020", "message-023")
+        c = self._make_interpretation("interpretation-021", "message-024")
+        d = self._make_interpretation("interpretation-022", "message-025")
 
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-020",
-            text="B：A 的第一步修订。",
-            source_id="message-023",
-            source_text="支持 B 的证据。",
-        )
-
-        interpretation_c = self._make_interpretation(
-            interpretation_id="interpretation-021",
-            text="C：从 A 长出的另一条支线。",
-            source_id="message-024",
-            source_text="支持 C 的证据。",
-        )
-
-        interpretation_d = self._make_interpretation(
-            interpretation_id="interpretation-022",
-            text="D：B 后面的进一步修订。",
-            source_id="message-025",
-            source_text="支持 D 的证据。",
-        )
-
-        a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
-        )
-
-        a_to_c = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_c,
-            reason_evidence=interpretation_c.evidence,
-        )
-
-        b_to_d = create_supersession_record(
-            previous=interpretation_b,
-            new=interpretation_d,
-            reason_evidence=interpretation_d.evidence,
-        )
-
-        supersessions = (a_to_b, a_to_c, b_to_d)
-
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_a,
-                supersessions=supersessions,
+        edges = (
+            create_supersession_record(
+                previous=a,
+                new=b,
+                reason_evidence=b.evidence,
             ),
-            "superseded",
-        )
-
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_b,
-                supersessions=supersessions,
+            create_supersession_record(
+                previous=a,
+                new=c,
+                reason_evidence=c.evidence,
             ),
-            "superseded",
-        )
-
-        self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_c,
-                supersessions=supersessions,
+            create_supersession_record(
+                previous=b,
+                new=d,
+                reason_evidence=d.evidence,
             ),
-            "conflicting",
         )
 
         self.assertEqual(
-            resolve_interpretation_status(
-                interpretation=interpretation_d,
-                supersessions=supersessions,
+            resolve_connected_component_terminal_ids(
+                interpretation_id=b.interpretation_id,
+                supersessions=edges,
             ),
-            "conflicting",
+            frozenset({c.interpretation_id, d.interpretation_id}),
         )
 
-    def test_linear_lineage_reports_one_terminal_interpretation(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-023",
-            text="A。",
-            source_id="message-026",
-            source_text="A 的证据。",
-        )
+    def test_nonterminal_seed_still_reports_component_terminals(self) -> None:
+        a = self._make_interpretation("interpretation-023", "message-026")
+        b = self._make_interpretation("interpretation-024", "message-027")
+        c = self._make_interpretation("interpretation-025", "message-028")
 
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-024",
-            text="B。",
-            source_id="message-027",
-            source_text="B 的证据。",
-        )
-
-        interpretation_c = self._make_interpretation(
-            interpretation_id="interpretation-025",
-            text="C。",
-            source_id="message-028",
-            source_text="C 的证据。",
-        )
-
-        a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
-        )
-
-        b_to_c = create_supersession_record(
-            previous=interpretation_b,
-            new=interpretation_c,
-            reason_evidence=interpretation_c.evidence,
-        )
-
-        terminal_ids = resolve_lineage_terminal_ids(
-            interpretation_id=interpretation_a.interpretation_id,
-            supersessions=(a_to_b, b_to_c),
-        )
-
-        self.assertEqual(
-            terminal_ids,
-            frozenset({"interpretation-025"}),
-        )
-
-    def test_branching_lineage_reports_all_terminal_interpretations(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-026",
-            text="A。",
-            source_id="message-029",
-            source_text="A 的证据。",
-        )
-
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-027",
-            text="B。",
-            source_id="message-030",
-            source_text="B 的证据。",
-        )
-
-        interpretation_c = self._make_interpretation(
-            interpretation_id="interpretation-028",
-            text="C。",
-            source_id="message-031",
-            source_text="C 的证据。",
-        )
-
-        interpretation_d = self._make_interpretation(
-            interpretation_id="interpretation-029",
-            text="D。",
-            source_id="message-032",
-            source_text="D 的证据。",
-        )
-
-        a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
-        )
-
-        a_to_c = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_c,
-            reason_evidence=interpretation_c.evidence,
-        )
-
-        b_to_d = create_supersession_record(
-            previous=interpretation_b,
-            new=interpretation_d,
-            reason_evidence=interpretation_d.evidence,
-        )
-
-        terminal_ids = resolve_lineage_terminal_ids(
-            interpretation_id=interpretation_a.interpretation_id,
-            supersessions=(a_to_b, a_to_c, b_to_d),
-        )
-
-        self.assertEqual(
-            terminal_ids,
-            frozenset(
-                {
-                    "interpretation-028",
-                    "interpretation-029",
-                }
+        edges = (
+            create_supersession_record(
+                previous=a,
+                new=b,
+                reason_evidence=b.evidence,
             ),
+            create_supersession_record(
+                previous=b,
+                new=c,
+                reason_evidence=c.evidence,
+            ),
+        )
+
+        self.assertEqual(
+            resolve_connected_component_terminal_ids(
+                interpretation_id=b.interpretation_id,
+                supersessions=edges,
+            ),
+            frozenset({c.interpretation_id}),
         )
 
     def test_cycle_is_rejected(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-030",
-            text="A。",
-            source_id="message-033",
-            source_text="A 的证据。",
-        )
-
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-031",
-            text="B。",
-            source_id="message-034",
-            source_text="B 的证据。",
-        )
+        a = self._make_interpretation("interpretation-026", "message-029")
+        b = self._make_interpretation("interpretation-027", "message-030")
 
         a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
+            previous=a,
+            new=b,
+            reason_evidence=b.evidence,
         )
-
         b_to_a = create_supersession_record(
-            previous=interpretation_b,
-            new=interpretation_a,
-            reason_evidence=interpretation_a.evidence,
+            previous=b,
+            new=a,
+            reason_evidence=a.evidence,
         )
 
         with self.assertRaises(ValueError):
-            resolve_lineage_terminal_ids(
-                interpretation_id=interpretation_a.interpretation_id,
+            validate_supersession_graph(
                 supersessions=(a_to_b, b_to_a),
             )
 
-    def test_duplicate_supersession_edge_is_rejected(self) -> None:
-        interpretation_a = self._make_interpretation(
-            interpretation_id="interpretation-032",
-            text="A。",
-            source_id="message-035",
-            source_text="A 的证据。",
-        )
-
-        interpretation_b = self._make_interpretation(
-            interpretation_id="interpretation-033",
-            text="B。",
-            source_id="message-036",
-            source_text="B 的证据。",
-        )
-
-        a_to_b = create_supersession_record(
-            previous=interpretation_a,
-            new=interpretation_b,
-            reason_evidence=interpretation_b.evidence,
+    def test_duplicate_edge_is_rejected(self) -> None:
+        a = self._make_interpretation("interpretation-028", "message-031")
+        b = self._make_interpretation("interpretation-029", "message-032")
+        edge = create_supersession_record(
+            previous=a,
+            new=b,
+            reason_evidence=b.evidence,
         )
 
         with self.assertRaises(ValueError):
-            resolve_lineage_terminal_ids(
-                interpretation_id=interpretation_a.interpretation_id,
-                supersessions=(a_to_b, a_to_b),
+            validate_supersession_graph(
+                supersessions=(edge, edge),
             )
 
-    def _make_interpretation(
-        self,
-        *,
-        interpretation_id,
-        text,
-        source_id,
-        source_text,
-    ):
+    def test_implicit_merge_is_rejected(self) -> None:
+        a = self._make_interpretation("interpretation-030", "message-033")
+        b = self._make_interpretation("interpretation-031", "message-034")
+        c = self._make_interpretation("interpretation-032", "message-035")
+        d = self._make_interpretation("interpretation-033", "message-036")
+
+        edges = (
+            create_supersession_record(
+                previous=a,
+                new=b,
+                reason_evidence=b.evidence,
+            ),
+            create_supersession_record(
+                previous=a,
+                new=c,
+                reason_evidence=c.evidence,
+            ),
+            create_supersession_record(
+                previous=b,
+                new=d,
+                reason_evidence=d.evidence,
+            ),
+            create_supersession_record(
+                previous=c,
+                new=d,
+                reason_evidence=d.evidence,
+            ),
+        )
+
+        with self.assertRaises(ValueError):
+            validate_supersession_graph(supersessions=edges)
+
+    def _make_interpretation(self, interpretation_id, source_id):
         source = create_source_record(
             source_id=source_id,
-            content=source_text,
+            content=f"evidence for {interpretation_id}",
             authored_by="vivi",
             scope="shared",
         )
-
         evidence = create_evidence_ref(
             source=source,
             start_char=0,
             end_char=len(source.content),
         )
-
         return create_interpretation_record(
             interpretation_id=interpretation_id,
-            text=text,
+            text=f"interpretation {interpretation_id}",
             perspective_owner="lior",
             about_subject="vivi",
             scope="shared",

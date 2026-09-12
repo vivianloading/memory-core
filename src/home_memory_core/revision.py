@@ -23,6 +23,13 @@ def create_supersession_record(
         raise ValueError(
             "supersession must stay within the same perspective owner"
         )
+    if (
+        previous.perspective_instance_id
+        != new.perspective_instance_id
+    ):
+        raise ValueError(
+            "supersession must stay within the same perspective instance"
+        )
     if previous.about_subject != new.about_subject:
         raise ValueError(
             "supersession must stay about the same subject"

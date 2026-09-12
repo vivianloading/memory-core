@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 from uuid import uuid4
 
-from home_memory_core.interpretation import InterpretationRecord
+from home_memory_core.interpretation import (
+    InterpretationRecord,
+    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,12 @@ def create_interpretation_thread(
         if not value.strip():
             raise ValueError(f"{field_name} cannot be empty")
 
+    if perspective_instance_id == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID:
+        raise ValueError(
+            "a real interpretation thread needs a concrete "
+            "perspective instance"
+        )
+
     return InterpretationThread(
         thread_id=f"thread-{uuid4().hex}",
         question=question,
@@ -73,6 +82,15 @@ def create_thread_admission(
         raise ValueError(
             "thread admission must stay within "
             "the thread perspective owner"
+        )
+
+    if (
+        interpretation.perspective_instance_id
+        != thread.perspective_instance_id
+    ):
+        raise ValueError(
+            "thread admission must stay within "
+            "the thread perspective instance"
         )
 
     if interpretation.about_subject != thread.about_subject:
