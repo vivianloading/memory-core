@@ -21,6 +21,10 @@ from home_memory_core.interpretation import (
 from home_memory_core.revision import SupersessionRecord
 from home_memory_core.source import SourceRecord
 from home_memory_core.state import validate_supersession_graph
+from home_memory_core.store_domain import (
+    assert_synthetic_store_domain,
+    ensure_synthetic_store_domain,
+)
 from home_memory_core.suppression import (
     SuppressedMemoryError,
     SuppressionRecord,
@@ -74,7 +78,11 @@ class MemoryStore:
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with self._connection() as connection:
+        # MemoryStore remains the synthetic-domain storage API in Task #06a.0.
+        # Existing pre-real-data HOME databases may be marked synthetic here,
+        # but a database already marked real is never downgraded or adopted.
+        with self._unverified_connection() as connection:
+            ensure_synthetic_store_domain(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
@@ -840,6 +848,17 @@ class MemoryStore:
             connection.close()
 
     @contextmanager
+    def _unverified_connection(self) -> Iterator[sqlite3.Connection]:
+        """Initialization-only connection before a domain marker exists."""
+        connection = self._connect_raw()
+
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    @contextmanager
     def _read_snapshot(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect()
 
@@ -853,6 +872,15 @@ class MemoryStore:
             connection.close()
 
     def _connect(self) -> sqlite3.Connection:
+        connection = self._connect_raw()
+        try:
+            assert_synthetic_store_domain(connection)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def _connect_raw(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
