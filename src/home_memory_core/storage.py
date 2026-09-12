@@ -5,6 +5,11 @@ from hashlib import sha256
 from pathlib import Path
 
 from home_memory_core.evidence import EvidenceRef
+from home_memory_core.lineage import (
+    LineageIntegrityError,
+    LineageResolutionInput,
+    _create_store_assembled_input,
+)
 from home_memory_core.interpretation import (
     InterpretationRecord,
     SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
@@ -528,69 +533,26 @@ class MemoryStore:
         self,
         thread_id: str,
     ) -> ThreadTopology:
-        with self._connection() as connection:
-            self._get_thread_from_connection(
+        with self._read_snapshot() as connection:
+            return self._get_thread_topology_from_connection(
                 connection=connection,
                 thread_id=thread_id,
             )
 
-            interpretation_rows = connection.execute(
-                """
-                SELECT interpretation_id
-                FROM interpretation_thread_memberships
-                WHERE thread_id = ?
-                ORDER BY rowid
-                """,
-                (thread_id,),
-            ).fetchall()
+    def get_lineage_resolution_input(
+        self,
+        thread_id: str,
+    ) -> LineageResolutionInput:
+        """Assemble one complete, payload-free thread snapshot.
 
-            touching_edge_rows = connection.execute(
-                """
-                SELECT
-                    supersessions.previous_interpretation_id,
-                    supersessions.new_interpretation_id,
-                    previous_membership.thread_id AS previous_thread_id,
-                    new_membership.thread_id AS new_thread_id
-                FROM supersessions
-                LEFT JOIN interpretation_thread_memberships
-                    AS previous_membership
-                    ON previous_membership.interpretation_id
-                    = supersessions.previous_interpretation_id
-                LEFT JOIN interpretation_thread_memberships
-                    AS new_membership
-                    ON new_membership.interpretation_id
-                    = supersessions.new_interpretation_id
-                WHERE
-                    previous_membership.thread_id = ?
-                    OR new_membership.thread_id = ?
-                ORDER BY supersessions.rowid
-                """,
-                (thread_id, thread_id),
-            ).fetchall()
-
-            for row in touching_edge_rows:
-                if (
-                    row["previous_thread_id"] != thread_id
-                    or row["new_thread_id"] != thread_id
-                ):
-                    raise ValueError(
-                        "thread topology is not closed under "
-                        "known supersession edges"
-                    )
-
-            return ThreadTopology(
+        Membership, revision topology, required evidence dependencies, and
+        current source-suppression state are read in one explicit SQLite read
+        transaction. Any known structural incompleteness fails closed.
+        """
+        with self._read_snapshot() as connection:
+            return self._build_lineage_resolution_input_from_connection(
+                connection=connection,
                 thread_id=thread_id,
-                interpretation_ids=frozenset(
-                    row["interpretation_id"]
-                    for row in interpretation_rows
-                ),
-                supersession_edges=frozenset(
-                    (
-                        row["previous_interpretation_id"],
-                        row["new_interpretation_id"],
-                    )
-                    for row in touching_edge_rows
-                ),
             )
 
     def add_supersession(
@@ -825,6 +787,19 @@ class MemoryStore:
         finally:
             connection.close()
 
+    @contextmanager
+    def _read_snapshot(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("BEGIN")
+            yield connection
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
@@ -1005,6 +980,309 @@ class MemoryStore:
             about_subject=row["about_subject"],
             scope=row["scope"],
             evidence=evidence,
+        )
+
+    def _get_thread_topology_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        thread_id: str,
+    ) -> ThreadTopology:
+        self._get_thread_from_connection(
+            connection=connection,
+            thread_id=thread_id,
+        )
+
+        interpretation_rows = connection.execute(
+            """
+            SELECT interpretation_id
+            FROM interpretation_thread_memberships
+            WHERE thread_id = ?
+            ORDER BY rowid
+            """,
+            (thread_id,),
+        ).fetchall()
+
+        touching_edge_rows = connection.execute(
+            """
+            SELECT
+                supersessions.previous_interpretation_id,
+                supersessions.new_interpretation_id,
+                previous_membership.thread_id AS previous_thread_id,
+                new_membership.thread_id AS new_thread_id
+            FROM supersessions
+            LEFT JOIN interpretation_thread_memberships
+                AS previous_membership
+                ON previous_membership.interpretation_id
+                = supersessions.previous_interpretation_id
+            LEFT JOIN interpretation_thread_memberships
+                AS new_membership
+                ON new_membership.interpretation_id
+                = supersessions.new_interpretation_id
+            WHERE
+                previous_membership.thread_id = ?
+                OR new_membership.thread_id = ?
+            ORDER BY supersessions.rowid
+            """,
+            (thread_id, thread_id),
+        ).fetchall()
+
+        for row in touching_edge_rows:
+            if (
+                row["previous_thread_id"] != thread_id
+                or row["new_thread_id"] != thread_id
+            ):
+                raise LineageIntegrityError(
+                    "thread topology is not closed under known supersession edges"
+                )
+
+        return ThreadTopology(
+            thread_id=thread_id,
+            interpretation_ids=frozenset(
+                row["interpretation_id"]
+                for row in interpretation_rows
+            ),
+            supersession_edges=frozenset(
+                (
+                    row["previous_interpretation_id"],
+                    row["new_interpretation_id"],
+                )
+                for row in touching_edge_rows
+            ),
+        )
+
+    def _build_lineage_resolution_input_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        thread_id: str,
+    ) -> LineageResolutionInput:
+        thread = self._get_thread_from_connection(
+            connection=connection,
+            thread_id=thread_id,
+        )
+
+        member_rows = connection.execute(
+            """
+            SELECT
+                memberships.interpretation_id,
+                memberships.perspective_instance_id AS admission_instance_id,
+                memberships.admitted_by_instance_id,
+                interpretations.perspective_owner,
+                interpretations.perspective_instance_id,
+                interpretations.about_subject,
+                interpretations.scope
+            FROM interpretation_thread_memberships AS memberships
+            JOIN interpretations
+                ON interpretations.interpretation_id
+                = memberships.interpretation_id
+            WHERE memberships.thread_id = ?
+            ORDER BY memberships.rowid
+            """,
+            (thread_id,),
+        ).fetchall()
+
+        interpretation_ids = frozenset(
+            row["interpretation_id"]
+            for row in member_rows
+        )
+
+        for row in member_rows:
+            if (
+                not row["admitted_by_instance_id"].strip()
+                or row["perspective_owner"] != thread.perspective_owner
+                or row["perspective_instance_id"]
+                != thread.perspective_instance_id
+                or row["admission_instance_id"]
+                != thread.perspective_instance_id
+                or row["about_subject"] != thread.about_subject
+                or row["scope"] != thread.scope
+                or row["perspective_instance_id"]
+                == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+            ):
+                raise LineageIntegrityError(
+                    "thread membership metadata is internally inconsistent"
+                )
+
+        topology = self._get_thread_topology_from_connection(
+            connection=connection,
+            thread_id=thread_id,
+        )
+
+        if topology.interpretation_ids != interpretation_ids:
+            raise LineageIntegrityError(
+                "thread membership changed during snapshot assembly"
+            )
+
+        evidence_rows = connection.execute(
+            """
+            SELECT
+                memberships.interpretation_id,
+                COUNT(evidence.position) AS evidence_count,
+                COUNT(sources.source_id) AS source_count,
+                MAX(
+                    CASE
+                        WHEN evidence.source_sha256 != sources.content_sha256
+                        THEN 1 ELSE 0
+                    END
+                ) AS hash_metadata_mismatch,
+                MAX(
+                    CASE
+                        WHEN sources.scope != ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS scope_mismatch,
+                MAX(
+                    CASE
+                        WHEN suppressions.source_id IS NOT NULL
+                        THEN 1 ELSE 0
+                    END
+                ) AS blocked
+            FROM interpretation_thread_memberships AS memberships
+            LEFT JOIN interpretation_evidence AS evidence
+                ON evidence.interpretation_id
+                = memberships.interpretation_id
+            LEFT JOIN sources
+                ON sources.source_id = evidence.source_id
+            LEFT JOIN source_suppressions AS suppressions
+                ON suppressions.source_id = evidence.source_id
+            WHERE memberships.thread_id = ?
+            GROUP BY memberships.interpretation_id
+            ORDER BY memberships.rowid
+            """,
+            (thread.scope, thread_id),
+        ).fetchall()
+
+        if len(evidence_rows) != len(interpretation_ids):
+            raise LineageIntegrityError(
+                "thread evidence view is incomplete"
+            )
+
+        blocked_interpretation_ids: set[str] = set()
+
+        for row in evidence_rows:
+            if row["evidence_count"] <= 0:
+                raise LineageIntegrityError(
+                    "thread interpretation is missing required evidence"
+                )
+            if row["source_count"] != row["evidence_count"]:
+                raise LineageIntegrityError(
+                    "thread interpretation references a missing source"
+                )
+            if row["hash_metadata_mismatch"]:
+                raise LineageIntegrityError(
+                    "thread evidence source hash metadata does not match"
+                )
+            if row["scope_mismatch"]:
+                raise LineageIntegrityError(
+                    "thread evidence crosses the thread scope boundary"
+                )
+            if row["blocked"]:
+                blocked_interpretation_ids.add(
+                    row["interpretation_id"]
+                )
+
+        edge_rows = connection.execute(
+            """
+            SELECT
+                supersessions.previous_interpretation_id,
+                supersessions.new_interpretation_id,
+                COUNT(evidence.position) AS evidence_count,
+                COUNT(sources.source_id) AS source_count,
+                MAX(
+                    CASE
+                        WHEN evidence.source_sha256 != sources.content_sha256
+                        THEN 1 ELSE 0
+                    END
+                ) AS hash_metadata_mismatch,
+                MAX(
+                    CASE
+                        WHEN sources.scope != ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS scope_mismatch,
+                MAX(
+                    CASE
+                        WHEN suppressions.source_id IS NOT NULL
+                        THEN 1 ELSE 0
+                    END
+                ) AS blocked
+            FROM supersessions
+            JOIN interpretation_thread_memberships AS previous_membership
+                ON previous_membership.interpretation_id
+                = supersessions.previous_interpretation_id
+            JOIN interpretation_thread_memberships AS new_membership
+                ON new_membership.interpretation_id
+                = supersessions.new_interpretation_id
+            LEFT JOIN supersession_evidence AS evidence
+                ON evidence.previous_interpretation_id
+                = supersessions.previous_interpretation_id
+                AND evidence.new_interpretation_id
+                = supersessions.new_interpretation_id
+            LEFT JOIN sources
+                ON sources.source_id = evidence.source_id
+            LEFT JOIN source_suppressions AS suppressions
+                ON suppressions.source_id = evidence.source_id
+            WHERE
+                previous_membership.thread_id = ?
+                AND new_membership.thread_id = ?
+            GROUP BY
+                supersessions.previous_interpretation_id,
+                supersessions.new_interpretation_id
+            ORDER BY supersessions.rowid
+            """,
+            (thread.scope, thread_id, thread_id),
+        ).fetchall()
+
+        edges_from_rows = frozenset(
+            (
+                row["previous_interpretation_id"],
+                row["new_interpretation_id"],
+            )
+            for row in edge_rows
+        )
+
+        if edges_from_rows != topology.supersession_edges:
+            raise LineageIntegrityError(
+                "thread revision edge view is incomplete"
+            )
+
+        blocked_supersession_edges: set[tuple[str, str]] = set()
+
+        for row in edge_rows:
+            edge = (
+                row["previous_interpretation_id"],
+                row["new_interpretation_id"],
+            )
+            if row["evidence_count"] <= 0:
+                raise LineageIntegrityError(
+                    "thread supersession is missing required reason evidence"
+                )
+            if row["source_count"] != row["evidence_count"]:
+                raise LineageIntegrityError(
+                    "thread supersession references a missing source"
+                )
+            if row["hash_metadata_mismatch"]:
+                raise LineageIntegrityError(
+                    "thread supersession source hash metadata does not match"
+                )
+            if row["scope_mismatch"]:
+                raise LineageIntegrityError(
+                    "thread supersession evidence crosses the scope boundary"
+                )
+            if row["blocked"]:
+                blocked_supersession_edges.add(edge)
+
+        return _create_store_assembled_input(
+            thread_id=thread_id,
+            interpretation_ids=interpretation_ids,
+            supersession_edges=topology.supersession_edges,
+            blocked_interpretation_ids=frozenset(
+                blocked_interpretation_ids
+            ),
+            blocked_supersession_edges=frozenset(
+                blocked_supersession_edges
+            ),
         )
 
     def _get_thread_from_connection(
