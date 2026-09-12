@@ -95,6 +95,65 @@ class InterpretationStateTest(unittest.TestCase):
             ),
             "current",
         )
+    def test_branching_revisions_are_conflicting(self) -> None:
+        interpretation_a = self._make_interpretation(
+            interpretation_id="interpretation-016",
+            text="A：最初的理解。",
+            source_id="message-019",
+            source_text="最初的证据。",
+        )
+
+        interpretation_b = self._make_interpretation(
+            interpretation_id="interpretation-017",
+            text="B：第一种修订。",
+            source_id="message-020",
+            source_text="支持 B 的新证据。",
+        )
+
+        interpretation_c = self._make_interpretation(
+            interpretation_id="interpretation-018",
+            text="C：另一种修订。",
+            source_id="message-021",
+            source_text="支持 C 的新证据。",
+        )
+
+        a_to_b = create_supersession_record(
+            previous=interpretation_a,
+            new=interpretation_b,
+            reason_evidence=interpretation_b.evidence,
+        )
+
+        a_to_c = create_supersession_record(
+            previous=interpretation_a,
+            new=interpretation_c,
+            reason_evidence=interpretation_c.evidence,
+        )
+
+        supersessions = (a_to_b, a_to_c)
+
+        self.assertEqual(
+            resolve_interpretation_status(
+                interpretation=interpretation_a,
+                supersessions=supersessions,
+            ),
+            "superseded",
+        )
+
+        self.assertEqual(
+            resolve_interpretation_status(
+                interpretation=interpretation_b,
+                supersessions=supersessions,
+            ),
+            "conflicting",
+        )
+
+        self.assertEqual(
+            resolve_interpretation_status(
+                interpretation=interpretation_c,
+                supersessions=supersessions,
+            ),
+            "conflicting",
+        )
 
     def _make_interpretation(
         self,
