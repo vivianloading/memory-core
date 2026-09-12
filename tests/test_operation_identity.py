@@ -7,9 +7,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+from home_memory_core.identity_namespaces import DestinationId, RequestId
 from home_memory_core.operation_identity import (
     AuthenticatedPrincipal,
     AuthenticationBoundaryError,
+    OperationClass,
     OperationContext,
     PrincipalId,
     TrustedPrincipalIssuer,
@@ -65,19 +67,19 @@ class OperationIdentityBoundaryTest(unittest.TestCase):
 
         first = create_operation_context(
             principal=principal,
-            operation_class="source.write",
-            request_id="request-001",
+            operation_class=OperationClass.SOURCE_WRITE,
+            request_id=RequestId("request-001"),
         )
         second = create_operation_context(
             principal=principal,
-            operation_class="source.write",
-            request_id="request-001",
+            operation_class=OperationClass.SOURCE_WRITE,
+            request_id=RequestId("request-001"),
         )
 
         self.assertTrue(first.operation_id.startswith("operation-"))
         self.assertNotEqual(first.operation_id, second.operation_id)
         self.assertIs(first.principal, principal)
-        self.assertEqual(first.request_id, "request-001")
+        self.assertEqual(first.request_id, RequestId("request-001"))
 
     def test_caller_cannot_directly_mint_operation_context(self) -> None:
         issuer = trusted_test_principal_issuer()
@@ -90,14 +92,14 @@ class OperationIdentityBoundaryTest(unittest.TestCase):
             OperationContext(
                 operation_id="caller-chosen-operation-id",
                 principal=principal,
-                operation_class="source.write",
+                operation_class=OperationClass.SOURCE_WRITE,
             )
 
     def test_operation_context_rejects_non_authenticated_principal(self) -> None:
         with self.assertRaises(AuthenticationBoundaryError):
             create_operation_context(
                 principal="vivi",  # type: ignore[arg-type]
-                operation_class="source.write",
+                operation_class=OperationClass.SOURCE_WRITE,
             )
 
     def test_operation_context_is_identity_not_authorization(self) -> None:
@@ -108,11 +110,58 @@ class OperationIdentityBoundaryTest(unittest.TestCase):
         )
         context = create_operation_context(
             principal=principal,
-            operation_class="source.read",
+            operation_class=OperationClass.DISCOVERY_READ,
         )
 
         self.assertFalse(hasattr(context, "authorized"))
         self.assertFalse(hasattr(context, "allow"))
+
+    def test_operation_context_rejects_caller_supplied_raw_operation_string(self) -> None:
+        issuer = trusted_test_principal_issuer()
+        principal = issuer.issue(
+            principal_id=PrincipalId("vivi"),
+            principal_kind="local_owner",
+        )
+
+        with self.assertRaises(AuthenticationBoundaryError):
+            create_operation_context(
+                principal=principal,
+                operation_class="source.write",  # type: ignore[arg-type]
+            )
+
+    def test_request_and_destination_use_separate_typed_namespaces(self) -> None:
+        issuer = trusted_test_principal_issuer()
+        principal = issuer.issue(
+            principal_id=PrincipalId("vivi"),
+            principal_kind="local_owner",
+        )
+
+        context = create_operation_context(
+            principal=principal,
+            operation_class=OperationClass.MEMORY_DELIVER,
+            request_id=RequestId("request-001"),
+            destination_id=DestinationId("local-chat-session-001"),
+        )
+
+        self.assertEqual(context.request_id, RequestId("request-001"))
+        self.assertEqual(
+            context.destination_id,
+            DestinationId("local-chat-session-001"),
+        )
+
+        with self.assertRaises(AuthenticationBoundaryError):
+            create_operation_context(
+                principal=principal,
+                operation_class=OperationClass.MEMORY_DELIVER,
+                request_id="request-001",  # type: ignore[arg-type]
+            )
+
+        with self.assertRaises(AuthenticationBoundaryError):
+            create_operation_context(
+                principal=principal,
+                operation_class=OperationClass.MEMORY_DELIVER,
+                destination_id="local-chat-session-001",  # type: ignore[arg-type]
+            )
 
 
 if __name__ == "__main__":
