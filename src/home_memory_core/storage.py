@@ -11,6 +11,12 @@ from home_memory_core.interpretation import (
 from home_memory_core.revision import SupersessionRecord
 from home_memory_core.source import SourceRecord
 from home_memory_core.state import validate_supersession_graph
+from home_memory_core.suppression import (
+    SuppressedMemoryError,
+    SuppressionRecord,
+    is_interpretation_usable as interpretation_is_usable,
+    is_supersession_usable as supersession_is_usable,
+)
 
 
 class MemoryStore:
@@ -20,7 +26,7 @@ class MemoryStore:
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
@@ -29,6 +35,17 @@ class MemoryStore:
                     authored_by TEXT NOT NULL,
                     scope TEXT NOT NULL,
                     content_sha256 TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS source_suppressions (
+                    suppression_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL UNIQUE,
+                    requested_by TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+
+                    FOREIGN KEY (source_id)
+                        REFERENCES sources(source_id)
+                        ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS interpretations (
@@ -112,7 +129,7 @@ class MemoryStore:
             )
 
     def add_source(self, source: SourceRecord) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             try:
                 connection.execute(
                     """
@@ -139,31 +156,83 @@ class MemoryStore:
                 ) from error
 
     def get_source(self, source_id: str) -> SourceRecord:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT
-                    source_id,
-                    content,
-                    authored_by,
-                    scope,
-                    content_sha256
-                FROM sources
-                WHERE source_id = ?
-                """,
-                (source_id,),
-            ).fetchone()
-
-            if row is None:
-                raise KeyError(source_id)
-
-            return SourceRecord(
-                source_id=row["source_id"],
-                content=row["content"],
-                authored_by=row["authored_by"],
-                scope=row["scope"],
-                content_sha256=row["content_sha256"],
+        with self._connection() as connection:
+            source = self._get_source_from_connection(
+                connection=connection,
+                source_id=source_id,
             )
+
+            suppressed_ids = self._get_suppressed_source_ids_from_connection(
+                connection=connection,
+            )
+
+            if source.source_id in suppressed_ids:
+                raise SuppressedMemoryError(
+                    "source is suppressed and cannot be used"
+                )
+
+            return source
+
+    def get_source_for_audit(self, source_id: str) -> SourceRecord:
+        with self._connection() as connection:
+            return self._get_source_from_connection(
+                connection=connection,
+                source_id=source_id,
+            )
+
+    def suppress_source(
+        self,
+        suppression: SuppressionRecord,
+    ) -> None:
+        with self._connection() as connection:
+            self._get_source_from_connection(
+                connection=connection,
+                source_id=suppression.source_id,
+            )
+
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO source_suppressions (
+                        suppression_id,
+                        source_id,
+                        requested_by,
+                        reason
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        suppression.suppression_id,
+                        suppression.source_id,
+                        suppression.requested_by,
+                        suppression.reason,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError(
+                    "source suppression could not be stored"
+                ) from error
+
+    def get_suppressions(
+        self,
+    ) -> tuple[SuppressionRecord, ...]:
+        with self._connection() as connection:
+            return self._get_suppressions_from_connection(
+                connection=connection,
+            )
+
+    def is_source_usable(self, source_id: str) -> bool:
+        with self._connection() as connection:
+            self._get_source_from_connection(
+                connection=connection,
+                source_id=source_id,
+            )
+
+            suppressed_ids = self._get_suppressed_source_ids_from_connection(
+                connection=connection,
+            )
+
+            return source_id not in suppressed_ids
 
     def add_interpretation(
         self,
@@ -174,12 +243,22 @@ class MemoryStore:
                 "interpretation must have at least one evidence reference"
             )
 
-        with self._connect() as connection:
+        with self._connection() as connection:
+            suppressed_ids = self._get_suppressed_source_ids_from_connection(
+                connection=connection,
+            )
+
             for evidence in interpretation.evidence:
                 self._validate_evidence_against_stored_source(
                     connection=connection,
                     evidence=evidence,
                 )
+
+                if evidence.source_id in suppressed_ids:
+                    raise SuppressedMemoryError(
+                        "cannot create an interpretation from "
+                        "a suppressed source"
+                    )
 
             try:
                 connection.execute(
@@ -236,10 +315,53 @@ class MemoryStore:
         self,
         interpretation_id: str,
     ) -> InterpretationRecord:
-        with self._connect() as connection:
+        with self._connection() as connection:
+            interpretation = self._get_interpretation_from_connection(
+                connection=connection,
+                interpretation_id=interpretation_id,
+            )
+
+            suppressions = self._get_suppressions_from_connection(
+                connection=connection,
+            )
+
+            if not interpretation_is_usable(
+                interpretation=interpretation,
+                suppressions=suppressions,
+            ):
+                raise SuppressedMemoryError(
+                    "interpretation is suppressed and cannot be used"
+                )
+
+            return interpretation
+
+    def get_interpretation_for_audit(
+        self,
+        interpretation_id: str,
+    ) -> InterpretationRecord:
+        with self._connection() as connection:
             return self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=interpretation_id,
+            )
+
+    def is_interpretation_usable(
+        self,
+        interpretation_id: str,
+    ) -> bool:
+        with self._connection() as connection:
+            interpretation = self._get_interpretation_from_connection(
+                connection=connection,
+                interpretation_id=interpretation_id,
+            )
+
+            suppressions = self._get_suppressions_from_connection(
+                connection=connection,
+            )
+
+            return interpretation_is_usable(
+                interpretation=interpretation,
+                suppressions=suppressions,
             )
 
     def add_supersession(
@@ -249,7 +371,7 @@ class MemoryStore:
         if not supersession.reason_evidence:
             raise ValueError("supersession must have evidence")
 
-        with self._connect() as connection:
+        with self._connection() as connection:
             previous = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=(
@@ -287,6 +409,20 @@ class MemoryStore:
                 self._validate_evidence_against_stored_source(
                     connection=connection,
                     evidence=evidence,
+                )
+
+            suppressions = self._get_suppressions_from_connection(
+                connection=connection,
+            )
+
+            if not supersession_is_usable(
+                supersession=supersession,
+                previous=previous,
+                new=new,
+                suppressions=suppressions,
+            ):
+                raise SuppressedMemoryError(
+                    "cannot create a supersession from suppressed memory"
                 )
 
             existing_supersessions = (
@@ -352,25 +488,91 @@ class MemoryStore:
     def get_supersessions(
         self,
     ) -> tuple[SupersessionRecord, ...]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return self._get_supersessions_from_connection(
                 connection=connection,
             )
 
+    def is_supersession_usable(
+        self,
+        *,
+        previous_interpretation_id: str,
+        new_interpretation_id: str,
+    ) -> bool:
+        with self._connection() as connection:
+            supersession = self._get_supersession_from_connection(
+                connection=connection,
+                previous_interpretation_id=previous_interpretation_id,
+                new_interpretation_id=new_interpretation_id,
+            )
+
+            previous = self._get_interpretation_from_connection(
+                connection=connection,
+                interpretation_id=previous_interpretation_id,
+            )
+
+            new = self._get_interpretation_from_connection(
+                connection=connection,
+                interpretation_id=new_interpretation_id,
+            )
+
+            suppressions = self._get_suppressions_from_connection(
+                connection=connection,
+            )
+
+            return supersession_is_usable(
+                supersession=supersession,
+                previous=previous,
+                new=new,
+                suppressions=suppressions,
+            )
+
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        return connection
 
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+    def _get_source_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        source_id: str,
+    ) -> SourceRecord:
+        row = connection.execute(
+            """
+            SELECT
+                source_id,
+                content,
+                authored_by,
+                scope,
+                content_sha256
+            FROM sources
+            WHERE source_id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+
+        if row is None:
+            raise KeyError(source_id)
+
+        return SourceRecord(
+            source_id=row["source_id"],
+            content=row["content"],
+            authored_by=row["authored_by"],
+            scope=row["scope"],
+            content_sha256=row["content_sha256"],
+        )
 
     def _validate_evidence_against_stored_source(
         self,
@@ -472,6 +674,120 @@ class MemoryStore:
             evidence=evidence,
         )
 
+    def _get_suppressions_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+    ) -> tuple[SuppressionRecord, ...]:
+        rows = connection.execute(
+            """
+            SELECT
+                suppression_id,
+                source_id,
+                requested_by,
+                reason
+            FROM source_suppressions
+            ORDER BY rowid
+            """
+        ).fetchall()
+
+        return tuple(
+            SuppressionRecord(
+                suppression_id=row["suppression_id"],
+                source_id=row["source_id"],
+                requested_by=row["requested_by"],
+                reason=row["reason"],
+            )
+            for row in rows
+        )
+
+    def _get_suppressed_source_ids_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+    ) -> frozenset[str]:
+        rows = connection.execute(
+            """
+            SELECT source_id
+            FROM source_suppressions
+            """
+        ).fetchall()
+
+        return frozenset(
+            row["source_id"]
+            for row in rows
+        )
+
+    def _get_supersession_from_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        previous_interpretation_id: str,
+        new_interpretation_id: str,
+    ) -> SupersessionRecord:
+        row = connection.execute(
+            """
+            SELECT
+                previous_interpretation_id,
+                new_interpretation_id
+            FROM supersessions
+            WHERE
+                previous_interpretation_id = ?
+                AND new_interpretation_id = ?
+            """,
+            (
+                previous_interpretation_id,
+                new_interpretation_id,
+            ),
+        ).fetchone()
+
+        if row is None:
+            raise KeyError(
+                (
+                    previous_interpretation_id,
+                    new_interpretation_id,
+                )
+            )
+
+        evidence_rows = connection.execute(
+            """
+            SELECT
+                source_id,
+                source_sha256,
+                start_char,
+                end_char
+            FROM supersession_evidence
+            WHERE
+                previous_interpretation_id = ?
+                AND new_interpretation_id = ?
+            ORDER BY position
+            """,
+            (
+                previous_interpretation_id,
+                new_interpretation_id,
+            ),
+        ).fetchall()
+
+        return SupersessionRecord(
+            previous_interpretation_id=row[
+                "previous_interpretation_id"
+            ],
+            new_interpretation_id=row[
+                "new_interpretation_id"
+            ],
+            reason_evidence=tuple(
+                EvidenceRef(
+                    source_id=evidence_row["source_id"],
+                    source_sha256=evidence_row[
+                        "source_sha256"
+                    ],
+                    start_char=evidence_row["start_char"],
+                    end_char=evidence_row["end_char"],
+                )
+                for evidence_row in evidence_rows
+            ),
+        )
+
     def _get_supersessions_from_connection(
         self,
         *,
@@ -487,50 +803,15 @@ class MemoryStore:
             """
         ).fetchall()
 
-        supersessions = []
-
-        for row in rows:
-            evidence_rows = connection.execute(
-                """
-                SELECT
-                    source_id,
-                    source_sha256,
-                    start_char,
-                    end_char
-                FROM supersession_evidence
-                WHERE
-                    previous_interpretation_id = ?
-                    AND new_interpretation_id = ?
-                ORDER BY position
-                """,
-                (
-                    row["previous_interpretation_id"],
-                    row["new_interpretation_id"],
-                ),
-            ).fetchall()
-
-            reason_evidence = tuple(
-                EvidenceRef(
-                    source_id=evidence_row["source_id"],
-                    source_sha256=evidence_row[
-                        "source_sha256"
-                    ],
-                    start_char=evidence_row["start_char"],
-                    end_char=evidence_row["end_char"],
-                )
-                for evidence_row in evidence_rows
+        return tuple(
+            self._get_supersession_from_connection(
+                connection=connection,
+                previous_interpretation_id=row[
+                    "previous_interpretation_id"
+                ],
+                new_interpretation_id=row[
+                    "new_interpretation_id"
+                ],
             )
-
-            supersessions.append(
-                SupersessionRecord(
-                    previous_interpretation_id=row[
-                        "previous_interpretation_id"
-                    ],
-                    new_interpretation_id=row[
-                        "new_interpretation_id"
-                    ],
-                    reason_evidence=reason_evidence,
-                )
-            )
-
-        return tuple(supersessions)
+            for row in rows
+        )
