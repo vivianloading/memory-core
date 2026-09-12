@@ -5,6 +5,7 @@ from hashlib import sha256
 from typing import Callable
 from uuid import uuid4
 
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.storage import MemoryStore
 
 
@@ -107,8 +108,18 @@ class SourceLinkedReadOnlyDiscovery:
             """
             SELECT
                 memberships.thread_id,
+                memberships.admission_id,
+                memberships.perspective_instance_id AS admission_instance_id,
+                memberships.admitted_by_instance_id,
                 interpretations.interpretation_id,
+                interpretations.perspective_owner AS interpretation_owner,
+                interpretations.perspective_instance_id AS interpretation_instance_id,
+                interpretations.about_subject AS interpretation_subject,
                 interpretations.scope AS interpretation_scope,
+                threads.perspective_owner AS thread_owner,
+                threads.perspective_instance_id AS thread_instance_id,
+                threads.about_subject AS thread_subject,
+                threads.scope AS thread_scope,
                 evidence.position,
                 evidence.source_id,
                 evidence.source_sha256,
@@ -121,6 +132,8 @@ class SourceLinkedReadOnlyDiscovery:
             JOIN interpretations
                 ON interpretations.interpretation_id
                 = memberships.interpretation_id
+            JOIN interpretation_threads AS threads
+                ON threads.thread_id = memberships.thread_id
             JOIN interpretation_evidence AS evidence
                 ON evidence.interpretation_id
                 = interpretations.interpretation_id
@@ -141,6 +154,22 @@ class SourceLinkedReadOnlyDiscovery:
         for row in metadata_rows:
             interpretation_id = row["interpretation_id"]
             thread_id = row["thread_id"]
+
+            if (
+                not row["admission_id"].strip()
+                or not row["admitted_by_instance_id"].strip()
+                or row["interpretation_owner"] != row["thread_owner"]
+                or row["interpretation_instance_id"] != row["thread_instance_id"]
+                or row["admission_instance_id"] != row["thread_instance_id"]
+                or row["interpretation_subject"] != row["thread_subject"]
+                or row["interpretation_scope"] != row["thread_scope"]
+                or row["interpretation_instance_id"]
+                == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+            ):
+                raise SourceDiscoveryIntegrityError(
+                    "thread membership metadata is internally inconsistent"
+                )
+
             previous_thread_id = thread_by_interpretation.get(interpretation_id)
             if previous_thread_id is not None and previous_thread_id != thread_id:
                 raise SourceDiscoveryIntegrityError(

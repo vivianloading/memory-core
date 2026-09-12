@@ -137,6 +137,52 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
         result = self._publish(query="Miyakojima")
         self.assertEqual(result.thread_ids, ())
 
+    def test_inconsistent_thread_membership_metadata_aborts_discovery(self) -> None:
+        original_thread, interpretation, _source = self._thread_with_single_evidence(
+            interpretation_id="i-membership-integrity",
+            content="needle",
+            start=0,
+            end=6,
+        )
+        incompatible_thread = create_interpretation_thread(
+            question="Incompatible synthetic thread",
+            perspective_owner="other-owner",
+            perspective_instance_id="other-instance",
+            about_subject="other-subject",
+            scope="shared",
+        )
+        self.store.add_thread(incompatible_thread)
+
+        with self.store._connection() as connection:
+            connection.execute(
+                """
+                UPDATE interpretation_thread_memberships
+                SET thread_id = ?,
+                    perspective_instance_id = ?,
+                    admitted_by_instance_id = ?
+                WHERE interpretation_id = ?
+                """,
+                (
+                    incompatible_thread.thread_id,
+                    incompatible_thread.perspective_instance_id,
+                    incompatible_thread.perspective_instance_id,
+                    interpretation.interpretation_id,
+                ),
+            )
+
+        gate = SourceLinkedReadOnlyDiscovery(self.store)
+        called = False
+
+        def handoff(_result):
+            nonlocal called
+            called = True
+
+        with self.assertRaises(SourceDiscoveryIntegrityError):
+            gate.handoff(query="needle", result_handoff=handoff)
+
+        self.assertFalse(called)
+        self.assertNotEqual(original_thread.thread_id, incompatible_thread.thread_id)
+
     def test_unadmitted_interpretation_cannot_create_discovery_hit(self) -> None:
         source = self._add_source("s-unadmitted", "Miyakojima")
         self._add_interpretation(
