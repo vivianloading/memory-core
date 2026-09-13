@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
-from home_memory_core.evidence import create_evidence_ref, read_evidence
-from home_memory_core.source import create_source_record
+from home_memory_core.evidence import EvidenceRef, create_evidence_ref, read_evidence
+from home_memory_core.source import SourceRecord, create_source_record
 
 
 class EvidenceRefTest(unittest.TestCase):
@@ -60,6 +60,43 @@ class EvidenceRefTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             read_evidence(source=changed, evidence=evidence)
+
+
+    def test_read_evidence_rejects_source_record_with_self_inconsistent_hash(self) -> None:
+        source = SourceRecord(
+            source_id="message-manual",
+            content="new",
+            authored_by="vivi",
+            scope="shared",
+            content_sha256="cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",  # sha256("old")
+        )
+        evidence = EvidenceRef(
+            source_id="message-manual",
+            source_sha256=source.content_sha256,
+            start_char=0,
+            end_char=3,
+        )
+
+        with self.assertRaises(ValueError):
+            read_evidence(source=source, evidence=evidence)
+
+    def test_read_evidence_rejects_range_outside_current_source_content(self) -> None:
+        source = create_source_record(
+            source_id="message-range",
+            content="abc",
+            authored_by="vivi",
+            scope="shared",
+        )
+        evidence = EvidenceRef(
+            source_id=source.source_id,
+            source_sha256=source.content_sha256,
+            start_char=0,
+            end_char=99,
+        )
+
+        with self.assertRaises(ValueError):
+            read_evidence(source=source, evidence=evidence)
+
 
 
 if __name__ == "__main__":

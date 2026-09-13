@@ -476,6 +476,7 @@ class ClosedRealAuthorizedDiscovery:
                 raise RealDiscoveryIntegrityError(
                     "authorized interpretation evidence positions are incomplete"
                 )
+            matched = False
             for row in interpretation_rows:
                 if row[0] != thread_id:
                     raise RealDiscoveryIntegrityError(
@@ -515,7 +516,12 @@ class ClosedRealAuthorizedDiscovery:
                     )
                 exact_span = content[start_char:end_char]
                 if query in exact_span:
-                    return True
+                    matched = True
+            if matched:
+                # Matching is published only after every required evidence row for
+                # this interpretation has passed integrity validation.  A match in
+                # an early span cannot short-circuit validation of later support.
+                return True
         return False
 
     def _validate_exact_evidence_row(

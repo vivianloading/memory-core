@@ -578,6 +578,54 @@ class ClosedRealAuthorizedDiscoveryTests(unittest.TestCase):
                 query="needle",
             )
 
+
+    def test_matching_early_evidence_does_not_skip_later_integrity_validation(self) -> None:
+        first = self._write_source(
+            source_id="source-integrity-first",
+            content="needle first support",
+        )
+        second = self._write_source(
+            source_id="source-integrity-second",
+            content="other required support",
+        )
+        _, relationships, _ = self._writers(self.domain)
+        identity = self._identity(self.domain)
+        relationships.write_interpretation(
+            context=self._context(OperationClass.INTERPRETATION_WRITE),
+            interpretation_id="interpretation-integrity-complete",
+            text="synthetic interpretation complete validation",
+            identity=identity,
+            evidence=(first, second),
+        )
+        relationships.create_thread(
+            context=self._context(OperationClass.THREAD_CREATE),
+            thread_id="thread-integrity-complete",
+            question="synthetic integrity question?",
+            identity=identity,
+        )
+        relationships.admit_interpretation(
+            context=self._context(OperationClass.THREAD_ADMIT),
+            admission_id="admission-integrity-complete",
+            thread_id="thread-integrity-complete",
+            interpretation_id="interpretation-integrity-complete",
+        )
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "UPDATE real_sources SET content = ? WHERE source_id = ?",
+                ("tampered later support", second.source_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(RealDiscoveryIntegrityError):
+            self.discovery.search(
+                context=self._context(OperationClass.DISCOVERY_READ),
+                query="needle",
+            )
+
     def test_damaged_stop_use_schema_fails_closed(self) -> None:
         connection = sqlite3.connect(self.db_path)
         try:
