@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
-from home_memory_core.identity_namespaces import AccessDomainId
+from home_memory_core.identity_namespaces import AccessDomainId, OriginId, SnapshotId
 from home_memory_core.operation_identity import (
     OperationClass,
     OperationContext,
@@ -20,6 +20,13 @@ from home_memory_core.real_authority_ordering import (
     real_authority_operation,
 )
 from home_memory_core.real_ingress import RealIngressIntegrityError
+from home_memory_core.real_source_origin import (
+    SNAPSHOT_SUPPRESSION_TABLE,
+    SNAPSHOT_TABLE,
+    SOURCE_BINDING_TABLE,
+    RealSourceOriginIntegrityError,
+    assert_real_source_origin_schema,
+)
 from home_memory_core.real_use_state import (
     SOURCE_DOMAIN_INDEX,
     STOP_USE_SCHEMA_MARKER_TABLE,
@@ -118,6 +125,8 @@ class RealSourceSuppressionReceipt:
     recorded_at_utc: str
     policy_id: str
     status: str
+    origin_id: OriginId
+    snapshot_id: SnapshotId
     authority: str = "none"
 
 
@@ -167,18 +176,33 @@ class ClosedRealStopUseWriter:
                 assert_real_store_domain(connection)
                 try:
                     assert_real_stop_use_schema(connection)
-                except RealUseStateIntegrityError as error:
+                    assert_real_source_origin_schema(connection)
+                except (RealUseStateIntegrityError, RealSourceOriginIntegrityError) as error:
                     raise RealStopUseIntegrityError(
-                        "real stop-use schema is unavailable"
+                        "real stop-use source authority is unavailable"
                     ) from error
 
                 row = connection.execute(
-                    "SELECT access_domain_id FROM real_sources WHERE source_id = ?",
+                    f"""
+                    SELECT s.access_domain_id, b.snapshot_id, snap.origin_id
+                    FROM real_sources AS s
+                    JOIN {SOURCE_BINDING_TABLE} AS b
+                      ON b.source_id=s.source_id
+                     AND b.access_domain_id=s.access_domain_id
+                    JOIN {SNAPSHOT_TABLE} AS snap
+                      ON snap.snapshot_id=b.snapshot_id
+                     AND snap.access_domain_id=b.access_domain_id
+                    WHERE s.source_id = ?
+                    """,
                     (source_id,),
                 ).fetchone()
                 if row is None:
-                    raise RealStopUseIntegrityError("source is missing")
+                    raise RealStopUseIntegrityError(
+                        "source is missing canonical origin/snapshot binding"
+                    )
                 persisted_domain = AccessDomainId(row[0])
+                snapshot_id = SnapshotId(row[1])
+                origin_id = OriginId(row[2])
                 self._policy.authorize_source_suppress(
                     context=context,
                     persisted_access_domain_id=persisted_domain,
@@ -225,6 +249,8 @@ class ClosedRealStopUseWriter:
                         recorded_at_utc=operation_row[7],
                         policy_id=operation_row[8],
                         status="already_suppressed",
+                        origin_id=origin_id,
+                        snapshot_id=snapshot_id,
                     )
 
                 existing_row = connection.execute(
@@ -255,6 +281,8 @@ class ClosedRealStopUseWriter:
                         recorded_at_utc=existing_row[5],
                         policy_id=existing_row[6],
                         status="already_suppressed",
+                        origin_id=origin_id,
+                        snapshot_id=snapshot_id,
                     )
 
                 suppression_id = f"real-suppression-{uuid4().hex}"
@@ -291,6 +319,24 @@ class ClosedRealStopUseWriter:
                     raise RealStopUseIntegrityError(
                         "source suppression could not be stored"
                     ) from error
+                try:
+                    connection.execute(
+                        f"""
+                        INSERT INTO {SNAPSHOT_SUPPRESSION_TABLE} (
+                            snapshot_id, source_id, access_domain_id, source_suppression_id
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            snapshot_id.value,
+                            source_id,
+                            persisted_domain.value,
+                            suppression_id,
+                        ),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise RealStopUseIntegrityError(
+                        "canonical snapshot suppression could not be stored"
+                    ) from error
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -308,6 +354,8 @@ class ClosedRealStopUseWriter:
             recorded_at_utc=recorded_at,
             policy_id=self._policy.policy_id,
             status="suppressed",
+            origin_id=origin_id,
+            snapshot_id=snapshot_id,
         )
 
 

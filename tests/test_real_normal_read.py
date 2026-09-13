@@ -7,6 +7,8 @@ import unittest
 
 from _trusted_test_support import (
     trusted_test_closed_real_ingress_capability,
+    trusted_test_closed_real_source_origin_capability,
+    trusted_test_source_origin_provenance,
     trusted_test_closed_real_normal_read_capability,
     trusted_test_closed_real_stop_use_capability,
     trusted_test_principal_issuer,
@@ -38,6 +40,7 @@ from home_memory_core.real_normal_read import (
     RealNormalReadUnavailableError,
     SingleOwnerRealNormalReadPolicy,
 )
+from home_memory_core.real_source_origin import initialize_closed_real_source_origin_schema
 from home_memory_core.real_stop_use import (
     ClosedRealStopUseWriter,
     StopUseReasonCode,
@@ -66,6 +69,10 @@ class ClosedRealNormalReadTests(unittest.TestCase):
         initialize_closed_real_stop_use_schema(
             db_path=self.db_path,
             capability=self.stop_use_capability,
+        )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
         )
 
         self.owner_id = PrincipalId("owner-vivi")
@@ -153,6 +160,9 @@ class ClosedRealNormalReadTests(unittest.TestCase):
             source_id=source_id,
             content=content,
             metadata=IngressIdentityMetadata(access_domain_id=domain),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key=source_id,
+            ),
         )
 
     def _suppress(self, source_id: str) -> None:
@@ -305,6 +315,10 @@ class ClosedRealNormalReadTests(unittest.TestCase):
         initialize_closed_real_stop_use_schema(
             db_path=self.db_path,
             capability=self.stop_use_capability,
+        )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
         )
 
         with self.assertRaises(RealStoreLifecycleError):

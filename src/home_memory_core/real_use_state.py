@@ -3,6 +3,14 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 
+from home_memory_core.real_source_origin import (
+    SNAPSHOT_SUPPRESSION_TABLE,
+    SNAPSHOT_TABLE,
+    SOURCE_BINDING_TABLE,
+    RealSourceOriginIntegrityError,
+    assert_real_source_origin_schema,
+)
+
 
 STOP_USE_SCHEMA_MARKER_TABLE = "real_stop_use_schema_marker"
 STOP_USE_SCHEMA_VERSION = "stop-use-v0.1"
@@ -151,6 +159,13 @@ def assert_source_ids_usable(
     source_ids: Iterable[str],
 ) -> None:
     assert_real_stop_use_schema(connection)
+    try:
+        assert_real_source_origin_schema(connection)
+    except RealSourceOriginIntegrityError as error:
+        raise RealUseStateIntegrityError(
+            "current-use source-origin authority is unavailable"
+        ) from error
+
     unique_ids = tuple(dict.fromkeys(source_ids))
     if not unique_ids:
         raise RealUseStateIntegrityError(
@@ -160,17 +175,48 @@ def assert_source_ids_usable(
     for source_id in unique_ids:
         if not isinstance(source_id, str) or not source_id.strip():
             raise RealUseStateIntegrityError("source dependency id is invalid")
-        exists = connection.execute(
-            "SELECT 1 FROM real_sources WHERE source_id = ?",
+        row = connection.execute(
+            f"""
+            SELECT s.access_domain_id, b.snapshot_id, snap.origin_id
+            FROM real_sources AS s
+            JOIN {SOURCE_BINDING_TABLE} AS b
+              ON b.source_id=s.source_id
+             AND b.access_domain_id=s.access_domain_id
+            JOIN {SNAPSHOT_TABLE} AS snap
+              ON snap.snapshot_id=b.snapshot_id
+             AND snap.access_domain_id=b.access_domain_id
+            WHERE s.source_id=?
+            """,
             (source_id,),
         ).fetchone()
-        if exists is None:
-            raise RealUseStateIntegrityError("source dependency is missing")
-        suppressed = connection.execute(
-            f"SELECT 1 FROM {SUPPRESSION_TABLE} WHERE source_id = ?",
+        if row is None:
+            exists = connection.execute(
+                "SELECT 1 FROM real_sources WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            if exists is None:
+                raise RealUseStateIntegrityError("source dependency is missing")
+            raise RealUseStateIntegrityError(
+                "source dependency is missing canonical origin/snapshot binding"
+            )
+
+        source_suppressed = connection.execute(
+            f"SELECT suppression_id FROM {SUPPRESSION_TABLE} WHERE source_id = ?",
             (source_id,),
         ).fetchone()
-        if suppressed is not None:
+        snapshot_suppressed = connection.execute(
+            f"SELECT source_suppression_id FROM {SNAPSHOT_SUPPRESSION_TABLE} WHERE snapshot_id = ?",
+            (row[1],),
+        ).fetchone()
+        if (source_suppressed is None) != (snapshot_suppressed is None):
+            raise RealUseStateIntegrityError(
+                "source and canonical snapshot stop-use authority disagree"
+            )
+        if source_suppressed is not None:
+            if snapshot_suppressed[0] != source_suppressed[0]:
+                raise RealUseStateIntegrityError(
+                    "source suppression is bound to the wrong canonical snapshot"
+                )
             raise RealSourceSuppressedError(
                 "required source is unavailable under one-way stop-use"
             )

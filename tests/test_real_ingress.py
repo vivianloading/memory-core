@@ -13,6 +13,7 @@ from home_memory_core.identity_namespaces import (
     AccessDomainId,
     PerspectiveInstanceId,
     PerspectiveOwnerId,
+    OriginNamespaceId,
     SourceAuthorRef,
     SubjectId,
 )
@@ -33,10 +34,13 @@ from home_memory_core.real_ingress import (
     SingleOwnerRealIngressWritePolicy,
     initialize_closed_real_ingress_schema,
 )
+from home_memory_core.real_source_origin import initialize_closed_real_source_origin_schema
 from home_memory_core.real_stop_use import initialize_closed_real_stop_use_schema
 from home_memory_core.store_domain import create_empty_real_store
 from _trusted_test_support import (
     trusted_test_closed_real_ingress_capability,
+    trusted_test_closed_real_source_origin_capability,
+    trusted_test_source_origin_provenance,
     trusted_test_principal_issuer,
     trusted_test_real_store_bootstrap_capability,
     trusted_test_single_owner_real_ingress_policy,
@@ -62,6 +66,10 @@ class ClosedRealIngressTest(unittest.TestCase):
         initialize_closed_real_stop_use_schema(
             db_path=self.db_path,
             capability=self.stop_use_capability,
+        )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
         )
 
         issuer = trusted_test_principal_issuer()
@@ -116,6 +124,7 @@ class ClosedRealIngressTest(unittest.TestCase):
                 policy_id="caller-policy",
                 owner_principal_id=self.owner_id,
                 access_domain_id=self.domain,
+                origin_namespace_id=OriginNamespaceId("synthetic-test-provider/account"),
                 _marker=object(),
             )
 
@@ -137,6 +146,9 @@ class ClosedRealIngressTest(unittest.TestCase):
             source_id="real-fixture-source-1",
             content="synthetic fixture content only",
             metadata=self._metadata(),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key="real-fixture-source-1",
+            ),
         )
 
         self.assertEqual(receipt.authority, "none")
@@ -206,6 +218,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="impersonation-attempt",
                 content="synthetic fixture",
                 metadata=metadata,
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="impersonation-attempt",
+                ),
             )
 
         self._assert_source_absent("impersonation-attempt")
@@ -217,6 +232,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="wrong-domain",
                 content="synthetic fixture",
                 metadata=self._metadata(domain=AccessDomainId("other-domain")),
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="wrong-domain",
+                ),
             )
 
         self._assert_source_absent("wrong-domain")
@@ -228,6 +246,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="wrong-operation",
                 content="synthetic fixture",
                 metadata=self._metadata(),
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="wrong-operation",
+                ),
             )
 
         self._assert_source_absent("wrong-operation")
@@ -246,6 +267,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="sentinel-api",
                 content="synthetic fixture",
                 metadata=metadata,
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="sentinel-api",
+                ),
             )
 
         self._assert_source_absent("sentinel-api")
@@ -310,6 +334,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="no-schema",
                 content="synthetic fixture",
                 metadata=self._metadata(),
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="no-schema",
+                ),
             )
 
         connection = sqlite3.connect(other_path)
@@ -327,6 +354,9 @@ class ClosedRealIngressTest(unittest.TestCase):
             source_id="receipt-source",
             content="synthetic fixture",
             metadata=self._metadata(),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key="receipt-source",
+            ),
         )
 
         with self.assertRaises(AuthenticationBoundaryError):
@@ -335,6 +365,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="receipt-replay",
                 content="synthetic fixture",
                 metadata=self._metadata(),
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="receipt-replay",
+                ),
             )
 
         self._assert_source_absent("receipt-replay")
@@ -346,6 +379,9 @@ class ClosedRealIngressTest(unittest.TestCase):
             source_id="duplicate-source",
             content="synthetic fixture",
             metadata=self._metadata(),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key="duplicate-source",
+            ),
         )
 
         with self.assertRaises(RealIngressIntegrityError):
@@ -354,6 +390,9 @@ class ClosedRealIngressTest(unittest.TestCase):
                 source_id="duplicate-source",
                 content="different fixture",
                 metadata=self._metadata(),
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="duplicate-source",
+                ),
             )
 
         connection = sqlite3.connect(self.db_path)
@@ -383,6 +422,9 @@ class ClosedRealIngressTest(unittest.TestCase):
             source_id="metadata-not-authority",
             content="synthetic fixture",
             metadata=metadata,
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key="metadata-not-authority",
+            ),
         )
         self.assertEqual(receipt.ingested_by_principal_id, self.owner_id)
 

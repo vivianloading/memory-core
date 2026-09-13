@@ -7,6 +7,8 @@ import unittest
 
 from _trusted_test_support import (
     trusted_test_closed_real_ingress_capability,
+    trusted_test_closed_real_source_origin_capability,
+    trusted_test_source_origin_provenance,
     trusted_test_closed_real_stop_use_capability,
     trusted_test_principal_issuer,
     trusted_test_real_store_bootstrap_capability,
@@ -27,6 +29,7 @@ from home_memory_core.real_ingress import (
     ClosedRealIngressWriter,
     initialize_closed_real_ingress_schema,
 )
+from home_memory_core.real_source_origin import initialize_closed_real_source_origin_schema
 from home_memory_core.real_stop_use import initialize_closed_real_stop_use_schema
 from home_memory_core.store_domain import (
     create_empty_real_store,
@@ -57,6 +60,10 @@ class RealAuthorityLifecycleTests(unittest.TestCase):
         initialize_closed_real_stop_use_schema(
             db_path=self.db_path,
             capability=trusted_test_closed_real_stop_use_capability(),
+        )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
         )
         owner_id = PrincipalId("owner-vivi")
         principal = trusted_test_principal_issuer().issue(
@@ -145,6 +152,10 @@ class RealAuthorityLifecycleTests(unittest.TestCase):
             db_path=self.db_path,
             capability=trusted_test_closed_real_stop_use_capability(),
         )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
+        )
 
         with self.assertRaises(RealStoreLifecycleError):
             old_writer.write_source(
@@ -155,6 +166,9 @@ class RealAuthorityLifecycleTests(unittest.TestCase):
                 source_id="stale-source",
                 content="synthetic stale writer fixture",
                 metadata=IngressIdentityMetadata(access_domain_id=domain),
+                provenance=trusted_test_source_origin_provenance(
+                    external_object_key="stale-source",
+                ),
             )
 
         owner_id = principal.principal_id
@@ -177,6 +191,9 @@ class RealAuthorityLifecycleTests(unittest.TestCase):
             source_id="fresh-source",
             content="synthetic fresh writer fixture",
             metadata=IngressIdentityMetadata(access_domain_id=domain),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key="fresh-source",
+            ),
         )
         self.assertEqual(receipt.source_id, "fresh-source")
 

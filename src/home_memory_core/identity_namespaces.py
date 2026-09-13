@@ -80,3 +80,42 @@ class RequestId:
 
     def __post_init__(self) -> None:
         _validate_identifier(field_name="request_id", value=self.value)
+
+@dataclass(frozen=True)
+class OriginNamespaceId:
+    """Trusted provider/account/domain namespace for source-origin identity."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_identifier(field_name="origin_namespace_id", value=self.value)
+
+
+@dataclass(frozen=True)
+class OriginId:
+    """Opaque HOME identity for one canonical external event/object."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_identifier(field_name="origin_id", value=self.value)
+
+
+@dataclass(frozen=True)
+class SnapshotId:
+    """Opaque HOME identity for one immutable state/version of an origin."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_identifier(field_name="snapshot_id", value=self.value)
+
+
+@dataclass(frozen=True)
+class CaptureEventId:
+    """Opaque HOME identity for one trusted ingress/capture occurrence."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_identifier(field_name="capture_event_id", value=self.value)

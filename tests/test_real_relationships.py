@@ -8,6 +8,8 @@ import unittest
 
 from _trusted_test_support import (
     trusted_test_closed_real_ingress_capability,
+    trusted_test_closed_real_source_origin_capability,
+    trusted_test_source_origin_provenance,
     trusted_test_closed_real_relationship_capability,
     trusted_test_principal_issuer,
     trusted_test_real_store_bootstrap_capability,
@@ -43,6 +45,7 @@ from home_memory_core.real_relationships import (
     SingleOwnerRealRelationshipWritePolicy,
     initialize_closed_real_relationship_schema,
 )
+from home_memory_core.real_source_origin import initialize_closed_real_source_origin_schema
 from home_memory_core.real_stop_use import initialize_closed_real_stop_use_schema
 from home_memory_core.store_domain import create_empty_real_store
 
@@ -64,6 +67,10 @@ class ClosedRealRelationshipWriterTests(unittest.TestCase):
         initialize_closed_real_stop_use_schema(
             db_path=self.db_path,
             capability=self.stop_use_capability,
+        )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
         )
 
         self.relationship_capability = (
@@ -157,6 +164,9 @@ class ClosedRealRelationshipWriterTests(unittest.TestCase):
             source_id=source_id,
             content=content,
             metadata=IngressIdentityMetadata(access_domain_id=domain),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key=source_id,
+            ),
         )
 
     def _evidence(self, source_id: str, content: str, start: int, end: int):

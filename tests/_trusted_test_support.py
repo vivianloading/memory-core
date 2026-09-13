@@ -11,6 +11,8 @@ from home_memory_core import real_discovery
 from home_memory_core import real_normal_read
 from home_memory_core import real_relationships
 from home_memory_core import real_stop_use
+from home_memory_core import real_source_origin
+from home_memory_core import source_origin
 from home_memory_core import store_domain
 
 
@@ -43,12 +45,55 @@ def trusted_test_single_owner_real_ingress_policy(
     policy_id: str,
     owner_principal_id: identity.PrincipalId,
     access_domain_id,
+    origin_namespace_id=None,
 ) -> real_ingress.SingleOwnerRealIngressWritePolicy:
+    from home_memory_core.identity_namespaces import OriginNamespaceId
+
     return real_ingress.SingleOwnerRealIngressWritePolicy(
         policy_id=policy_id,
         owner_principal_id=owner_principal_id,
         access_domain_id=access_domain_id,
+        origin_namespace_id=(
+            origin_namespace_id or OriginNamespaceId("synthetic-test-provider/account")
+        ),
         _marker=real_ingress._TRUSTED_WRITE_POLICY_MARKER,
+    )
+
+
+def trusted_test_closed_real_source_origin_capability(
+) -> real_source_origin.ClosedRealSourceOriginExerciseCapability:
+    return real_source_origin.ClosedRealSourceOriginExerciseCapability(
+        _marker=real_source_origin._CLOSED_REAL_SOURCE_ORIGIN_CAPABILITY_MARKER,
+    )
+
+
+def trusted_test_source_origin_provenance(
+    *,
+    external_object_key: str,
+    external_snapshot_key: str = "immutable",
+    snapshot_kind=None,
+    origin_namespace_id=None,
+    object_kind: str = "synthetic_message",
+    origin_key_version: str = "synthetic-v1",
+    ingress_adapter_id: str = "synthetic-adapter",
+    adapter_version: str = "1",
+    capture_locator: str | None = None,
+) -> source_origin.TrustedSourceOriginProvenance:
+    from home_memory_core.identity_namespaces import OriginNamespaceId
+
+    return source_origin.TrustedSourceOriginProvenance(
+        origin_namespace_id=(
+            origin_namespace_id or OriginNamespaceId("synthetic-test-provider/account")
+        ),
+        external_object_key=external_object_key,
+        object_kind=object_kind,
+        origin_key_version=origin_key_version,
+        snapshot_kind=(snapshot_kind or source_origin.SnapshotKind.IMMUTABLE_ORIGIN),
+        external_snapshot_key=external_snapshot_key,
+        ingress_adapter_id=ingress_adapter_id,
+        adapter_version=adapter_version,
+        capture_locator=capture_locator,
+        _marker=source_origin._TRUSTED_SOURCE_ORIGIN_PROVENANCE_MARKER,
     )
 
 

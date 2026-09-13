@@ -10,6 +10,8 @@ from unittest.mock import patch
 from _trusted_test_support import (
     trusted_test_closed_real_discovery_capability,
     trusted_test_closed_real_ingress_capability,
+    trusted_test_closed_real_source_origin_capability,
+    trusted_test_source_origin_provenance,
     trusted_test_closed_real_relationship_capability,
     trusted_test_closed_real_stop_use_capability,
     trusted_test_closed_real_supersession_capability,
@@ -54,6 +56,7 @@ from home_memory_core.real_relationships import (
     RealRelationshipIdentity,
     initialize_closed_real_relationship_schema,
 )
+from home_memory_core.real_source_origin import initialize_closed_real_source_origin_schema
 from home_memory_core.real_stop_use import (
     ClosedRealStopUseWriter,
     StopUseReasonCode,
@@ -84,6 +87,10 @@ class ClosedRealAuthorizedDiscoveryTests(unittest.TestCase):
         initialize_closed_real_stop_use_schema(
             db_path=self.db_path,
             capability=self.stop_use_capability,
+        )
+        initialize_closed_real_source_origin_schema(
+            db_path=self.db_path,
+            capability=trusted_test_closed_real_source_origin_capability(),
         )
         self.relationship_capability = trusted_test_closed_real_relationship_capability()
         initialize_closed_real_relationship_schema(
@@ -196,6 +203,9 @@ class ClosedRealAuthorizedDiscoveryTests(unittest.TestCase):
             source_id=source_id,
             content=content,
             metadata=IngressIdentityMetadata(access_domain_id=domain),
+            provenance=trusted_test_source_origin_provenance(
+                external_object_key=source_id,
+            ),
         )
         return EvidenceRef(
             source_id=source_id,

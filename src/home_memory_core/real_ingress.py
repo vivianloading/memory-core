@@ -7,7 +7,13 @@ from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
-from home_memory_core.identity_namespaces import AccessDomainId
+from home_memory_core.identity_namespaces import (
+    AccessDomainId,
+    CaptureEventId,
+    OriginId,
+    OriginNamespaceId,
+    SnapshotId,
+)
 from home_memory_core.ingress_identity import IngressIdentityMetadata
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.operation_identity import (
@@ -19,6 +25,19 @@ from home_memory_core.operation_identity import (
 from home_memory_core.real_use_state import (
     RealUseStateIntegrityError,
     assert_real_stop_use_schema,
+)
+from home_memory_core.real_source_origin import (
+    CAPTURE_EVENT_TABLE,
+    ORIGIN_TABLE,
+    SNAPSHOT_SUPPRESSION_TABLE,
+    SNAPSHOT_TABLE,
+    SOURCE_BINDING_TABLE,
+    RealSourceOriginIntegrityError,
+    assert_real_source_origin_schema,
+)
+from home_memory_core.source_origin import (
+    ReplayDisposition,
+    TrustedSourceOriginProvenance,
 )
 from home_memory_core.store_domain import assert_real_store_domain
 from home_memory_core.real_authority_ordering import (
@@ -40,6 +59,18 @@ class RealIngressAuthorizationError(PermissionError):
 
 class RealIngressIntegrityError(RuntimeError):
     """The real-ingress store or payload failed a mechanical invariant."""
+
+
+class RealIngressProvenanceConflictError(RealIngressIntegrityError):
+    """Trusted provenance resolved to an immutable identity conflict."""
+
+
+class RealIngressReplayBlockedError(RealIngressIntegrityError):
+    """A replay/new snapshot is not eligible for normal ingress."""
+
+    def __init__(self, disposition: ReplayDisposition, message: str) -> None:
+        self.disposition = disposition
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -72,6 +103,7 @@ class SingleOwnerRealIngressWritePolicy:
     policy_id: str
     owner_principal_id: PrincipalId
     access_domain_id: AccessDomainId
+    origin_namespace_id: OriginNamespaceId
     _marker: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -89,12 +121,17 @@ class SingleOwnerRealIngressWritePolicy:
             raise RealIngressAuthorizationError(
                 "access_domain_id must use AccessDomainId"
             )
+        if not isinstance(self.origin_namespace_id, OriginNamespaceId):
+            raise RealIngressAuthorizationError(
+                "origin_namespace_id must use OriginNamespaceId"
+            )
 
     def authorize_source_write(
         self,
         *,
         context: OperationContext,
         metadata: IngressIdentityMetadata,
+        provenance: TrustedSourceOriginProvenance,
     ) -> None:
         require_operation_context(
             context,
@@ -108,6 +145,12 @@ class SingleOwnerRealIngressWritePolicy:
         if context.principal.principal_id != self.owner_principal_id:
             raise RealIngressAuthorizationError("source.write denied")
         if metadata.access_domain_id != self.access_domain_id:
+            raise RealIngressAuthorizationError("source.write denied")
+        if not isinstance(provenance, TrustedSourceOriginProvenance):
+            raise RealIngressAuthorizationError(
+                "source.write requires trusted source-origin provenance"
+            )
+        if provenance.origin_namespace_id != self.origin_namespace_id:
             raise RealIngressAuthorizationError("source.write denied")
 
 
@@ -127,6 +170,10 @@ class RealIngressReceipt:
     policy_id: str
     recorded_at_utc: str
     content_sha256: str
+    origin_id: OriginId
+    snapshot_id: SnapshotId
+    capture_event_id: CaptureEventId
+    replay_disposition: ReplayDisposition
     authority: str = "none"
 
 
@@ -164,6 +211,7 @@ class ClosedRealIngressWriter:
         source_id: str,
         content: str,
         metadata: IngressIdentityMetadata,
+        provenance: TrustedSourceOriginProvenance,
     ) -> RealIngressReceipt:
         _require_closed_real_ingress_capability(self._capability)
         _require_trusted_write_policy(self._policy)
@@ -176,19 +224,21 @@ class ClosedRealIngressWriter:
             content=content,
             metadata=metadata,
         )
+        if not isinstance(provenance, TrustedSourceOriginProvenance):
+            raise RealIngressIntegrityError(
+                "real source write requires trusted source-origin provenance"
+            )
 
         digest = sha256(content.encode("utf-8")).hexdigest()
         recorded_at_utc = _utc_now_text()
 
-        # Authorization and commit share one same-process ordering boundary.
-        # Any future mutable policy/revocation path must use this same lock (or
-        # replace it with a stronger primitive before multi-process support).
         with real_authority_operation(
             self.db_path, expected_generation=self._authority_generation
         ):
             self._policy.authorize_source_write(
                 context=context,
                 metadata=metadata,
+                provenance=provenance,
             )
 
             connection = sqlite3.connect(self.db_path)
@@ -199,75 +249,213 @@ class ClosedRealIngressWriter:
                 _assert_real_ingress_schema(connection)
                 try:
                     assert_real_stop_use_schema(connection)
-                except RealUseStateIntegrityError as error:
+                    assert_real_source_origin_schema(connection)
+                except (RealUseStateIntegrityError, RealSourceOriginIntegrityError) as error:
                     raise RealIngressIntegrityError(
-                        "closed real stop-use state has not been initialized"
+                        "closed real source authority has not been initialized"
                     ) from error
 
-                try:
+                origin_id, origin_was_new = _resolve_or_create_origin(
+                    connection=connection,
+                    domain=metadata.access_domain_id,
+                    provenance=provenance,
+                    recorded_at_utc=recorded_at_utc,
+                )
+
+                snapshot_row = connection.execute(
+                    f"""
+                    SELECT snapshot_id, content_sha256
+                    FROM {SNAPSHOT_TABLE}
+                    WHERE origin_id = ?
+                      AND snapshot_kind = ?
+                      AND external_snapshot_key = ?
+                    """,
+                    (
+                        origin_id.value,
+                        provenance.snapshot_kind.value,
+                        provenance.external_snapshot_key,
+                    ),
+                ).fetchone()
+
+                if snapshot_row is not None:
+                    snapshot_id = SnapshotId(snapshot_row[0])
+                    if snapshot_row[1] != digest:
+                        raise RealIngressProvenanceConflictError(
+                            "same canonical snapshot identity has conflicting content"
+                        )
+                    suppressed = connection.execute(
+                        f"SELECT 1 FROM {SNAPSHOT_SUPPRESSION_TABLE} WHERE snapshot_id = ?",
+                        (snapshot_id.value,),
+                    ).fetchone()
+                    if suppressed is not None:
+                        raise RealIngressReplayBlockedError(
+                            ReplayDisposition.BLOCKED_SUPPRESSED_SNAPSHOT_REPLAY,
+                            "suppressed canonical snapshot replay is blocked",
+                        )
+
+                    binding = connection.execute(
+                        f"""
+                        SELECT source_id
+                        FROM {SOURCE_BINDING_TABLE}
+                        WHERE snapshot_id = ?
+                        """,
+                        (snapshot_id.value,),
+                    ).fetchone()
+                    if binding is None:
+                        raise RealIngressIntegrityError(
+                            "canonical snapshot is missing its source materialization"
+                        )
+                    canonical_source_id = binding[0]
+                    existing_source = connection.execute(
+                        "SELECT content, content_sha256, access_domain_id "
+                        "FROM real_sources WHERE source_id = ?",
+                        (canonical_source_id,),
+                    ).fetchone()
+                    if existing_source is None:
+                        raise RealIngressIntegrityError(
+                            "canonical source materialization is missing"
+                        )
+                    if (
+                        existing_source[0] != content
+                        or existing_source[1] != digest
+                        or existing_source[2] != metadata.access_domain_id.value
+                    ):
+                        raise RealIngressProvenanceConflictError(
+                            "canonical snapshot materialization conflicts with replay"
+                        )
+                    requested_existing = connection.execute(
+                        f"SELECT snapshot_id FROM {SOURCE_BINDING_TABLE} WHERE source_id = ?",
+                        (source_id,),
+                    ).fetchone()
+                    if (
+                        requested_existing is not None
+                        and requested_existing[0] != snapshot_id.value
+                    ):
+                        raise RealIngressProvenanceConflictError(
+                            "requested local source_id is already bound to another snapshot"
+                        )
+                    disposition = ReplayDisposition.EXACT_REPLAY_EXISTING_SNAPSHOT
+                else:
+                    suppressed_history = connection.execute(
+                        f"""
+                        SELECT 1
+                        FROM {SNAPSHOT_SUPPRESSION_TABLE} AS ss
+                        JOIN {SNAPSHOT_TABLE} AS old_snap
+                          ON old_snap.snapshot_id = ss.snapshot_id
+                        WHERE old_snap.origin_id = ?
+                        LIMIT 1
+                        """,
+                        (origin_id.value,),
+                    ).fetchone()
+                    if suppressed_history is not None:
+                        raise RealIngressReplayBlockedError(
+                            ReplayDisposition.BLOCKED_POST_SUPPRESSION_NEW_SNAPSHOT,
+                            "new snapshot after suppressed origin history is not normal-use eligible",
+                        )
+
+                    snapshot_id = SnapshotId(f"real-snapshot-{uuid4().hex}")
                     connection.execute(
-                        """
-                        INSERT INTO real_sources (
-                            source_id,
-                            content,
-                            content_sha256,
-                            asserted_author_ref,
-                            access_domain_id,
-                            perspective_owner_id,
-                            perspective_instance_id,
-                            ingested_by_principal_id,
-                            ingested_by_principal_kind,
-                            ingested_by_trust_source,
-                            ingress_operation_id,
-                            ingress_channel,
-                            recorded_at_utc,
-                            write_policy_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        f"""
+                        INSERT INTO {SNAPSHOT_TABLE} (
+                            snapshot_id, access_domain_id, origin_id, snapshot_kind,
+                            external_snapshot_key, content_sha256, created_at_utc
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            source_id,
-                            content,
-                            digest,
-                            (
-                                metadata.asserted_author.value
-                                if metadata.asserted_author is not None
-                                else None
-                            ),
+                            snapshot_id.value,
                             metadata.access_domain_id.value,
-                            (
-                                metadata.perspective_owner.value
-                                if metadata.perspective_owner is not None
-                                else None
-                            ),
-                            (
-                                metadata.perspective_instance.value
-                                if metadata.perspective_instance is not None
-                                else None
-                            ),
-                            context.principal.principal_id.value,
-                            context.principal.principal_kind,
-                            context.principal.trust_source,
-                            context.operation_id,
-                            self._ingress_channel,
+                            origin_id.value,
+                            provenance.snapshot_kind.value,
+                            provenance.external_snapshot_key,
+                            digest,
                             recorded_at_utc,
-                            self._policy.policy_id,
                         ),
                     )
 
-                    for position, subject in enumerate(metadata.subjects):
+                    try:
                         connection.execute(
                             """
-                            INSERT INTO real_source_subjects (
+                            INSERT INTO real_sources (
+                                source_id, content, content_sha256, asserted_author_ref,
+                                access_domain_id, perspective_owner_id, perspective_instance_id,
+                                ingested_by_principal_id, ingested_by_principal_kind,
+                                ingested_by_trust_source, ingress_operation_id, ingress_channel,
+                                recorded_at_utc, write_policy_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
                                 source_id,
-                                position,
-                                subject_id
+                                content,
+                                digest,
+                                metadata.asserted_author.value if metadata.asserted_author is not None else None,
+                                metadata.access_domain_id.value,
+                                metadata.perspective_owner.value if metadata.perspective_owner is not None else None,
+                                metadata.perspective_instance.value if metadata.perspective_instance is not None else None,
+                                context.principal.principal_id.value,
+                                context.principal.principal_kind,
+                                context.principal.trust_source,
+                                context.operation_id,
+                                self._ingress_channel,
+                                recorded_at_utc,
+                                self._policy.policy_id,
+                            ),
+                        )
+                        for position, subject in enumerate(metadata.subjects):
+                            connection.execute(
+                                """
+                                INSERT INTO real_source_subjects (source_id, position, subject_id)
+                                VALUES (?, ?, ?)
+                                """,
+                                (source_id, position, subject.value),
+                            )
+                        connection.execute(
+                            f"""
+                            INSERT INTO {SOURCE_BINDING_TABLE} (
+                                source_id, access_domain_id, snapshot_id
                             ) VALUES (?, ?, ?)
                             """,
-                            (source_id, position, subject.value),
+                            (source_id, metadata.access_domain_id.value, snapshot_id.value),
                         )
+                    except sqlite3.IntegrityError as error:
+                        raise RealIngressIntegrityError(
+                            "real source could not be stored under canonical snapshot identity"
+                        ) from error
+                    canonical_source_id = source_id
+                    disposition = (
+                        ReplayDisposition.NEW_ORIGIN
+                        if origin_was_new
+                        else ReplayDisposition.NEW_SNAPSHOT_EXISTING_ORIGIN
+                    )
+
+                capture_event_id = CaptureEventId(f"real-capture-{uuid4().hex}")
+                try:
+                    connection.execute(
+                        f"""
+                        INSERT INTO {CAPTURE_EVENT_TABLE} (
+                            capture_event_id, operation_id, requested_source_id,
+                            canonical_source_id, access_domain_id, origin_id, snapshot_id,
+                            replay_disposition, ingress_adapter_id, adapter_version,
+                            capture_locator, recorded_at_utc
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            capture_event_id.value,
+                            context.operation_id,
+                            source_id,
+                            canonical_source_id,
+                            metadata.access_domain_id.value,
+                            origin_id.value,
+                            snapshot_id.value,
+                            disposition.value,
+                            provenance.ingress_adapter_id,
+                            provenance.adapter_version,
+                            provenance.capture_locator,
+                            recorded_at_utc,
+                        ),
+                    )
                 except sqlite3.IntegrityError as error:
                     raise RealIngressIntegrityError(
-                        "real source could not be stored"
+                        "capture event could not be stored without replacing history"
                     ) from error
 
                 connection.commit()
@@ -279,14 +467,72 @@ class ClosedRealIngressWriter:
 
         return RealIngressReceipt(
             receipt_id=f"real-ingress-receipt-{uuid4().hex}",
-            source_id=source_id,
+            source_id=canonical_source_id,
             operation_id=context.operation_id,
             ingested_by_principal_id=context.principal.principal_id,
             access_domain_id=metadata.access_domain_id,
             policy_id=self._policy.policy_id,
             recorded_at_utc=recorded_at_utc,
             content_sha256=digest,
+            origin_id=origin_id,
+            snapshot_id=snapshot_id,
+            capture_event_id=capture_event_id,
+            replay_disposition=disposition,
         )
+
+
+def _resolve_or_create_origin(
+    *,
+    connection: sqlite3.Connection,
+    domain: AccessDomainId,
+    provenance: TrustedSourceOriginProvenance,
+    recorded_at_utc: str,
+) -> tuple[OriginId, bool]:
+    row = connection.execute(
+        f"""
+        SELECT origin_id, object_kind, origin_key_version
+        FROM {ORIGIN_TABLE}
+        WHERE access_domain_id = ?
+          AND origin_namespace_id = ?
+          AND external_object_key = ?
+        """,
+        (
+            domain.value,
+            provenance.origin_namespace_id.value,
+            provenance.external_object_key,
+        ),
+    ).fetchone()
+    if row is not None:
+        if row[1] != provenance.object_kind or row[2] != provenance.origin_key_version:
+            raise RealIngressProvenanceConflictError(
+                "canonical origin identity contract conflicts with persisted origin"
+            )
+        return OriginId(row[0]), False
+
+    origin_id = OriginId(f"real-origin-{uuid4().hex}")
+    try:
+        connection.execute(
+            f"""
+            INSERT INTO {ORIGIN_TABLE} (
+                origin_id, access_domain_id, origin_namespace_id, external_object_key,
+                object_kind, origin_key_version, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                origin_id.value,
+                domain.value,
+                provenance.origin_namespace_id.value,
+                provenance.external_object_key,
+                provenance.object_kind,
+                provenance.origin_key_version,
+                recorded_at_utc,
+            ),
+        )
+    except sqlite3.IntegrityError as error:
+        raise RealIngressProvenanceConflictError(
+            "canonical origin could not be created without replacing history"
+        ) from error
+    return origin_id, True
 
 
 def initialize_closed_real_ingress_schema(
