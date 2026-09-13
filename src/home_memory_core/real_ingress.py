@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 import sqlite3
-from threading import Lock, RLock
 from uuid import uuid4
 
 from home_memory_core.identity_namespaces import AccessDomainId
@@ -18,14 +17,11 @@ from home_memory_core.operation_identity import (
     require_operation_context,
 )
 from home_memory_core.store_domain import assert_real_store_domain
+from home_memory_core.real_write_ordering import real_write_ordering_lock_for_path
 
 
 _CLOSED_REAL_INGRESS_CAPABILITY_MARKER = object()
 _TRUSTED_WRITE_POLICY_MARKER = object()
-_REAL_INGRESS_LOCK_REGISTRY_GUARD = Lock()
-_REAL_INGRESS_LOCKS: dict[str, RLock] = {}
-
-
 class RealIngressDisabledError(RuntimeError):
     """The closed real-ingress exercise boundary is not available."""
 
@@ -151,7 +147,7 @@ class ClosedRealIngressWriter:
         self._capability = capability
         self._policy = policy
         self._ingress_channel = ingress_channel
-        self._ordering_lock = _real_ingress_lock_for_path(self.db_path)
+        self._ordering_lock = real_write_ordering_lock_for_path(self.db_path)
 
     def write_source(
         self,
@@ -367,16 +363,6 @@ def initialize_closed_real_ingress_schema(
             )
     finally:
         connection.close()
-
-
-def _real_ingress_lock_for_path(db_path: Path) -> RLock:
-    key = str(db_path.expanduser().resolve())
-    with _REAL_INGRESS_LOCK_REGISTRY_GUARD:
-        lock = _REAL_INGRESS_LOCKS.get(key)
-        if lock is None:
-            lock = RLock()
-            _REAL_INGRESS_LOCKS[key] = lock
-        return lock
 
 
 def _require_closed_real_ingress_capability(

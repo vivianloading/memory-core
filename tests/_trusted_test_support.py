@@ -7,6 +7,7 @@ mint through supported runtime APIs.
 
 from home_memory_core import operation_identity as identity
 from home_memory_core import real_ingress
+from home_memory_core import real_relationships
 from home_memory_core import store_domain
 
 
@@ -45,4 +46,25 @@ def trusted_test_single_owner_real_ingress_policy(
         owner_principal_id=owner_principal_id,
         access_domain_id=access_domain_id,
         _marker=real_ingress._TRUSTED_WRITE_POLICY_MARKER,
+    )
+
+
+def trusted_test_closed_real_relationship_capability(
+) -> real_relationships.ClosedRealRelationshipExerciseCapability:
+    return real_relationships.ClosedRealRelationshipExerciseCapability(
+        _marker=real_relationships._CLOSED_REAL_RELATIONSHIP_CAPABILITY_MARKER,
+    )
+
+
+def trusted_test_single_owner_real_relationship_policy(
+    *,
+    policy_id: str,
+    owner_principal_id: identity.PrincipalId,
+    access_domain_id,
+) -> real_relationships.SingleOwnerRealRelationshipWritePolicy:
+    return real_relationships.SingleOwnerRealRelationshipWritePolicy(
+        policy_id=policy_id,
+        owner_principal_id=owner_principal_id,
+        access_domain_id=access_domain_id,
+        _marker=real_relationships._TRUSTED_RELATIONSHIP_WRITE_POLICY_MARKER,
     )

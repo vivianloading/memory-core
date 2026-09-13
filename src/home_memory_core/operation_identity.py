@@ -28,6 +28,7 @@ class PrincipalId:
 class OperationClass(StrEnum):
     SOURCE_WRITE = "source.write"
     INTERPRETATION_WRITE = "interpretation.write"
+    THREAD_CREATE = "thread.create"
     THREAD_ADMIT = "thread.admit"
     SUPERSESSION_WRITE = "supersession.write"
     SOURCE_SUPPRESS = "source.suppress"
