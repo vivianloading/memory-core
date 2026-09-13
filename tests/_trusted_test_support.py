@@ -68,3 +68,11 @@ def trusted_test_single_owner_real_relationship_policy(
         access_domain_id=access_domain_id,
         _marker=real_relationships._TRUSTED_RELATIONSHIP_WRITE_POLICY_MARKER,
     )
+
+
+def trusted_test_closed_real_supersession_capability():
+    from home_memory_core import real_supersession
+
+    return real_supersession.ClosedRealSupersessionExerciseCapability(
+        _marker=real_supersession._CLOSED_REAL_SUPERSESSION_CAPABILITY_MARKER,
+    )
