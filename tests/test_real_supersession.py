@@ -14,6 +14,7 @@ from _trusted_test_support import (
     trusted_test_real_store_bootstrap_capability,
     trusted_test_single_owner_real_ingress_policy,
     trusted_test_single_owner_real_relationship_policy,
+    trusted_test_closed_real_stop_use_capability,
 )
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.identity_namespaces import (
@@ -47,6 +48,7 @@ from home_memory_core.real_supersession import (
     RealSupersessionIntegrityError,
     initialize_closed_real_supersession_schema,
 )
+from home_memory_core.real_stop_use import initialize_closed_real_stop_use_schema
 from home_memory_core.store_domain import create_empty_real_store
 
 
@@ -64,6 +66,11 @@ class ClosedRealSupersessionWriterTests(unittest.TestCase):
         initialize_closed_real_ingress_schema(
             db_path=self.db_path,
             capability=self.ingress_capability,
+        )
+        self.stop_use_capability = trusted_test_closed_real_stop_use_capability()
+        initialize_closed_real_stop_use_schema(
+            db_path=self.db_path,
+            capability=self.stop_use_capability,
         )
         self.relationship_capability = trusted_test_closed_real_relationship_capability()
         initialize_closed_real_relationship_schema(

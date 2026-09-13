@@ -1,26 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Lock, RLock
+from threading import RLock
 
-
-_REAL_WRITE_LOCK_REGISTRY_GUARD = Lock()
-_REAL_WRITE_LOCKS: dict[str, RLock] = {}
+from home_memory_core.real_authority_ordering import real_authority_lock_for_path
 
 
 def real_write_ordering_lock_for_path(db_path: str | Path) -> RLock:
-    """Return the same-process ordering lock for one real HOME store.
+    """Compatibility wrapper retained after #06a.5 authority-ordering rename.
 
-    Every closed real-data write path that performs authorization followed by a
-    commit must share this lock. It is intentionally only a first local-pilot
-    primitive; it is not sufficient for multi-process writers or remote policy
-    authorities.
+    New real-data code must use `real_authority_operation(...)` so lifecycle and
+    stale-generation checks are enforced. This function exists only to avoid a
+    silent import break for code written before the rename.
     """
 
-    key = str(Path(db_path).expanduser().resolve())
-    with _REAL_WRITE_LOCK_REGISTRY_GUARD:
-        lock = _REAL_WRITE_LOCKS.get(key)
-        if lock is None:
-            lock = RLock()
-            _REAL_WRITE_LOCKS[key] = lock
-        return lock
+    return real_authority_lock_for_path(db_path)

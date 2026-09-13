@@ -16,8 +16,16 @@ from home_memory_core.operation_identity import (
     PrincipalId,
     require_operation_context,
 )
+from home_memory_core.real_use_state import (
+    RealUseStateIntegrityError,
+    assert_real_stop_use_schema,
+)
 from home_memory_core.store_domain import assert_real_store_domain
-from home_memory_core.real_write_ordering import real_write_ordering_lock_for_path
+from home_memory_core.real_authority_ordering import (
+    capture_real_store_generation,
+    real_authority_maintenance,
+    real_authority_operation,
+)
 
 
 _CLOSED_REAL_INGRESS_CAPABILITY_MARKER = object()
@@ -147,7 +155,7 @@ class ClosedRealIngressWriter:
         self._capability = capability
         self._policy = policy
         self._ingress_channel = ingress_channel
-        self._ordering_lock = real_write_ordering_lock_for_path(self.db_path)
+        self._authority_generation = capture_real_store_generation(self.db_path)
 
     def write_source(
         self,
@@ -175,7 +183,9 @@ class ClosedRealIngressWriter:
         # Authorization and commit share one same-process ordering boundary.
         # Any future mutable policy/revocation path must use this same lock (or
         # replace it with a stronger primitive before multi-process support).
-        with self._ordering_lock:
+        with real_authority_operation(
+            self.db_path, expected_generation=self._authority_generation
+        ):
             self._policy.authorize_source_write(
                 context=context,
                 metadata=metadata,
@@ -187,6 +197,12 @@ class ClosedRealIngressWriter:
                 connection.execute("BEGIN IMMEDIATE")
                 assert_real_store_domain(connection)
                 _assert_real_ingress_schema(connection)
+                try:
+                    assert_real_stop_use_schema(connection)
+                except RealUseStateIntegrityError as error:
+                    raise RealIngressIntegrityError(
+                        "closed real stop-use state has not been initialized"
+                    ) from error
 
                 try:
                     connection.execute(
@@ -282,12 +298,13 @@ def initialize_closed_real_ingress_schema(
 
     _require_closed_real_ingress_capability(capability)
     path = Path(db_path)
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        with connection:
-            assert_real_store_domain(connection)
-            connection.executescript(
+    with real_authority_maintenance(path):
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            with connection:
+                assert_real_store_domain(connection)
+                connection.executescript(
                 f"""
                 CREATE TABLE IF NOT EXISTS real_sources (
                     source_id TEXT PRIMARY KEY
@@ -360,9 +377,9 @@ def initialize_closed_real_ingress_schema(
                         ON DELETE RESTRICT
                 );
                 """
-            )
-    finally:
-        connection.close()
+                )
+        finally:
+            connection.close()
 
 
 def _require_closed_real_ingress_capability(

@@ -33,12 +33,14 @@ from home_memory_core.real_ingress import (
     SingleOwnerRealIngressWritePolicy,
     initialize_closed_real_ingress_schema,
 )
+from home_memory_core.real_stop_use import initialize_closed_real_stop_use_schema
 from home_memory_core.store_domain import create_empty_real_store
 from _trusted_test_support import (
     trusted_test_closed_real_ingress_capability,
     trusted_test_principal_issuer,
     trusted_test_real_store_bootstrap_capability,
     trusted_test_single_owner_real_ingress_policy,
+    trusted_test_closed_real_stop_use_capability,
 )
 
 
@@ -55,6 +57,11 @@ class ClosedRealIngressTest(unittest.TestCase):
         initialize_closed_real_ingress_schema(
             db_path=self.db_path,
             capability=self.exercise_capability,
+        )
+        self.stop_use_capability = trusted_test_closed_real_stop_use_capability()
+        initialize_closed_real_stop_use_schema(
+            db_path=self.db_path,
+            capability=self.stop_use_capability,
         )
 
         issuer = trusted_test_principal_issuer()

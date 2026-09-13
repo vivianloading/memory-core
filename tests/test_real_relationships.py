@@ -13,6 +13,7 @@ from _trusted_test_support import (
     trusted_test_real_store_bootstrap_capability,
     trusted_test_single_owner_real_ingress_policy,
     trusted_test_single_owner_real_relationship_policy,
+    trusted_test_closed_real_stop_use_capability,
 )
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.identity_namespaces import (
@@ -42,6 +43,7 @@ from home_memory_core.real_relationships import (
     SingleOwnerRealRelationshipWritePolicy,
     initialize_closed_real_relationship_schema,
 )
+from home_memory_core.real_stop_use import initialize_closed_real_stop_use_schema
 from home_memory_core.store_domain import create_empty_real_store
 
 
@@ -57,6 +59,11 @@ class ClosedRealRelationshipWriterTests(unittest.TestCase):
         initialize_closed_real_ingress_schema(
             db_path=self.db_path,
             capability=self.ingress_capability,
+        )
+        self.stop_use_capability = trusted_test_closed_real_stop_use_capability()
+        initialize_closed_real_stop_use_schema(
+            db_path=self.db_path,
+            capability=self.stop_use_capability,
         )
 
         self.relationship_capability = (
@@ -188,6 +195,8 @@ class ClosedRealRelationshipWriterTests(unittest.TestCase):
                 policy_id="fake",
                 owner_principal_id=self.owner_id,
                 access_domain_id=self.domain,
+                perspective_owner=PerspectiveOwnerId("owner"),
+                perspective_instance=PerspectiveInstanceId("owner-instance"),
                 _marker=object(),
             )
 
@@ -356,7 +365,19 @@ class ClosedRealRelationshipWriterTests(unittest.TestCase):
             perspective_instance=PerspectiveInstanceId("different-instance"),
             about_subject=SubjectId("subject"),
         )
-        self.writer.create_thread(
+        mismatched_policy = trusted_test_single_owner_real_relationship_policy(
+            policy_id="relationship-policy-mismatch",
+            owner_principal_id=self.owner_id,
+            access_domain_id=self.domain,
+            perspective_owner=mismatched_identity.perspective_owner,
+            perspective_instance=mismatched_identity.perspective_instance,
+        )
+        mismatched_writer = ClosedRealRelationshipWriter(
+            db_path=self.db_path,
+            capability=self.relationship_capability,
+            policy=mismatched_policy,
+        )
+        mismatched_writer.create_thread(
             context=self._context(OperationClass.THREAD_CREATE),
             thread_id="thread-mismatch",
             question="synthetic question?",
@@ -487,6 +508,44 @@ class ClosedRealRelationshipWriterTests(unittest.TestCase):
                 thread_id="receipt-thread",
                 question="should fail",
                 identity=self.identity,
+            )
+
+    def test_policy_rejects_unbound_derived_perspective_owner(self) -> None:
+        unbound = RealRelationshipIdentity(
+            access_domain_id=self.domain,
+            perspective_owner=PerspectiveOwnerId("lior"),
+            perspective_instance=PerspectiveInstanceId("lior-X"),
+            about_subject=SubjectId("subject"),
+        )
+        content = "alpha evidence span omega"
+        evidence = EvidenceRef(
+            source_id="source-a",
+            source_sha256=sha256(content.encode("utf-8")).hexdigest(),
+            start_char=0,
+            end_char=5,
+        )
+        with self.assertRaises(RealRelationshipAuthorizationError):
+            self.writer.write_interpretation(
+                context=self._context(OperationClass.INTERPRETATION_WRITE),
+                interpretation_id="unbound-perspective",
+                text="synthetic interpretation",
+                identity=unbound,
+                evidence=(evidence,),
+            )
+
+    def test_policy_rejects_unbound_perspective_instance_for_same_owner(self) -> None:
+        unbound = RealRelationshipIdentity(
+            access_domain_id=self.domain,
+            perspective_owner=PerspectiveOwnerId("owner"),
+            perspective_instance=PerspectiveInstanceId("different-instance"),
+            about_subject=SubjectId("subject"),
+        )
+        with self.assertRaises(RealRelationshipAuthorizationError):
+            self.writer.create_thread(
+                context=self._context(OperationClass.THREAD_CREATE),
+                thread_id="unbound-thread",
+                question="synthetic?",
+                identity=unbound,
             )
 
 

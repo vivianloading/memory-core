@@ -11,6 +11,7 @@ sys.path.insert(0, str(SRC_ROOT))
 
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
+from home_memory_core.real_ingress import initialize_closed_real_ingress_schema
 from home_memory_core.store_domain import (
     REAL_STORE_DOMAIN,
     SYNTHETIC_STORE_DOMAIN,
@@ -22,6 +23,7 @@ from home_memory_core.store_domain import (
     read_store_domain,
 )
 from _trusted_test_support import (
+    trusted_test_closed_real_ingress_capability,
     trusted_test_real_store_bootstrap_capability,
 )
 
@@ -182,7 +184,15 @@ class StoreDomainBoundaryTest(unittest.TestCase):
         connection = sqlite3.connect(db_path)
         try:
             connection.execute(
-                "CREATE TABLE old_synthetic_fixture (value TEXT)"
+                """
+                CREATE TABLE sources (
+                    source_id TEXT,
+                    content TEXT,
+                    authored_by TEXT,
+                    scope TEXT,
+                    content_sha256 TEXT
+                )
+                """
             )
             connection.commit()
         finally:
@@ -224,6 +234,64 @@ class StoreDomainBoundaryTest(unittest.TestCase):
         self.assertFalse(real_path.exists())
         self.assertTrue(all(not sidecar.exists() for sidecar in sidecars))
         self.assertIsNone(read_store_domain(real_path))
+
+    def test_marker_loss_real_schema_cannot_be_reclassified_synthetic(self) -> None:
+        db_path = self.root / "marker-loss-real.sqlite3"
+        bootstrap = trusted_test_real_store_bootstrap_capability()
+        create_empty_real_store(db_path=db_path, capability=bootstrap)
+        ingress_capability = trusted_test_closed_real_ingress_capability()
+        initialize_closed_real_ingress_schema(
+            db_path=db_path,
+            capability=ingress_capability,
+        )
+
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute("DROP TABLE home_store_domain")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(StoreDomainError):
+            MemoryStore(db_path).initialize()
+
+        self.assertIsNone(read_store_domain(db_path))
+        connection = sqlite3.connect(db_path)
+        try:
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='real_sources'"
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+
+    def test_unmarked_unknown_table_is_not_adopted_as_synthetic(self) -> None:
+        db_path = self.root / "unknown-unmarked.sqlite3"
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute("CREATE TABLE mystery_payload (value TEXT)")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(StoreDomainError):
+            MemoryStore(db_path).initialize()
+        self.assertIsNone(read_store_domain(db_path))
+
+    def test_unmarked_malformed_known_table_is_not_adopted_as_synthetic(self) -> None:
+        db_path = self.root / "malformed-legacy.sqlite3"
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute("CREATE TABLE sources (source_id TEXT)")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(StoreDomainError):
+            MemoryStore(db_path).initialize()
+        self.assertIsNone(read_store_domain(db_path))
 
 
 if __name__ == "__main__":

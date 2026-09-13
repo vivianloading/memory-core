@@ -25,7 +25,17 @@ from home_memory_core.real_relationships import (
     _validate_evidence_dependencies,
     ClosedRealRelationshipExerciseCapability,
 )
-from home_memory_core.real_write_ordering import real_write_ordering_lock_for_path
+from home_memory_core.real_authority_ordering import (
+    capture_real_store_generation,
+    real_authority_maintenance,
+    real_authority_operation,
+)
+from home_memory_core.real_use_state import (
+    RealUseStateIntegrityError,
+    assert_interpretation_usable,
+    assert_real_stop_use_schema,
+    assert_source_ids_usable,
+)
 from home_memory_core.store_domain import assert_real_store_domain
 
 
@@ -100,7 +110,7 @@ class ClosedRealSupersessionWriter:
         self._capability = capability
         self._relationship_capability = relationship_capability
         self._policy = policy
-        self._ordering_lock = real_write_ordering_lock_for_path(self.db_path)
+        self._authority_generation = capture_real_store_generation(self.db_path)
 
     def write_supersession(
         self,
@@ -122,7 +132,9 @@ class ClosedRealSupersessionWriter:
         )
         recorded_at = _utc_now_text()
 
-        with self._ordering_lock:
+        with real_authority_operation(
+            self.db_path, expected_generation=self._authority_generation
+        ):
             require_operation_context(
                 context,
                 expected_operation_class=OperationClass.SUPERSESSION_WRITE,
@@ -133,6 +145,12 @@ class ClosedRealSupersessionWriter:
                 assert_real_store_domain(connection)
                 _assert_relationship_schema(connection)
                 _assert_supersession_schema(connection)
+                try:
+                    assert_real_stop_use_schema(connection)
+                except RealUseStateIntegrityError as error:
+                    raise RealSupersessionIntegrityError(
+                        "closed real stop-use state has not been initialized"
+                    ) from error
 
                 previous = _load_admitted_endpoint(
                     connection=connection,
@@ -154,8 +172,10 @@ class ClosedRealSupersessionWriter:
                 self._policy.authorize(
                     context=context,
                     expected_operation_class=OperationClass.SUPERSESSION_WRITE,
-                    access_domain_id=previous.identity.access_domain_id,
+                    identity=previous.identity,
                 )
+                assert_interpretation_usable(connection, previous_interpretation_id)
+                assert_interpretation_usable(connection, new_interpretation_id)
                 try:
                     _validate_evidence_dependencies(
                         connection=connection,
@@ -168,6 +188,10 @@ class ClosedRealSupersessionWriter:
                     raise RealSupersessionIntegrityError(
                         "supersession reason evidence is invalid"
                     ) from error
+                assert_source_ids_usable(
+                    connection,
+                    (item.source_id for item in reason_evidence),
+                )
 
                 _validate_proposed_topology(
                     connection=connection,
@@ -276,13 +300,15 @@ def initialize_closed_real_supersession_schema(
 
     _require_relationship_capability(relationship_capability)
     _require_supersession_capability(supersession_capability)
-    connection = sqlite3.connect(Path(db_path))
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        with connection:
-            assert_real_store_domain(connection)
-            _assert_relationship_schema(connection)
-            connection.executescript(
+    path = Path(db_path)
+    with real_authority_maintenance(path):
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            with connection:
+                assert_real_store_domain(connection)
+                _assert_relationship_schema(connection)
+                connection.executescript(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS real_thread_membership_endpoint_key
                     ON real_thread_memberships (
@@ -425,9 +451,9 @@ def initialize_closed_real_supersession_schema(
                     ) THEN RAISE(ABORT, 'real supersession cycle') END;
                 END;
                 """
-            )
-    finally:
-        connection.close()
+                )
+        finally:
+            connection.close()
 
 
 def _validate_input(

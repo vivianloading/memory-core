@@ -26,7 +26,17 @@ from home_memory_core.real_ingress import (
     RealIngressIntegrityError,
     _require_closed_real_ingress_capability,
 )
-from home_memory_core.real_write_ordering import real_write_ordering_lock_for_path
+from home_memory_core.real_authority_ordering import (
+    capture_real_store_generation,
+    real_authority_maintenance,
+    real_authority_operation,
+)
+from home_memory_core.real_use_state import (
+    RealUseStateIntegrityError,
+    assert_interpretation_usable,
+    assert_real_stop_use_schema,
+    assert_source_ids_usable,
+)
 from home_memory_core.store_domain import assert_real_store_domain
 
 
@@ -98,6 +108,8 @@ class SingleOwnerRealRelationshipWritePolicy:
     policy_id: str
     owner_principal_id: PrincipalId
     access_domain_id: AccessDomainId
+    perspective_owner: PerspectiveOwnerId
+    perspective_instance: PerspectiveInstanceId
     _marker: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -115,22 +127,38 @@ class SingleOwnerRealRelationshipWritePolicy:
             raise RealRelationshipAuthorizationError(
                 "access_domain_id must use AccessDomainId"
             )
+        if not isinstance(self.perspective_owner, PerspectiveOwnerId):
+            raise RealRelationshipAuthorizationError(
+                "perspective_owner must use PerspectiveOwnerId"
+            )
+        if not isinstance(self.perspective_instance, PerspectiveInstanceId):
+            raise RealRelationshipAuthorizationError(
+                "perspective_instance must use PerspectiveInstanceId"
+            )
 
     def authorize(
         self,
         *,
         context: OperationContext,
         expected_operation_class: OperationClass,
-        access_domain_id: AccessDomainId,
+        identity: RealRelationshipIdentity,
     ) -> None:
         require_operation_context(
             context,
             expected_operation_class=expected_operation_class,
         )
+        if not isinstance(identity, RealRelationshipIdentity):
+            raise RealRelationshipAuthorizationError(
+                "relationship authorization requires persisted/typed identity"
+            )
         if context.principal.principal_id != self.owner_principal_id:
             raise RealRelationshipAuthorizationError("relationship write denied")
-        if access_domain_id != self.access_domain_id:
+        if identity.access_domain_id != self.access_domain_id:
             raise RealRelationshipAuthorizationError("relationship write denied")
+        if identity.perspective_owner != self.perspective_owner:
+            raise RealRelationshipAuthorizationError("relationship perspective denied")
+        if identity.perspective_instance != self.perspective_instance:
+            raise RealRelationshipAuthorizationError("relationship perspective denied")
 
 
 @dataclass(frozen=True)
@@ -166,7 +194,7 @@ class ClosedRealRelationshipWriter:
         self.db_path = Path(db_path)
         self._capability = capability
         self._policy = policy
-        self._ordering_lock = real_write_ordering_lock_for_path(self.db_path)
+        self._authority_generation = capture_real_store_generation(self.db_path)
 
     def write_interpretation(
         self,
@@ -187,21 +215,28 @@ class ClosedRealRelationshipWriter:
         )
         recorded_at = _utc_now_text()
 
-        with self._ordering_lock:
+        with real_authority_operation(
+            self.db_path, expected_generation=self._authority_generation
+        ):
             self._policy.authorize(
                 context=context,
                 expected_operation_class=OperationClass.INTERPRETATION_WRITE,
-                access_domain_id=identity.access_domain_id,
+                identity=identity,
             )
             connection = _open_write_connection(self.db_path)
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 assert_real_store_domain(connection)
                 _assert_relationship_schema(connection)
+                _require_stop_use_state(connection)
                 _validate_evidence_dependencies(
                     connection=connection,
                     identity=identity,
                     evidence=evidence,
+                )
+                assert_source_ids_usable(
+                    connection,
+                    (item.source_id for item in evidence),
                 )
                 try:
                     connection.execute(
@@ -292,17 +327,20 @@ class ClosedRealRelationshipWriter:
         _validate_thread_input(thread_id=thread_id, question=question, identity=identity)
         recorded_at = _utc_now_text()
 
-        with self._ordering_lock:
+        with real_authority_operation(
+            self.db_path, expected_generation=self._authority_generation
+        ):
             self._policy.authorize(
                 context=context,
                 expected_operation_class=OperationClass.THREAD_CREATE,
-                access_domain_id=identity.access_domain_id,
+                identity=identity,
             )
             connection = _open_write_connection(self.db_path)
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 assert_real_store_domain(connection)
                 _assert_relationship_schema(connection)
+                _require_stop_use_state(connection)
                 try:
                     connection.execute(
                         """
@@ -375,7 +413,9 @@ class ClosedRealRelationshipWriter:
                 raise ValueError(f"{field_name} cannot be empty")
         recorded_at = _utc_now_text()
 
-        with self._ordering_lock:
+        with real_authority_operation(
+            self.db_path, expected_generation=self._authority_generation
+        ):
             require_operation_context(
                 context,
                 expected_operation_class=OperationClass.THREAD_ADMIT,
@@ -385,6 +425,7 @@ class ClosedRealRelationshipWriter:
                 connection.execute("BEGIN IMMEDIATE")
                 assert_real_store_domain(connection)
                 _assert_relationship_schema(connection)
+                _require_stop_use_state(connection)
                 interpretation = _load_relationship_identity(
                     connection=connection,
                     table="real_interpretations",
@@ -404,8 +445,9 @@ class ClosedRealRelationshipWriter:
                 self._policy.authorize(
                     context=context,
                     expected_operation_class=OperationClass.THREAD_ADMIT,
-                    access_domain_id=interpretation.access_domain_id,
+                    identity=interpretation,
                 )
+                assert_interpretation_usable(connection, interpretation_id)
                 try:
                     connection.execute(
                         """
@@ -472,13 +514,15 @@ def initialize_closed_real_relationship_schema(
 
     _require_closed_real_ingress_capability(ingress_capability)
     _require_relationship_capability(relationship_capability)
-    connection = sqlite3.connect(Path(db_path))
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        with connection:
-            assert_real_store_domain(connection)
-            _assert_real_source_schema(connection)
-            connection.executescript(
+    path = Path(db_path)
+    with real_authority_maintenance(path):
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            with connection:
+                assert_real_store_domain(connection)
+                _assert_real_source_schema(connection)
+                connection.executescript(
                 f"""
                 CREATE UNIQUE INDEX IF NOT EXISTS real_sources_evidence_domain_key
                     ON real_sources(source_id, content_sha256, access_domain_id);
@@ -660,9 +704,9 @@ def initialize_closed_real_relationship_schema(
                     ) ON UPDATE RESTRICT ON DELETE RESTRICT
                 );
                 """
-            )
-    finally:
-        connection.close()
+                )
+        finally:
+            connection.close()
 
 
 def _require_relationship_capability(
@@ -755,6 +799,15 @@ def _validate_evidence_dependencies(
             raise RealRelationshipIntegrityError(
                 "evidence range exceeds persisted source content"
             )
+
+
+def _require_stop_use_state(connection: sqlite3.Connection) -> None:
+    try:
+        assert_real_stop_use_schema(connection)
+    except RealUseStateIntegrityError as error:
+        raise RealRelationshipIntegrityError(
+            "closed real stop-use state has not been initialized"
+        ) from error
 
 
 def _load_relationship_identity(

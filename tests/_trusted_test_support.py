@@ -8,6 +8,7 @@ mint through supported runtime APIs.
 from home_memory_core import operation_identity as identity
 from home_memory_core import real_ingress
 from home_memory_core import real_relationships
+from home_memory_core import real_stop_use
 from home_memory_core import store_domain
 
 
@@ -61,11 +62,24 @@ def trusted_test_single_owner_real_relationship_policy(
     policy_id: str,
     owner_principal_id: identity.PrincipalId,
     access_domain_id,
+    perspective_owner=None,
+    perspective_instance=None,
 ) -> real_relationships.SingleOwnerRealRelationshipWritePolicy:
+    from home_memory_core.identity_namespaces import (
+        PerspectiveInstanceId,
+        PerspectiveOwnerId,
+    )
+
     return real_relationships.SingleOwnerRealRelationshipWritePolicy(
         policy_id=policy_id,
         owner_principal_id=owner_principal_id,
         access_domain_id=access_domain_id,
+        perspective_owner=(
+            perspective_owner or PerspectiveOwnerId("owner")
+        ),
+        perspective_instance=(
+            perspective_instance or PerspectiveInstanceId("owner-instance")
+        ),
         _marker=real_relationships._TRUSTED_RELATIONSHIP_WRITE_POLICY_MARKER,
     )
 
@@ -75,4 +89,25 @@ def trusted_test_closed_real_supersession_capability():
 
     return real_supersession.ClosedRealSupersessionExerciseCapability(
         _marker=real_supersession._CLOSED_REAL_SUPERSESSION_CAPABILITY_MARKER,
+    )
+
+
+def trusted_test_closed_real_stop_use_capability(
+) -> real_stop_use.ClosedRealStopUseExerciseCapability:
+    return real_stop_use.ClosedRealStopUseExerciseCapability(
+        _marker=real_stop_use._CLOSED_REAL_STOP_USE_CAPABILITY_MARKER,
+    )
+
+
+def trusted_test_single_owner_real_stop_use_policy(
+    *,
+    policy_id: str,
+    owner_principal_id: identity.PrincipalId,
+    access_domain_id,
+) -> real_stop_use.SingleOwnerRealStopUsePolicy:
+    return real_stop_use.SingleOwnerRealStopUsePolicy(
+        policy_id=policy_id,
+        owner_principal_id=owner_principal_id,
+        access_domain_id=access_domain_id,
+        _marker=real_stop_use._TRUSTED_STOP_USE_POLICY_MARKER,
     )
