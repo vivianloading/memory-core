@@ -32,6 +32,7 @@ class OperationClass(StrEnum):
     THREAD_ADMIT = "thread.admit"
     SUPERSESSION_WRITE = "supersession.write"
     SOURCE_SUPPRESS = "source.suppress"
+    NORMAL_READ = "memory.read"
     DISCOVERY_READ = "discovery.read"
     MEMORY_DELIVER = "memory.deliver"
     AUDIT_READ = "audit.read"

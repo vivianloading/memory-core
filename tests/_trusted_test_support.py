@@ -7,6 +7,7 @@ mint through supported runtime APIs.
 
 from home_memory_core import operation_identity as identity
 from home_memory_core import real_ingress
+from home_memory_core import real_normal_read
 from home_memory_core import real_relationships
 from home_memory_core import real_stop_use
 from home_memory_core import store_domain
@@ -110,4 +111,36 @@ def trusted_test_single_owner_real_stop_use_policy(
         owner_principal_id=owner_principal_id,
         access_domain_id=access_domain_id,
         _marker=real_stop_use._TRUSTED_STOP_USE_POLICY_MARKER,
+    )
+
+
+def trusted_test_closed_real_normal_read_capability(
+) -> real_normal_read.ClosedRealNormalReadExerciseCapability:
+    return real_normal_read.ClosedRealNormalReadExerciseCapability(
+        _marker=real_normal_read._CLOSED_REAL_NORMAL_READ_CAPABILITY_MARKER,
+    )
+
+
+def trusted_test_single_owner_real_normal_read_policy(
+    *,
+    policy_id: str,
+    owner_principal_id: identity.PrincipalId,
+    access_domain_id,
+    perspective_owner=None,
+    perspective_instance=None,
+) -> real_normal_read.SingleOwnerRealNormalReadPolicy:
+    from home_memory_core.identity_namespaces import (
+        PerspectiveInstanceId,
+        PerspectiveOwnerId,
+    )
+
+    return real_normal_read.SingleOwnerRealNormalReadPolicy(
+        policy_id=policy_id,
+        owner_principal_id=owner_principal_id,
+        access_domain_id=access_domain_id,
+        perspective_owner=(perspective_owner or PerspectiveOwnerId("owner")),
+        perspective_instance=(
+            perspective_instance or PerspectiveInstanceId("owner-instance")
+        ),
+        _marker=real_normal_read._TRUSTED_NORMAL_READ_POLICY_MARKER,
     )
