@@ -8,6 +8,7 @@ mint through supported runtime APIs.
 from home_memory_core import operation_identity as identity
 from home_memory_core import real_ingress
 from home_memory_core import real_discovery
+from home_memory_core import real_delivery
 from home_memory_core import real_normal_read
 from home_memory_core import real_relationships
 from home_memory_core import real_stop_use
@@ -221,4 +222,38 @@ def trusted_test_single_owner_real_discovery_policy(
             perspective_instance or PerspectiveInstanceId("owner-instance")
         ),
         _marker=real_discovery._TRUSTED_REAL_DISCOVERY_POLICY_MARKER,
+    )
+
+
+def trusted_test_closed_real_delivery_capability(
+) -> real_delivery.ClosedRealDeliveryExerciseCapability:
+    return real_delivery.ClosedRealDeliveryExerciseCapability(
+        _marker=real_delivery._CLOSED_REAL_DELIVERY_CAPABILITY_MARKER,
+    )
+
+
+def trusted_test_single_owner_real_delivery_policy(
+    *,
+    policy_id: str,
+    owner_principal_id: identity.PrincipalId,
+    access_domain_id,
+    destination_id,
+    perspective_owner=None,
+    perspective_instance=None,
+) -> real_delivery.SingleOwnerRealDeliveryPolicy:
+    from home_memory_core.identity_namespaces import (
+        PerspectiveInstanceId,
+        PerspectiveOwnerId,
+    )
+
+    return real_delivery.SingleOwnerRealDeliveryPolicy(
+        policy_id=policy_id,
+        owner_principal_id=owner_principal_id,
+        access_domain_id=access_domain_id,
+        perspective_owner=(perspective_owner or PerspectiveOwnerId("owner")),
+        perspective_instance=(
+            perspective_instance or PerspectiveInstanceId("owner-instance")
+        ),
+        destination_id=destination_id,
+        _marker=real_delivery._TRUSTED_REAL_DELIVERY_POLICY_MARKER,
     )
