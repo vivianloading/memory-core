@@ -1,0 +1,8 @@
+[home]
+schema = "home-mini-host-v0.1"
+runtime_root = "."
+database = "data/home.db"
+real_data_allowed = false
+
+[secrets]
+mode = "disabled"

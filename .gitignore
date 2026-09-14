@@ -7,4 +7,4 @@ __pycache__/
 data/*.sqlite3
 data/*.sqlite3-*
 data/*.db
-data/*.db-*
+data/*.db-*.home-runtime.lock
