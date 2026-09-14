@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from threading import Lock, RLock
+from threading import Lock, RLock, get_ident
 from typing import Iterator
 
 
@@ -18,11 +18,16 @@ class RealStoreLifecycleError(RuntimeError):
     """A stale or closed real-store object attempted another authority operation."""
 
 
+class RealHandoffReentrancyError(RuntimeError):
+    """Authority mutation/reentry was attempted from inside final handoff."""
+
+
 @dataclass
 class _RealAuthorityCoordinator:
     lock: RLock
     state: RealStoreLifecycleState = RealStoreLifecycleState.ACTIVE
     generation: int = 0
+    handoff_thread_id: int | None = None
 
 
 _REGISTRY_GUARD = Lock()
@@ -70,7 +75,16 @@ def real_authority_operation(
     """
 
     coordinator = _coordinator_for_path(db_path)
+    current_thread = get_ident()
+    if coordinator.handoff_thread_id == current_thread:
+        raise RealHandoffReentrancyError(
+            "HOME authority operation cannot re-enter from final handoff"
+        )
     with coordinator.lock:
+        if coordinator.handoff_thread_id == current_thread:
+            raise RealHandoffReentrancyError(
+                "HOME authority operation cannot re-enter from final handoff"
+            )
         if coordinator.state is not RealStoreLifecycleState.ACTIVE:
             raise RealStoreLifecycleError(
                 f"real store is not active: {coordinator.state.value}"
@@ -81,6 +95,48 @@ def real_authority_operation(
         ):
             raise RealStoreLifecycleError("real store object belongs to a stale generation")
         yield
+
+
+@contextmanager
+def real_final_handoff_operation(
+    db_path: str | Path,
+    *,
+    expected_generation: int | None = None,
+) -> Iterator[None]:
+    """Hold the authority coordinator across one synchronous final disclosure.
+
+    The active thread is marked so a trusted sink cannot re-enter HOME authority
+    mutation/reset/nested-handoff paths through the coordinator's RLock. Other
+    threads block until the callback has returned or unwound.
+    """
+
+    coordinator = _coordinator_for_path(db_path)
+    current_thread = get_ident()
+    if coordinator.handoff_thread_id == current_thread:
+        raise RealHandoffReentrancyError(
+            "nested final handoff is not allowed"
+        )
+    with coordinator.lock:
+        if coordinator.state is not RealStoreLifecycleState.ACTIVE:
+            raise RealStoreLifecycleError(
+                f"real store is not active: {coordinator.state.value}"
+            )
+        if (
+            expected_generation is not None
+            and expected_generation != coordinator.generation
+        ):
+            raise RealStoreLifecycleError(
+                "real store object belongs to a stale generation"
+            )
+        if coordinator.handoff_thread_id is not None:
+            raise RealHandoffReentrancyError(
+                "another final handoff is already active"
+            )
+        coordinator.handoff_thread_id = current_thread
+        try:
+            yield
+        finally:
+            coordinator.handoff_thread_id = None
 
 
 @contextmanager
@@ -98,7 +154,12 @@ def begin_real_store_bootstrap(db_path: str | Path) -> _RealAuthorityCoordinator
     activate a new lifecycle generation after creating the domain marker.
     """
 
-    return _coordinator_for_path(db_path)
+    coordinator = _coordinator_for_path(db_path)
+    if coordinator.handoff_thread_id == get_ident():
+        raise RealHandoffReentrancyError(
+            "real-store bootstrap/reset cannot re-enter from final handoff"
+        )
+    return coordinator
 
 
 def activate_bootstrapped_real_store(

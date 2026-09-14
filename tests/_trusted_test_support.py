@@ -257,3 +257,17 @@ def trusted_test_single_owner_real_delivery_policy(
         destination_id=destination_id,
         _marker=real_delivery._TRUSTED_REAL_DELIVERY_POLICY_MARKER,
     )
+
+
+def trusted_test_synchronous_handoff_sink(
+    *,
+    destination_id,
+    handler,
+    destination_class: str = "synthetic-model-consumer",
+) -> real_delivery.TrustedSynchronousHandoffSink:
+    return real_delivery.TrustedSynchronousHandoffSink(
+        destination_id=destination_id,
+        destination_class=destination_class,
+        _handler=handler,
+        _marker=real_delivery._TRUSTED_SYNC_HANDOFF_SINK_MARKER,
+    )
