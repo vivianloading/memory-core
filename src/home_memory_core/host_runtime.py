@@ -93,7 +93,7 @@ def acquire_home_single_instance(
     root.mkdir(parents=True, exist_ok=True)
 
     lock_path = root / ".home-runtime.lock"
-    handle = lock_path.open("a+b", buffering=0)
+    handle = _open_lock_file(lock_path)
     try:
         _try_lock_file(handle)
     except Exception:
@@ -116,6 +116,70 @@ def acquire_home_single_instance(
 
     return HomeSingleInstanceLease(identity=identity, handle=handle)
 
+
+
+def _open_lock_file(lock_path: Path) -> IO[bytes]:
+    """Open the lock file with sharing compatible with Windows byte locking.
+
+    CPython's ordinary file-open sharing on Windows is not a contract HOME
+    should rely on for the contention path.  We explicitly allow other
+    handles to open the file, then let the byte-range lock decide ownership.
+    """
+
+    if sys.platform != "win32":
+        return lock_path.open("a+b", buffering=0)
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    generic_read = 0x80000000
+    generic_write = 0x40000000
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    file_share_delete = 0x00000004
+    open_always = 4
+    file_attribute_normal = 0x00000080
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+
+    win_handle = create_file(
+        str(lock_path),
+        generic_read | generic_write,
+        file_share_read | file_share_write | file_share_delete,
+        None,
+        open_always,
+        file_attribute_normal,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if win_handle == invalid_handle:
+        error = ctypes.get_last_error()
+        raise OSError(error, ctypes.FormatError(error), str(lock_path))
+
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    try:
+        fd = msvcrt.open_osfhandle(int(win_handle), flags)
+    except Exception:
+        kernel32.CloseHandle(win_handle)
+        raise
+
+    try:
+        return os.fdopen(fd, "r+b", buffering=0)
+    except Exception:
+        os.close(fd)
+        raise
 
 def _canonical_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
@@ -155,9 +219,11 @@ def _try_lock_file(handle: IO[bytes]) -> None:
     if sys.platform == "win32":
         import msvcrt
 
-        handle.seek(0)
-        # msvcrt locking requires the byte range to exist.
-        if handle.read(1) == b"":
+        # Avoid reading byte 0 before attempting the lock.  On Windows, a
+        # competing process may already hold a mandatory byte-range lock there,
+        # and even a probe read can fail with PermissionError.  File size can be
+        # inspected without touching the locked range.
+        if os.fstat(handle.fileno()).st_size == 0:
             handle.seek(0)
             handle.write(b"\0")
             handle.flush()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -32,6 +33,16 @@ _CHILD = textwrap.dedent(
         raise SystemExit(0)
     """
 )
+
+
+def _child_env() -> dict[str, str]:
+    """Make the src-layout package importable in a fresh test subprocess."""
+
+    env = os.environ.copy()
+    src_dir = str(Path(__file__).resolve().parents[1] / "src")
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = src_dir if not existing else src_dir + os.pathsep + existing
+    return env
 
 
 class HostRuntimeTests(unittest.TestCase):
@@ -73,6 +84,7 @@ class HostRuntimeTests(unittest.TestCase):
                     text=True,
                     capture_output=True,
                     check=False,
+                    env=_child_env(),
                 )
             self.assertEqual(result.returncode, 23)
             self.assertIn("HostRuntimeLeaseError", result.stdout)
@@ -88,6 +100,7 @@ class HostRuntimeTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
+                env=_child_env(),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("host-", result.stdout)
@@ -97,12 +110,17 @@ class HostRuntimeTests(unittest.TestCase):
             root = Path(tmp) / "home"
             db = root / "data" / "memory.db"
             with acquire_home_single_instance(runtime_root=root, db_path=db) as lease:
-                metadata = json.loads((root / ".home-runtime.lock").read_text("utf-8"))
-                self.assertEqual(metadata["schema"], "home-single-instance-v0.1")
-                self.assertEqual(metadata["process_instance_id"], lease.identity.process_instance_id)
-                self.assertEqual(metadata["runtime_root"], str(root.resolve()))
-                self.assertEqual(metadata["db_path"], str(db.resolve()))
-                self.assertFalse(metadata["real_data_allowed"])
+                process_instance_id = lease.identity.process_instance_id
+            # Windows byte-range locks can make the locked byte unreadable from
+            # a second handle.  Metadata is diagnostic, not authority, so test
+            # it after release rather than making live readability part of the
+            # lease contract.
+            metadata = json.loads((root / ".home-runtime.lock").read_text("utf-8"))
+            self.assertEqual(metadata["schema"], "home-single-instance-v0.1")
+            self.assertEqual(metadata["process_instance_id"], process_instance_id)
+            self.assertEqual(metadata["runtime_root"], str(root.resolve()))
+            self.assertEqual(metadata["db_path"], str(db.resolve()))
+            self.assertFalse(metadata["real_data_allowed"])
 
     def test_released_lease_cannot_be_reentered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
