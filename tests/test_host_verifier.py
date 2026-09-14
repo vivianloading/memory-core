@@ -63,6 +63,7 @@ class HostVerifierTests(unittest.TestCase):
         modules = set(critical_test_modules())
         self.assertIn("tests.test_host_runtime", modules)
         self.assertIn("tests.test_host_config", modules)
+        self.assertIn("tests.test_host_migration", modules)
         self.assertIn("tests.test_real_authority_ordering", modules)
         self.assertIn("tests.test_real_source_origin", modules)
         self.assertIn("tests.test_real_stop_use", modules)
