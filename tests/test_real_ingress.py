@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from home_memory_core.identity_namespaces import (
 )
 from home_memory_core.ingress_identity import IngressIdentityMetadata
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+from home_memory_core.process_boundary import HomeProcessIsolationError
 from home_memory_core.operation_identity import (
     AuthenticationBoundaryError,
     OperationClass,
@@ -113,6 +115,43 @@ class ClosedRealIngressTest(unittest.TestCase):
             perspective_owner=PerspectiveOwnerId("perspective-owner"),
             perspective_instance=PerspectiveInstanceId("perspective-instance"),
         )
+
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_reuse_ingress_writer(self) -> None:
+        context = self._context()
+        metadata = self._metadata()
+        provenance = trusted_test_source_origin_provenance(
+            external_object_key="forked-ingress-source",
+        )
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child process assertion
+            try:
+                self.writer.write_source(
+                    context=context,
+                    source_id="forked-ingress-source",
+                    content="must not be written by child",
+                    metadata=metadata,
+                    provenance=provenance,
+                )
+            except HomeProcessIsolationError:
+                os._exit(0)
+            except BaseException:
+                os._exit(2)
+            else:
+                os._exit(3)
+
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT 1 FROM real_sources WHERE source_id = ?",
+                ("forked-ingress-source",),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNone(row)
 
     def test_caller_cannot_mint_closed_real_ingress_capability(self) -> None:
         with self.assertRaises(RealIngressDisabledError):

@@ -8,6 +8,11 @@ import secrets
 import sys
 from typing import IO
 
+from home_memory_core.process_boundary import (
+    HomeProcessIsolationError,
+    require_home_process,
+)
+
 
 class HostRuntimeLeaseError(RuntimeError):
     """The supported HOME host runtime could not acquire exclusive ownership."""
@@ -29,6 +34,8 @@ class HomeHostRuntimeIdentity:
     runtime_root: Path
     db_path: Path
     process_instance_id: str
+    owner_pid: int
+    lock_path: Path
     real_data_allowed: bool = False
 
 
@@ -48,13 +55,16 @@ class HomeSingleInstanceLease:
 
     @property
     def identity(self) -> HomeHostRuntimeIdentity:
+        self._assert_owner_process()
         return self._identity
 
     @property
     def released(self) -> bool:
+        self._assert_owner_process()
         return self._released
 
     def release(self) -> None:
+        self._assert_owner_process()
         if self._released:
             return
         _unlock_file(self._handle)
@@ -62,12 +72,25 @@ class HomeSingleInstanceLease:
         self._released = True
 
     def __enter__(self) -> HomeSingleInstanceLease:
+        self._assert_owner_process()
         if self._released:
             raise HostRuntimeLeaseError("released HOME host lease cannot be reused")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.release()
+
+    def _assert_owner_process(self) -> None:
+        try:
+            require_home_process()
+        except HomeProcessIsolationError as exc:
+            raise HostRuntimeLeaseError(
+                "forked child cannot use or release the parent HOME host lease"
+            ) from exc
+        if os.getpid() != self._identity.owner_pid:
+            raise HostRuntimeLeaseError(
+                "HOME host lease belongs to another process"
+            )
 
 
 def acquire_home_single_instance(
@@ -83,6 +106,8 @@ def acquire_home_single_instance(
     flip it here.
     """
 
+    require_home_process()
+
     if real_data_allowed:
         raise HostRuntimeConfigurationError(
             "mini-host runtime remains closed to real personal data"
@@ -90,9 +115,18 @@ def acquire_home_single_instance(
 
     root = _canonical_path(runtime_root)
     database = _canonical_path(db_path)
-    root.mkdir(parents=True, exist_ok=True)
+    if not _is_within(database, root):
+        raise HostRuntimeConfigurationError(
+            "HOME database must remain inside the canonical runtime root"
+        )
 
-    lock_path = root / ".home-runtime.lock"
+    root.mkdir(parents=True, exist_ok=True)
+    database.parent.mkdir(parents=True, exist_ok=True)
+
+    # The lease is keyed by the canonical database, not only runtime_root.
+    # Nested runtime roots that name the same DB must therefore contend on the
+    # same OS lock rather than creating independent locks.
+    lock_path = database.parent / ".home-runtime.lock"
     handle = _open_lock_file(lock_path)
     try:
         _try_lock_file(handle)
@@ -104,6 +138,8 @@ def acquire_home_single_instance(
         runtime_root=root,
         db_path=database,
         process_instance_id=f"host-{secrets.token_hex(16)}",
+        owner_pid=os.getpid(),
+        lock_path=lock_path,
         real_data_allowed=False,
     )
 
@@ -191,6 +227,15 @@ def _canonical_path(value: str | Path) -> Path:
         ) from exc
 
 
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def _write_lock_metadata(
     handle: IO[bytes],
     identity: HomeHostRuntimeIdentity,
@@ -199,6 +244,8 @@ def _write_lock_metadata(
         "schema": "home-single-instance-v0.1",
         "pid": os.getpid(),
         "process_instance_id": identity.process_instance_id,
+        "owner_pid": identity.owner_pid,
+        "lock_path": str(identity.lock_path),
         "runtime_root": str(identity.runtime_root),
         "db_path": str(identity.db_path),
         "real_data_allowed": False,

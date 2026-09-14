@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+import os
 import sqlite3
 import tempfile
 from threading import Event, Thread
@@ -29,6 +30,7 @@ from home_memory_core.identity_namespaces import (
     SubjectId,
 )
 from home_memory_core.ingress_identity import IngressIdentityMetadata
+from home_memory_core.process_boundary import HomeProcessIsolationError
 from home_memory_core.operation_identity import (
     AuthenticationBoundaryError,
     OperationClass,
@@ -265,6 +267,35 @@ class ClosedRealStopUseTests(unittest.TestCase):
             return connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         finally:
             connection.close()
+
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_reuse_stop_use_writer(self) -> None:
+        context = self._context(OperationClass.SOURCE_SUPPRESS)
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child process assertion
+            try:
+                self.stop_writer.suppress_source(
+                    context=context,
+                    source_id="source-a",
+                    reason_code=StopUseReasonCode.TEST_FIXTURE,
+                )
+            except HomeProcessIsolationError:
+                os._exit(0)
+            except BaseException:
+                os._exit(2)
+            else:
+                os._exit(3)
+
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+        # Parent remains authoritative and can perform the first suppression.
+        receipt = self.stop_writer.suppress_source(
+            context=self._context(OperationClass.SOURCE_SUPPRESS),
+            source_id="source-a",
+            reason_code=StopUseReasonCode.TEST_FIXTURE,
+        )
+        self.assertEqual(receipt.source_id, "source-a")
 
     def test_stop_use_capability_cannot_be_caller_minted(self) -> None:
         with self.assertRaises(RealStopUseDisabledError):

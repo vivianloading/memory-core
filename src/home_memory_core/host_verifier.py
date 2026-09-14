@@ -113,6 +113,8 @@ def critical_test_modules() -> tuple[str, ...]:
         "tests.test_host_config",
         "tests.test_host_migration",
         "tests.test_real_authority_ordering",
+        "tests.test_real_ingress",
+        "tests.test_real_normal_read",
         "tests.test_real_source_origin",
         "tests.test_real_stop_use",
         "tests.test_real_delivery",

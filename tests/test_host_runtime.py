@@ -89,6 +89,54 @@ class HostRuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 23)
             self.assertIn("HostRuntimeLeaseError", result.stdout)
 
+
+    def test_nested_runtime_roots_cannot_lock_same_canonical_database(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            outer = base / "pilot"
+            db = outer / "data" / "home.db"
+            inner = outer / "data"
+            with acquire_home_single_instance(runtime_root=outer, db_path=db):
+                result = subprocess.run(
+                    [sys.executable, "-c", _CHILD, str(inner), str(db)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=_child_env(),
+                )
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertIn("HostRuntimeLeaseError", result.stdout)
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_release_parent_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "home"
+            db = root / "data" / "memory.db"
+            lease = acquire_home_single_instance(runtime_root=root, db_path=db)
+            pid = os.fork()
+            if pid == 0:  # pragma: no cover - child process assertion
+                try:
+                    lease.release()
+                except HostRuntimeLeaseError:
+                    os._exit(0)
+                except BaseException:
+                    os._exit(2)
+                else:
+                    os._exit(3)
+
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            # The child must not have unlocked the parent's file description.
+            result = subprocess.run(
+                [sys.executable, "-c", _CHILD, str(root), str(db)],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=_child_env(),
+            )
+            self.assertEqual(result.returncode, 23, result.stderr)
+            lease.release()
+
     def test_other_process_can_acquire_after_release(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "home"
@@ -115,9 +163,12 @@ class HostRuntimeTests(unittest.TestCase):
             # a second handle.  Metadata is diagnostic, not authority, so test
             # it after release rather than making live readability part of the
             # lease contract.
-            metadata = json.loads((root / ".home-runtime.lock").read_text("utf-8"))
+            lock_path = db.parent / ".home-runtime.lock"
+            metadata = json.loads(lock_path.read_text("utf-8"))
             self.assertEqual(metadata["schema"], "home-single-instance-v0.1")
             self.assertEqual(metadata["process_instance_id"], process_instance_id)
+            self.assertEqual(metadata["owner_pid"], os.getpid())
+            self.assertEqual(metadata["lock_path"], str(lock_path.resolve()))
             self.assertEqual(metadata["runtime_root"], str(root.resolve()))
             self.assertEqual(metadata["db_path"], str(db.resolve()))
             self.assertFalse(metadata["real_data_allowed"])

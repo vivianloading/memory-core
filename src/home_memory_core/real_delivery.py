@@ -11,6 +11,11 @@ from threading import Lock
 from typing import Callable
 from uuid import uuid4
 
+from home_memory_core.process_boundary import (
+    current_home_process_instance_id,
+    require_home_process,
+)
+
 from home_memory_core.identity_namespaces import (
     AccessDomainId,
     DestinationId,
@@ -67,7 +72,7 @@ MODEL_ENVELOPE_SCHEMA_VERSION = "untrusted_memory_data_v0.1"
 HANDOFF_SCHEMA_MARKER_TABLE = "real_final_handoff_schema_marker"
 HANDOFF_SCHEMA_VERSION = "final-handoff-v0.1"
 STORE_INCARNATION_TABLE = "real_store_incarnation"
-_PROCESS_INSTANCE_ID = f"process-{uuid4().hex}"
+_PROCESS_INSTANCE_ID = current_home_process_instance_id()
 
 
 class RealDeliveryDisabledError(RuntimeError):
@@ -437,6 +442,7 @@ def _runtime_key(db_path: str | Path) -> str:
 
 
 def _runtime_for_path(db_path: str | Path) -> _DeliveryRuntime:
+    require_home_process()
     key = _runtime_key(db_path)
     with _RUNTIME_GUARD:
         runtime = _RUNTIMES.get(key)
@@ -1304,15 +1310,25 @@ class ClosedRealThreadFinalHandoff:
         attempt.state = _AttemptState.ENTERED
         record.state = _PreparationState.ENTERED
         slot.state = _SlotState.ENTERED
+        sink_outcome_unknown = False
         try:
             self._sink._invoke(envelope, attempt.attempt_id)
-        except BaseException as error:
+        except BaseException:
+            # Consume the raw sink exception inside the trusted boundary. Do
+            # not chain it into the public HOME error: transport exceptions can
+            # contain payload, credentials, request objects, or traceback
+            # locals. The entered slot remains terminal/indeterminate.
             attempt.state = _AttemptState.INDETERMINATE
             record.state = _PreparationState.INDETERMINATE
             slot.state = _SlotState.INDETERMINATE
+            sink_outcome_unknown = True
+
+        if sink_outcome_unknown:
+            # Raise outside the ``except`` block so Python does not retain the
+            # consumed sink exception as __context__ on the public error.
             raise RealHandoffOutcomeUnknownError(
                 "trusted sink was entered; final disclosure outcome is unknown"
-            ) from error
+            )
 
         attempt.state = _AttemptState.COMPLETED
         record.state = _PreparationState.DELIVERED

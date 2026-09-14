@@ -65,6 +65,8 @@ class HostVerifierTests(unittest.TestCase):
         self.assertIn("tests.test_host_config", modules)
         self.assertIn("tests.test_host_migration", modules)
         self.assertIn("tests.test_real_authority_ordering", modules)
+        self.assertIn("tests.test_real_ingress", modules)
+        self.assertIn("tests.test_real_normal_read", modules)
         self.assertIn("tests.test_real_source_origin", modules)
         self.assertIn("tests.test_real_stop_use", modules)
         self.assertIn("tests.test_real_delivery", modules)

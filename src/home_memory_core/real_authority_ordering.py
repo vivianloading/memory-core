@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import Lock, RLock, get_ident
 from typing import Iterator
 
+from home_memory_core.process_boundary import require_home_process
+
 
 class RealStoreLifecycleState(StrEnum):
     ACTIVE = "active"
@@ -39,6 +41,7 @@ def _key_for_path(db_path: str | Path) -> str:
 
 
 def _coordinator_for_path(db_path: str | Path) -> _RealAuthorityCoordinator:
+    require_home_process()
     key = _key_for_path(db_path)
     with _REGISTRY_GUARD:
         coordinator = _COORDINATORS.get(key)

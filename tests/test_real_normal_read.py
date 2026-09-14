@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from _trusted_test_support import (
 )
 from home_memory_core.identity_namespaces import AccessDomainId
 from home_memory_core.ingress_identity import IngressIdentityMetadata
+from home_memory_core.process_boundary import HomeProcessIsolationError
 from home_memory_core.operation_identity import (
     AuthenticationBoundaryError,
     OperationClass,
@@ -171,6 +173,29 @@ class ClosedRealNormalReadTests(unittest.TestCase):
             source_id=source_id,
             reason_code=StopUseReasonCode.TEST_FIXTURE,
         )
+
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_reuse_normal_reader(self) -> None:
+        context = self._context(OperationClass.NORMAL_READ)
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child process assertion
+            try:
+                self.reader.read_source(context=context, source_id="source-a")
+            except HomeProcessIsolationError:
+                os._exit(0)
+            except BaseException:
+                os._exit(2)
+            else:
+                os._exit(3)
+
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+        result = self.reader.read_source(
+            context=self._context(OperationClass.NORMAL_READ),
+            source_id="source-a",
+        )
+        self.assertEqual(result.content, self.content)
 
     def test_capability_cannot_be_caller_minted(self) -> None:
         with self.assertRaises(RealNormalReadDisabledError):

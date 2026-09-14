@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
 from threading import Event, Thread
+import traceback
 import unittest
 from unittest.mock import patch
 
@@ -36,6 +38,7 @@ from home_memory_core.identity_namespaces import (
     SubjectId,
 )
 from home_memory_core.ingress_identity import IngressIdentityMetadata
+from home_memory_core.process_boundary import HomeProcessIsolationError
 from home_memory_core.operation_identity import (
     AuthenticationBoundaryError,
     OperationClass,
@@ -751,6 +754,70 @@ class ClosedRealThreadDeliveryTests(unittest.TestCase):
         with self.assertRaises(RealHandoffAlreadyEnteredError):
             final.handoff(context=context, prepared=prepared.handle)
         self.assertEqual(len(seen), 1)
+
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_reuse_prepared_handoff(self) -> None:
+        item = self._single_thread(label="fork-handoff", content="parent only payload")
+        prepared = self.delivery.prepare(
+            context=self._delivery_context(request="fork-handoff-request"),
+            thread_id=item["thread_id"],
+        )
+        final = self._final_handoff(lambda _envelope, _attempt: None)
+        context = self._delivery_context(request="fork-handoff-request")
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child process assertion
+            try:
+                final.handoff(context=context, prepared=prepared.handle)
+            except HomeProcessIsolationError:
+                os._exit(0)
+            except BaseException:
+                os._exit(2)
+            else:
+                os._exit(3)
+
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+        # The child's inherited registry cannot consume the parent's slot.
+        receipt = final.handoff(
+            context=self._delivery_context(request="fork-handoff-request"),
+            prepared=prepared.handle,
+        )
+        self.assertEqual(receipt.request_id.value, "fork-handoff-request")
+
+    def test_sink_exception_payload_is_not_exposed_by_public_error_chain(self) -> None:
+        canary = "SYNTHETIC_SECRET_CANARY_7f31c5"
+        item = self._single_thread(label="exception-redaction", content="payload")
+        prepared = self.delivery.prepare(
+            context=self._delivery_context(request="exception-redaction-request"),
+            thread_id=item["thread_id"],
+        )
+
+        def handler(_envelope, _attempt):
+            message = "transport detail: " + canary
+            raise RuntimeError(message)
+
+        final = self._final_handoff(handler)
+        try:
+            final.handoff(
+                context=self._delivery_context(request="exception-redaction-request"),
+                prepared=prepared.handle,
+            )
+        except RealHandoffOutcomeUnknownError as error:
+            formatted = "".join(traceback.format_exception(error))
+            self.assertIsNone(error.__cause__)
+            self.assertIsNone(error.__context__)
+            self.assertNotIn(canary, str(error))
+            self.assertNotIn(canary, repr(error))
+            self.assertNotIn(canary, formatted)
+        else:  # pragma: no cover - assertion guard
+            self.fail("expected sanitized indeterminate handoff error")
+
+        with self.assertRaises(RealHandoffAlreadyEnteredError):
+            final.handoff(
+                context=self._delivery_context(request="exception-redaction-request"),
+                prepared=prepared.handle,
+            )
 
     def test_callback_exception_is_indeterminate_and_never_blind_retried(self) -> None:
         item = self._single_thread(label="unknown", content="possibly disclosed")
