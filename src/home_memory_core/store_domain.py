@@ -17,6 +17,9 @@ from home_memory_core.real_authority_ordering import (
 
 SYNTHETIC_STORE_DOMAIN = "synthetic"
 REAL_STORE_DOMAIN = "real"
+# Separate persistent ownership profile. Legacy/exercise real entrances reject
+# this value even when their test-only issuers are importable in the process.
+PRODUCTION_STORE_DOMAIN = "production-contract"
 _DOMAIN_TABLE = "home_store_domain"
 _DOMAIN_KEY = "store_domain"
 _REAL_STORE_BOOTSTRAP_MARKER = object()
@@ -271,7 +274,7 @@ def _read_domain_from_connection(
         )
 
     domain = rows[0][0]
-    if domain not in {SYNTHETIC_STORE_DOMAIN, REAL_STORE_DOMAIN}:
+    if domain not in {SYNTHETIC_STORE_DOMAIN, REAL_STORE_DOMAIN, PRODUCTION_STORE_DOMAIN}:
         raise StoreDomainError("HOME store-domain marker has an invalid value")
     return domain
 

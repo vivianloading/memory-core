@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import secrets
 import sys
+from threading import RLock
 from typing import IO
 
 from home_memory_core.process_boundary import (
@@ -52,6 +54,7 @@ class HomeSingleInstanceLease:
         self._identity = identity
         self._handle = handle
         self._released = False
+        self._liveness_lock = RLock()
 
     @property
     def identity(self) -> HomeHostRuntimeIdentity:
@@ -65,11 +68,34 @@ class HomeSingleInstanceLease:
 
     def release(self) -> None:
         self._assert_owner_process()
-        if self._released:
-            return
-        _unlock_file(self._handle)
-        self._handle.close()
-        self._released = True
+        with self._liveness_lock:
+            if self._released:
+                return
+            if not self._handle.closed:
+                _unlock_file(self._handle)
+                self._handle.close()
+            self._released = True
+
+    @contextmanager
+    def live_guard(self):
+        """Exclude supported release while a production admission uses the lease.
+
+        Check the actual handle and lock-file identity, not just cached config.
+        Direct OS unlocking by arbitrary in-process code is outside the host
+        boundary, like direct SQL access. Missing/replaced files fail closed.
+        """
+        self._assert_owner_process()
+        with self._liveness_lock:
+            if self._released or self._handle.closed:
+                raise HostRuntimeLeaseError("HOME host lease is no longer live")
+            try:
+                held = os.fstat(self._handle.fileno())
+                named = self._identity.lock_path.stat()
+            except (OSError, ValueError) as exc:
+                raise HostRuntimeLeaseError("HOME host lease was lost") from exc
+            if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+                raise HostRuntimeLeaseError("HOME host lease file was replaced")
+            yield
 
     def __enter__(self) -> HomeSingleInstanceLease:
         self._assert_owner_process()
