@@ -1,7 +1,8 @@
 # HOME #08a.1b — first protected production vertical slice
 
-Status: implementation and Linux verification complete; **Windows acceptance remains NOT RUN**.
-#08a.1b is not fully accepted until the required real Windows HOME checkout passes.
+Status: implementation and Linux verification complete; **Windows acceptance completed**
+on the actual HOME Windows checkout, as reported by the user on 2026-09-28.
+The Windows acceptance blocker is closed; main-reviewer review remains separate.
 Real personal data remains CLOSED. All exercised content is synthetic fixture text.
 
 Base branch: `codex/home-08a-1a-authority-hardening`.
@@ -17,7 +18,7 @@ No merge is performed; this branch is based on 1a, not the older main.
 | `src/home_memory_core/production_schema.py` | Exact production payload profile, atomic bootstrap, immutable origin/source/capture state, one-way stop-use, per-operation authority validation. |
 | `src/home_memory_core/production_memory.py` | Synthetic-only startup barrier, one registered manual-event adapter, protected source ingress/read/stop-use. |
 | `tests/test_production_memory.py` | 36 adversarial tests for the vertical slice and startup failures. |
-| `docs/HOME_08a_1b_protected_vertical_slice.md` | Design, executed verification, remaining Windows acceptance and #08a.1c blockers. |
+| `docs/HOME_08a_1b_protected_vertical_slice.md` | Design, Linux verification, completed Windows acceptance and #08a.1c blockers. |
 
 There are no relationships, supersession decisions, discovery, model/session
 delivery, external providers, connectors, listeners, plugins, secrets, or real
@@ -114,13 +115,30 @@ integrity, and stop-use/read serialization. An isolated subprocess actively
 blocks all test imports while executing the synthetic vertical slice and emits
 no payload to stdout. No tests, logs or temporary stores ingest real content.
 
-## Remaining Windows acceptance — NOT RUN
+## Completed Windows acceptance — actual HOME Windows checkout
 
-This environment has no access to the real Windows HOME checkout. Linux results,
-mocked platforms and CI on another machine cannot satisfy the requested Windows
-acceptance. Run the following PowerShell commands in that actual checkout on
-this 1b commit, and retain the exact Python version, exit codes and test results
-in the branch/PR before marking #08a.1b accepted:
+Commit under test: `8b9db5bed83ca488f83d8134eed67c32214d6d28`.
+
+The user confirmed completion on the actual HOME Windows checkout and supplied
+the following results on 2026-09-28 (Asia/Shanghai). These are user-reported
+Windows results, not a Windows run performed by this Linux environment. This
+follow-up changes acceptance documentation only; implementation logic is unchanged.
+
+| Windows check | Reported result |
+| --- | --- |
+| Targeted production/host suite | 81 tests OK, skipped=4 |
+| Full suite | 425 tests OK, skipped=8 |
+| `compileall` | OK |
+| `git diff --check` | OK |
+| MINI-READY verifier | 128 tests OK, skipped=5 |
+| Verifier status | `MINI-READY VERIFIER: GREEN` |
+| Real-data boundary | `real personal data remains CLOSED` |
+
+Skipped tests are retained explicitly and are not counted as executed passes.
+The user did not supply the Python version, individual skip reasons or a raw
+command transcript; none are inferred. The previously documented PowerShell
+acceptance procedure is preserved below as a reproduction reference, not as
+an independently verified transcript of the Windows run:
 
 ```powershell
 git status --short
@@ -134,14 +152,13 @@ git diff --check
 python scripts/verify.py
 ```
 
-Required observations: real single-instance contention, live_guard behavior,
-startup barrier, shutdown cutoff, restart, ingress/read/stop-use, and the existing
-MINI-READY verifier all pass. POSIX-only fork/file-replacement tests may correctly
-skip on Windows; report those skips instead of presenting them as Windows passes.
+The reported Windows acceptance covers the required production/host suites and
+existing MINI-READY verifier. Real personal data remains CLOSED; acceptance
+does not authorize real-data ingestion or a merge.
 
 ## Before #08a.1c
 
-1. Complete the Windows acceptance above and main-reviewer review of this branch.
+1. Complete main-reviewer review of this branch; Windows acceptance above is completed.
 2. Any broader service graph or real request authentication binding needs its own
    scoped task; this slice proves trusted host/root possession only.
 3. Real personal data, providers, payload reset/restore and delivery remain
