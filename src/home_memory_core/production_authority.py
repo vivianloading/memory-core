@@ -281,14 +281,18 @@ class ProductionAuthorityRoot:
                         operation_class=OperationClass.AUDIT_READ):
         with self._admission():
             self._require_issued(principal, ProductionPrincipal, self._principals)
-            if type(request_id) is not RequestId or operation_class is not OperationClass.AUDIT_READ:
-                raise ProductionAuthorityError("only metadata contract checks are enabled")
+            if (type(request_id) is not RequestId or type(operation_class) is not OperationClass
+                    or operation_class not in self._operation_classes()):
+                raise ProductionAuthorityError("operation class is not enabled by this root")
             context = ProductionOperationContext(
                 uuid4().hex, principal, operation_class, request_id, self._scope,
                 self._session_id, self._generation, self._incarnation,
             )
             self._contexts[id(context)] = context
             return context
+
+    def _operation_classes(self):
+        return frozenset({OperationClass.AUDIT_READ})
 
     def register_adapter(self, *, adapter_id, origin_namespace_id):
         with self._admission():
@@ -317,7 +321,8 @@ class ProductionAuthorityRoot:
             return ContractReceipt(self._session_id, context.operation_id, self._incarnation)
 
     @contextmanager
-    def _operation_admission(self, *, context, provenance, scope):
+    def _operation_admission(self, *, context, provenance, scope,
+                             expected_operation_class=OperationClass.AUDIT_READ):
         """Mandatory combined admission rule for future production operations.
 
         Keep protected work inside this protocol; never preflight and use later.
@@ -326,18 +331,24 @@ class ProductionAuthorityRoot:
         with self._admission():
             self._require_issued(context, ProductionOperationContext, self._contexts)
             self._require_issued(context.principal, ProductionPrincipal, self._principals)
-            self._require_issued(provenance, ProductionProvenance, self._provenance)
-            if (type(scope) is not ProductionScope or scope != self._scope
+            if (type(expected_operation_class) is not OperationClass
+                    or expected_operation_class not in self._operation_classes()
+                    or type(scope) is not ProductionScope or scope != self._scope
                     or context.scope != scope
                     or context.principal.principal_id != scope.owner_principal_id
-                    or context.operation_class is not OperationClass.AUDIT_READ
+                    or context.operation_class is not expected_operation_class
                     or context.session_id != self._session_id
                     or context.generation != self._generation
-                    or context.store_incarnation != self._incarnation
-                    or provenance.session_id != self._session_id
-                    or provenance.origin_namespace_id != scope.origin_namespace_id):
+                    or context.store_incarnation != self._incarnation):
                 raise ProductionAuthorityError("production operation constraints do not match")
+            self._require_operation_provenance(context, provenance)
             yield
+
+    def _require_operation_provenance(self, context, provenance):
+        self._require_issued(provenance, ProductionProvenance, self._provenance)
+        if (provenance.session_id != self._session_id
+                or provenance.origin_namespace_id != self._scope.origin_namespace_id):
+            raise ProductionAuthorityError("production provenance constraints do not match")
 
     def close(self):
         return self._shutdown(ShutdownDisposition.CLOSE)
@@ -460,6 +471,11 @@ def _user_tables(connection):
 def _read_metadata(connection, scope):
     if _user_tables(connection) != {"home_store_domain"}:
         raise ProductionAuthorityError("production contract requires a marker-only store")
+    return _read_ownership(connection, scope)
+
+
+def _read_ownership(connection, scope):
+    """Private common ownership check; each front separately verifies its schema."""
     try:
         rows = connection.execute(
             "SELECT marker_key, domain, incarnation, scope FROM home_store_domain"
