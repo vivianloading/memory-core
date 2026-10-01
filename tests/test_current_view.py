@@ -1400,6 +1400,25 @@ class CurrentViewTests(unittest.TestCase):
                 downgrade_rule=DowngradeRule.NONE,
             )
 
+    def test_current_records_have_no_recall_or_emotion_truth_inputs(self) -> None:
+        fields = {
+            item.name for item in dataclasses.fields(CurrentStateRecord)
+        }
+        prohibited = {
+            "recall_count",
+            "access_count",
+            "last_accessed_at",
+            "retrieval_score",
+            "similarity_score",
+            "importance_score",
+            "emotional_intensity",
+            "emotion_score",
+            "model_ref",
+            "runtime_instance_id",
+        }
+
+        self.assertTrue(fields.isdisjoint(prohibited))
+
     def test_current_records_contain_no_identity_verdict_fields(self) -> None:
         fields = {
             item.name for item in dataclasses.fields(CurrentStateRecord)
