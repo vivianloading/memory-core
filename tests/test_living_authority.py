@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import home_memory_core.living_authority as authority_module
 from _trusted_test_support import trusted_test_room_continuation_policy
 from home_memory_core.host_runtime import acquire_home_single_instance
 from home_memory_core.living_authority import (
@@ -247,6 +248,44 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 room_id="room-r",
             )
 
+    def test_superseded_pending_runtime_launch_receipt_is_rejected(self) -> None:
+        first = self.authority.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        self.authority.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.begin_trusted_continuation(
+                launch_receipt=first,
+                previous_episode_id="episode-a",
+                room_id="room-r",
+            )
+
+    def test_runtime_launch_receipt_in_memory_tamper_is_detected(self) -> None:
+        receipt = self.authority.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        object.__setattr__(
+            receipt,
+            "observed_transfer_mode",
+            TransferMode.LIVE_RUNTIME,
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.begin_trusted_continuation(
+                launch_receipt=receipt,
+                previous_episode_id="episode-a",
+                room_id="room-r",
+            )
+
     def test_perspective_binding_mismatch_blocks_launch(self) -> None:
         with self.assertRaises(RoomLaunchEvidenceError):
             self.authority.record_supported_runtime_launch(
@@ -339,6 +378,63 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
             )
 
+    def test_registered_policy_payload_cannot_be_mutated_to_widen_scope(self) -> None:
+        evidence = self._launch()
+        self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        object.__setattr__(
+            self.policy,
+            "allowed_scopes",
+            frozenset(
+                {
+                    RoomParticipationScope.READ_HISTORY,
+                    RoomParticipationScope.READ_PRIVATE,
+                }
+            ),
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=self.policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_PRIVATE}
+                ),
+            )
+
+    def test_same_policy_id_cannot_be_rebound_to_wider_payload(self) -> None:
+        evidence = self._launch()
+        self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        wider = trusted_test_room_continuation_policy(
+            policy_id=self.policy.policy_id,
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+                RoomParticipationScope.READ_PRIVATE,
+            },
+            source_event_ref="different-event",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=wider,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_PRIVATE}
+                ),
+            )
+
     def test_policy_scope_cannot_be_widened_during_grant_issue(self) -> None:
         evidence = self._launch()
         with self.assertRaises(RoomParticipationAuthorizationError):
@@ -378,6 +474,118 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             self.authority.issue_grant(
                 proposal=proposal_write,
                 approval=approval_read,
+            )
+
+    def test_grant_proposal_in_memory_tamper_is_detected(self) -> None:
+        evidence = self._launch()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        object.__setattr__(proposal, "room_id", "room-forged")
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.approve_automatic_continuation(
+                proposal=proposal,
+                policy=self.policy,
+            )
+
+    def test_approval_in_memory_tamper_is_detected(self) -> None:
+        evidence = self._launch()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        approval = self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=self.policy,
+        )
+        object.__setattr__(approval, "binding_digest", "0" * 64)
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.issue_grant(
+                proposal=proposal,
+                approval=approval,
+            )
+
+    def test_automatic_approval_is_one_shot(self) -> None:
+        evidence = self._launch()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        approval = self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=self.policy,
+        )
+        self.authority.issue_grant(
+            proposal=proposal,
+            approval=approval,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.issue_grant(
+                proposal=proposal,
+                approval=approval,
+            )
+
+    def test_grant_in_memory_tamper_cannot_widen_scope_even_with_new_digest(self) -> None:
+        evidence, _, _, grant = self._grant(
+            scopes=frozenset({RoomParticipationScope.READ_HISTORY})
+        )
+        widened = frozenset(
+            {
+                RoomParticipationScope.READ_HISTORY,
+                RoomParticipationScope.READ_PRIVATE,
+            }
+        )
+        object.__setattr__(grant, "scopes", widened)
+        object.__setattr__(
+            grant,
+            "binding_digest",
+            authority_module._grant_binding_digest(
+                session_id=grant.session_id,
+                episode_id=grant.episode_id,
+                perspective_instance_id=grant.perspective_instance_id,
+                room_id=grant.room_id,
+                policy_id=grant.policy_id,
+                scopes=widened,
+            ),
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.READ_PRIVATE,
+            )
+
+    def test_append_first_person_does_not_imply_change_current_stance(self) -> None:
+        evidence, _, _, grant = self._grant(
+            scopes=frozenset(
+                {RoomParticipationScope.APPEND_FIRST_PERSON}
+            )
+        )
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
             )
 
     def test_grant_target_binding_rejects_episode_perspective_room_or_session_swap(self) -> None:
