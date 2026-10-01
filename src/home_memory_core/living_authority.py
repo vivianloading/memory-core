@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import wraps
 from hashlib import sha256
 import json
 from pathlib import Path
 import secrets
+from threading import Lock, RLock
 
 from home_memory_core.host_runtime import HomeSingleInstanceLease
 from home_memory_core.living_continuity import (
@@ -28,6 +30,11 @@ _CONTINUATION_POLICY_MARKER = object()
 _GRANT_PROPOSAL_MARKER = object()
 _GRANT_APPROVAL_MARKER = object()
 _PARTICIPATION_GRANT_MARKER = object()
+_AUTHORITY_REGISTRY_GUARD = Lock()
+_AUTHORITY_REGISTRY: dict[
+    tuple[str, str, str],
+    "RoomParticipationAuthority",
+] = {}
 
 _AUTO_CONTINUATION_TRANSFER_MODES = frozenset(
     {
@@ -165,6 +172,8 @@ class RoomParticipationGrantProposal:
             raise RoomParticipationAuthorizationError(
                 "grant proposal must be issued by Room authority"
             )
+        _require_text("proposal_id", self.proposal_id)
+        _require_text("launch_evidence_id", self.launch_evidence_id)
         _validate_grant_binding(
             session_id=self.session_id,
             episode_id=self.episode_id,
@@ -238,6 +247,15 @@ class _GrantState:
     active: bool = True
 
 
+def _guarded(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._guard:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class RoomParticipationAuthority:
     """Synthetic/local operational authority above Living Layer routing.
 
@@ -260,13 +278,17 @@ class RoomParticipationAuthority:
         self._lease = lease
         self._store = store
         self._home_process_instance_id = current_home_process_instance_id()
+        self._guard = RLock()
         self._sessions: dict[str, _SessionState] = {}
         self._session_by_episode: dict[str, str] = {}
         self._proposals: dict[str, RoomParticipationGrantProposal] = {}
         self._approvals: dict[str, AutomaticContinuationApproval] = {}
         self._grants: dict[str, _GrantState] = {}
+        self._policies: dict[str, TrustedRoomContinuationPolicy] = {}
+        self._suspended_policy_ids: set[str] = set()
         self._assert_live_host()
 
+    @_guarded
     def begin_trusted_continuation(
         self,
         *,
@@ -372,6 +394,7 @@ class RoomParticipationAuthority:
         self._session_by_episode[episode_id] = session_id
         return evidence
 
+    @_guarded
     def prepare_grant(
         self,
         *,
@@ -380,7 +403,7 @@ class RoomParticipationAuthority:
         requested_scopes: frozenset[RoomParticipationScope],
     ) -> RoomParticipationGrantProposal:
         self._assert_live_launch_evidence(launch_evidence)
-        _require_trusted_policy(policy)
+        self._register_policy(policy)
         _validate_scope_set(requested_scopes)
         if launch_evidence.room_id != policy.room_id:
             raise RoomParticipationAuthorizationError(
@@ -414,6 +437,7 @@ class RoomParticipationAuthority:
         self._proposals[proposal.proposal_id] = proposal
         return proposal
 
+    @_guarded
     def approve_automatic_continuation(
         self,
         *,
@@ -427,7 +451,7 @@ class RoomParticipationAuthority:
         """
 
         self._assert_live_proposal(proposal)
-        _require_trusted_policy(policy)
+        self._assert_policy_active(policy)
         if proposal.policy_id != policy.policy_id:
             raise RoomParticipationAuthorizationError(
                 "proposal and continuation policy do not match"
@@ -451,6 +475,7 @@ class RoomParticipationAuthority:
         self._approvals[approval.approval_id] = approval
         return approval
 
+    @_guarded
     def issue_grant(
         self,
         *,
@@ -470,6 +495,12 @@ class RoomParticipationAuthority:
         if approval.binding_digest != proposal.binding_digest:
             raise RoomParticipationAuthorizationError(
                 "approved binding differs from grant proposal"
+            )
+
+        policy = self._policies.get(proposal.policy_id)
+        if policy is None or proposal.policy_id in self._suspended_policy_ids:
+            raise RoomParticipationStaleError(
+                "continuation policy is no longer operationally active"
             )
 
         evidence_state = self._sessions.get(proposal.session_id)
@@ -499,6 +530,7 @@ class RoomParticipationAuthority:
         self._grants[grant.grant_id] = _GrantState(grant=grant)
         return grant
 
+    @_guarded
     def require_grant(
         self,
         *,
@@ -560,6 +592,15 @@ class RoomParticipationAuthority:
                 "Room participation grant binding was altered"
             )
 
+        if grant.policy_id in self._suspended_policy_ids:
+            raise RoomParticipationStaleError(
+                "continuation policy is operationally suspended"
+            )
+        if grant.policy_id not in self._policies:
+            raise RoomParticipationStaleError(
+                "continuation policy is unavailable"
+            )
+
         session = self._sessions.get(grant.session_id)
         if (
             session is None
@@ -571,6 +612,20 @@ class RoomParticipationAuthority:
             )
         self._revalidate_evidence(session.evidence)
 
+    @_guarded
+    def suspend_policy(self, *, policy_id: str) -> None:
+        """Operationally stop grants without rewriting inhabitant intent."""
+
+        self._assert_live_host()
+        _require_text("policy_id", policy_id)
+        if policy_id not in self._policies:
+            raise KeyError(policy_id)
+        self._suspended_policy_ids.add(policy_id)
+        for state in self._grants.values():
+            if state.grant.policy_id == policy_id:
+                state.active = False
+
+    @_guarded
     def revoke_session(self, *, session_id: str) -> None:
         self._assert_live_host()
         state = self._sessions.get(session_id)
@@ -580,6 +635,35 @@ class RoomParticipationAuthority:
         for grant_state in self._grants.values():
             if grant_state.grant.session_id == session_id:
                 grant_state.active = False
+
+    def _register_policy(
+        self,
+        policy: TrustedRoomContinuationPolicy,
+    ) -> None:
+        _require_trusted_policy(policy)
+        existing = self._policies.get(policy.policy_id)
+        if existing is not None and existing != policy:
+            raise RoomParticipationAuthorizationError(
+                "policy id is already bound to a different Room/scope payload"
+            )
+        if policy.policy_id in self._suspended_policy_ids:
+            raise RoomParticipationStaleError(
+                "continuation policy is operationally suspended"
+            )
+        self._policies[policy.policy_id] = policy
+
+    def _assert_policy_active(
+        self,
+        policy: TrustedRoomContinuationPolicy,
+    ) -> None:
+        self._register_policy(policy)
+        if self._policies.get(policy.policy_id) is not policy:
+            # Equality is allowed for reloaded trusted policy values, but the
+            # exact object need not survive. Payload equality was checked above.
+            if self._policies.get(policy.policy_id) != policy:
+                raise RoomParticipationAuthorizationError(
+                    "continuation policy payload changed"
+                )
 
     def _assert_live_host(self) -> None:
         require_home_process()
@@ -741,11 +825,30 @@ def open_room_participation_authority(
         raise RoomParticipationAuthorizationError(
             "Room authority requires LivingStore"
         )
-    return RoomParticipationAuthority(
-        lease=lease,
-        store=store,
-        _marker=_AUTHORITY_MARKER,
+    require_home_process()
+    if lease.released:
+        raise RoomParticipationStaleError("HOME host lease was released")
+    identity = lease.identity
+    db_path = str(Path(store.db_path).resolve())
+    if db_path != str(identity.db_path):
+        raise RoomParticipationAuthorizationError(
+            "LivingStore does not belong to the leased HOME database"
+        )
+    key = (
+        current_home_process_instance_id(),
+        identity.process_instance_id,
+        db_path,
     )
+    with _AUTHORITY_REGISTRY_GUARD:
+        authority = _AUTHORITY_REGISTRY.get(key)
+        if authority is None:
+            authority = RoomParticipationAuthority(
+                lease=lease,
+                store=store,
+                _marker=_AUTHORITY_MARKER,
+            )
+            _AUTHORITY_REGISTRY[key] = authority
+        return authority
 
 
 def _require_trusted_policy(policy: TrustedRoomContinuationPolicy) -> None:
