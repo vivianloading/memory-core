@@ -598,7 +598,7 @@ def derive_current_view(
             namespace=namespace,
             owner_id=owner_id,
             key=key,
-            records=matching,
+            records=records,
             end_events=end_events,
             as_of=as_of,
         )
