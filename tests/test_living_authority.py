@@ -1342,6 +1342,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
     def test_current_stance_scope_cannot_exist_without_first_person_append(self) -> None:
         with self.assertRaises(RoomParticipationAuthorizationError):
             trusted_test_room_continuation_policy(
+                lease=self.lease,
+                store=self.living,
                 policy_id="policy-invalid-stance-only",
                 room_id="room-r",
                 allowed_scopes={
