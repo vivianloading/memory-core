@@ -205,10 +205,10 @@ class CurrentStateRecord:
                 "Shared current state cannot claim Room first-person provenance"
             )
 
-        if not self.source_refs:
-            raise CurrentViewError(
-                "current state requires at least one source reference"
-            )
+        _validate_source_refs(
+            field_name="source_refs",
+            source_refs=self.source_refs,
+        )
 
         if self.validity_rule not in _ALLOWED_VALIDITY_BY_KIND[
             self.state_kind
@@ -244,6 +244,7 @@ class CurrentStateRecord:
         if self.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
             if (
                 self.stale_after is None
+                or not isinstance(self.stale_after, timedelta)
                 or self.stale_after <= timedelta(0)
             ):
                 raise CurrentViewError(
@@ -262,8 +263,6 @@ class CurrentStateRecord:
             if self.supersedes_state_id == self.state_id:
                 raise CurrentViewError("state cannot supersede itself")
 
-        for source_ref in self.source_refs:
-            _require_text("source_ref", source_ref)
 
 
 @dataclass(frozen=True)
@@ -289,12 +288,10 @@ class CurrentStateEndEvent:
         _require_aware("recorded_at", self.recorded_at)
         if not isinstance(self.end_kind, EndKind):
             raise CurrentViewError("end_kind must use EndKind")
-        if not self.source_refs:
-            raise CurrentViewError(
-                "end event requires at least one source reference"
-            )
-        for source_ref in self.source_refs:
-            _require_text("source_ref", source_ref)
+        _validate_source_refs(
+            field_name="source_refs",
+            source_refs=self.source_refs,
+        )
 
 
 @dataclass(frozen=True)
@@ -824,6 +821,23 @@ def _validate_current_graph(
             current = parent_by_child[current]
 
     _ = children_by_parent
+
+
+def _validate_source_refs(
+    *,
+    field_name: str,
+    source_refs: tuple[str, ...],
+) -> None:
+    if not isinstance(source_refs, tuple) or not source_refs:
+        raise CurrentViewError(
+            f"{field_name} must be a non-empty tuple"
+        )
+    if len(set(source_refs)) != len(source_refs):
+        raise CurrentViewError(
+            f"{field_name} cannot contain duplicates"
+        )
+    for source_ref in source_refs:
+        _require_text("source_ref", source_ref)
 
 
 def _require_aware(field_name: str, value: datetime) -> None:
