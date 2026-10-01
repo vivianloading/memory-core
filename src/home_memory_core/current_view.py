@@ -275,6 +275,9 @@ class CurrentStateEndEvent:
     recorded_at: datetime
     end_kind: EndKind
     reason: str
+    semantic_change_authority: SemanticChangeAuthority
+    episode_id: str | None = None
+    perspective_instance_id: str | None = None
     source_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -288,6 +291,33 @@ class CurrentStateEndEvent:
         _require_aware("recorded_at", self.recorded_at)
         if not isinstance(self.end_kind, EndKind):
             raise CurrentViewError("end_kind must use EndKind")
+        if not isinstance(
+            self.semantic_change_authority,
+            SemanticChangeAuthority,
+        ):
+            raise CurrentViewError(
+                "end semantic_change_authority must use SemanticChangeAuthority"
+            )
+        if (
+            self.semantic_change_authority
+            is SemanticChangeAuthority.ROOM_FIRST_PERSON
+        ):
+            if self.episode_id is None or self.perspective_instance_id is None:
+                raise CurrentViewError(
+                    "Room end event requires Episode and PerspectiveInstance provenance"
+                )
+            _require_text("episode_id", self.episode_id)
+            _require_text(
+                "perspective_instance_id",
+                self.perspective_instance_id,
+            )
+        elif (
+            self.episode_id is not None
+            or self.perspective_instance_id is not None
+        ):
+            raise CurrentViewError(
+                "Shared end event cannot claim Room first-person provenance"
+            )
         _validate_source_refs(
             field_name="source_refs",
             source_refs=self.source_refs,
@@ -770,13 +800,25 @@ def _validate_global_ids(
         record_ids.add(record.state_id)
 
     end_ids: set[str] = set()
+    record_by_id = {
+        record.state_id: record
+        for record in records
+    }
     for event in end_events:
         if event.end_event_id in end_ids:
             raise CurrentViewError("duplicate end_event_id")
         end_ids.add(event.end_event_id)
-        if event.state_id not in record_ids:
+        target = record_by_id.get(event.state_id)
+        if target is None:
             raise CurrentViewError(
                 "end event references unknown state"
+            )
+        if (
+            event.semantic_change_authority
+            is not target.semantic_change_authority
+        ):
+            raise CurrentViewError(
+                "end event semantic authority does not match target state"
             )
 
 
