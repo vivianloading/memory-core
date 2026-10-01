@@ -825,6 +825,14 @@ def _validate_global_ids(
             raise CurrentViewError(
                 "end event semantic authority does not match target state"
             )
+        if event.recorded_at < target.recorded_at:
+            raise CurrentViewError(
+                "end event cannot be recorded before its target state"
+            )
+        if event.ended_at < target.valid_from:
+            raise CurrentViewError(
+                "end event cannot end a state before its validity begins"
+            )
 
 
 def _validate_current_graph(
@@ -864,6 +872,10 @@ def _validate_current_graph(
         ):
             raise CurrentViewError(
                 "supersession cannot cross namespace, owner, or key"
+            )
+        if record.recorded_at < parent.recorded_at:
+            raise CurrentViewError(
+                "superseding state cannot be recorded before its parent"
             )
         parent_by_child[record.state_id] = parent_id
         children_by_parent.setdefault(parent_id, set()).add(
