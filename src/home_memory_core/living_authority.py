@@ -149,6 +149,7 @@ class TrustedLaunchEvidence:
     """
 
     evidence_id: str
+    runtime_launch_receipt_id: str
     session_id: str
     home_process_instance_id: str
     host_process_instance_id: str
@@ -170,6 +171,7 @@ class TrustedLaunchEvidence:
             )
         for field_name in (
             "evidence_id",
+            "runtime_launch_receipt_id",
             "session_id",
             "home_process_instance_id",
             "host_process_instance_id",
@@ -250,6 +252,8 @@ class RoomParticipationGrant:
     policy_id: str
     scopes: frozenset[RoomParticipationScope]
     launch_evidence_id: str
+    proposal_id: str
+    approval_id: str
     binding_digest: str
     _marker: object = field(repr=False, compare=False)
 
@@ -269,23 +273,41 @@ class RoomParticipationGrant:
         )
         _require_text("grant_id", self.grant_id)
         _require_text("launch_evidence_id", self.launch_evidence_id)
+        _require_text("proposal_id", self.proposal_id)
+        _require_text("approval_id", self.approval_id)
 
 
 @dataclass
 class _RuntimeLaunchState:
     receipt: SupportedRuntimeLaunchReceipt
+    fingerprint: str
     consumed: bool = False
 
 
 @dataclass
 class _SessionState:
     evidence: TrustedLaunchEvidence
+    fingerprint: str
     active: bool = True
+
+
+@dataclass
+class _ProposalState:
+    proposal: RoomParticipationGrantProposal
+    fingerprint: str
+
+
+@dataclass
+class _ApprovalState:
+    approval: AutomaticContinuationApproval
+    fingerprint: str
+    consumed: bool = False
 
 
 @dataclass
 class _GrantState:
     grant: RoomParticipationGrant
+    fingerprint: str
     active: bool = True
 
 
@@ -325,10 +347,11 @@ class RoomParticipationAuthority:
         self._pending_launch_by_episode: dict[str, str] = {}
         self._sessions: dict[str, _SessionState] = {}
         self._session_by_episode: dict[str, str] = {}
-        self._proposals: dict[str, RoomParticipationGrantProposal] = {}
-        self._approvals: dict[str, AutomaticContinuationApproval] = {}
+        self._proposals: dict[str, _ProposalState] = {}
+        self._approvals: dict[str, _ApprovalState] = {}
         self._grants: dict[str, _GrantState] = {}
         self._policies: dict[str, TrustedRoomContinuationPolicy] = {}
+        self._policy_fingerprints: dict[str, str] = {}
         self._suspended_policy_ids: set[str] = set()
         self._assert_live_host()
 
@@ -378,7 +401,8 @@ class RoomParticipationAuthority:
             _marker=_RUNTIME_LAUNCH_RECEIPT_MARKER,
         )
         self._runtime_launches[receipt.receipt_id] = _RuntimeLaunchState(
-            receipt=receipt
+            receipt=receipt,
+            fingerprint=_runtime_launch_fingerprint(receipt),
         )
         self._pending_launch_by_episode[episode_id] = receipt.receipt_id
         return receipt
@@ -480,6 +504,7 @@ class RoomParticipationAuthority:
         session_id = launch_receipt.session_id
         evidence = TrustedLaunchEvidence(
             evidence_id=f"launch-evidence-{secrets.token_hex(16)}",
+            runtime_launch_receipt_id=launch_receipt.receipt_id,
             session_id=session_id,
             home_process_instance_id=self._home_process_instance_id,
             host_process_instance_id=self._lease.identity.process_instance_id,
@@ -496,7 +521,10 @@ class RoomParticipationAuthority:
             continuity_status=edge.continuity_status,
             _marker=_LAUNCH_EVIDENCE_MARKER,
         )
-        self._sessions[session_id] = _SessionState(evidence=evidence)
+        self._sessions[session_id] = _SessionState(
+            evidence=evidence,
+            fingerprint=_launch_evidence_fingerprint(evidence),
+        )
         self._session_by_episode[episode_id] = session_id
         return evidence
 
@@ -540,7 +568,10 @@ class RoomParticipationAuthority:
             binding_digest=digest,
             _marker=_GRANT_PROPOSAL_MARKER,
         )
-        self._proposals[proposal.proposal_id] = proposal
+        self._proposals[proposal.proposal_id] = _ProposalState(
+            proposal=proposal,
+            fingerprint=_proposal_fingerprint(proposal),
+        )
         return proposal
 
     @_guarded
@@ -578,7 +609,10 @@ class RoomParticipationAuthority:
             binding_digest=proposal.binding_digest,
             _marker=_GRANT_APPROVAL_MARKER,
         )
-        self._approvals[approval.approval_id] = approval
+        self._approvals[approval.approval_id] = _ApprovalState(
+            approval=approval,
+            fingerprint=_approval_fingerprint(approval),
+        )
         return approval
 
     @_guarded
@@ -630,10 +664,21 @@ class RoomParticipationAuthority:
             policy_id=proposal.policy_id,
             scopes=proposal.scopes,
             launch_evidence_id=proposal.launch_evidence_id,
+            proposal_id=proposal.proposal_id,
+            approval_id=approval.approval_id,
             binding_digest=proposal.binding_digest,
             _marker=_PARTICIPATION_GRANT_MARKER,
         )
-        self._grants[grant.grant_id] = _GrantState(grant=grant)
+        approval_state = self._approvals[approval.approval_id]
+        if approval_state.consumed:
+            raise RoomParticipationAuthorizationError(
+                "automatic continuation approval was already consumed"
+            )
+        approval_state.consumed = True
+        self._grants[grant.grant_id] = _GrantState(
+            grant=grant,
+            fingerprint=_grant_fingerprint(grant),
+        )
         return grant
 
     @_guarded
@@ -659,6 +704,10 @@ class RoomParticipationAuthority:
         ):
             raise RoomParticipationAuthorizationError(
                 "Room participation grant was not issued by this authority"
+            )
+        if state.fingerprint != _grant_fingerprint(grant):
+            raise RoomParticipationAuthorizationError(
+                "Room participation grant was altered after issuance"
             )
         if not state.active:
             raise RoomParticipationStaleError(
@@ -750,8 +799,12 @@ class RoomParticipationAuthority:
         policy: TrustedRoomContinuationPolicy,
     ) -> None:
         _require_trusted_policy(policy)
-        existing = self._policies.get(policy.policy_id)
-        if existing is not None and existing != policy:
+        fingerprint = _policy_fingerprint(policy)
+        existing_fingerprint = self._policy_fingerprints.get(policy.policy_id)
+        if (
+            existing_fingerprint is not None
+            and existing_fingerprint != fingerprint
+        ):
             raise RoomParticipationAuthorizationError(
                 "policy id is already bound to a different Room/scope payload"
             )
@@ -760,19 +813,20 @@ class RoomParticipationAuthority:
                 "continuation policy is operationally suspended"
             )
         self._policies[policy.policy_id] = policy
+        self._policy_fingerprints[policy.policy_id] = fingerprint
 
     def _assert_policy_active(
         self,
         policy: TrustedRoomContinuationPolicy,
     ) -> None:
         self._register_policy(policy)
-        if self._policies.get(policy.policy_id) is not policy:
-            # Equality is allowed for reloaded trusted policy values, but the
-            # exact object need not survive. Payload equality was checked above.
-            if self._policies.get(policy.policy_id) != policy:
-                raise RoomParticipationAuthorizationError(
-                    "continuation policy payload changed"
-                )
+        if (
+            self._policy_fingerprints.get(policy.policy_id)
+            != _policy_fingerprint(policy)
+        ):
+            raise RoomParticipationAuthorizationError(
+                "continuation policy payload changed"
+            )
 
     def _assert_live_host(self) -> None:
         require_home_process()
@@ -803,6 +857,7 @@ class RoomParticipationAuthority:
             or receipt._marker is not _RUNTIME_LAUNCH_RECEIPT_MARKER
             or state is None
             or state.receipt is not receipt
+            or state.fingerprint != _runtime_launch_fingerprint(receipt)
             or state.consumed
         ):
             raise RoomLaunchEvidenceError(
@@ -852,7 +907,9 @@ class RoomParticipationAuthority:
         if (
             not isinstance(proposal, RoomParticipationGrantProposal)
             or proposal._marker is not _GRANT_PROPOSAL_MARKER
-            or stored is not proposal
+            or stored is None
+            or stored.proposal is not proposal
+            or stored.fingerprint != _proposal_fingerprint(proposal)
         ):
             raise RoomParticipationAuthorizationError(
                 "grant proposal was not issued by this authority"
@@ -873,13 +930,42 @@ class RoomParticipationAuthority:
         if (
             not isinstance(approval, AutomaticContinuationApproval)
             or approval._marker is not _GRANT_APPROVAL_MARKER
-            or stored is not approval
+            or stored is None
+            or stored.approval is not approval
+            or stored.fingerprint != _approval_fingerprint(approval)
         ):
             raise RoomParticipationAuthorizationError(
                 "grant approval was not issued by this authority"
             )
 
     def _revalidate_evidence(self, evidence: TrustedLaunchEvidence) -> None:
+        session_state = self._sessions.get(evidence.session_id)
+        if (
+            session_state is None
+            or session_state.evidence is not evidence
+            or session_state.fingerprint
+            != _launch_evidence_fingerprint(evidence)
+        ):
+            raise RoomParticipationStaleError(
+                "launch evidence was altered or is not active here"
+            )
+        launch_state = self._runtime_launches.get(
+            evidence.runtime_launch_receipt_id
+        )
+        if (
+            launch_state is None
+            or launch_state.fingerprint
+            != _runtime_launch_fingerprint(launch_state.receipt)
+            or launch_state.receipt.session_id != evidence.session_id
+            or launch_state.receipt.episode_id != evidence.episode_id
+            or launch_state.receipt.perspective_instance_id
+            != evidence.perspective_instance_id
+            or launch_state.receipt.observed_transfer_mode
+            != evidence.transfer_mode
+        ):
+            raise RoomParticipationStaleError(
+                "host-observed runtime launch no longer matches launch evidence"
+            )
         if evidence.home_process_instance_id != self._home_process_instance_id:
             raise RoomParticipationStaleError(
                 "launch evidence belongs to another HOME process"
@@ -1050,6 +1136,122 @@ def _validate_grant_binding(
         raise RoomParticipationAuthorizationError(
             "Room grant binding digest does not match exact payload"
         )
+
+
+def _policy_fingerprint(policy: TrustedRoomContinuationPolicy) -> str:
+    return _canonical_digest(
+        "room-continuation-policy",
+        {
+            "policy_id": policy.policy_id,
+            "room_id": policy.room_id,
+            "allowed_scopes": sorted(
+                scope.value for scope in policy.allowed_scopes
+            ),
+            "source_event_ref": policy.source_event_ref,
+        },
+    )
+
+
+def _runtime_launch_fingerprint(
+    receipt: SupportedRuntimeLaunchReceipt,
+) -> str:
+    return _canonical_digest(
+        "supported-runtime-launch",
+        {
+            "receipt_id": receipt.receipt_id,
+            "session_id": receipt.session_id,
+            "home_process_instance_id": receipt.home_process_instance_id,
+            "host_process_instance_id": receipt.host_process_instance_id,
+            "episode_id": receipt.episode_id,
+            "perspective_instance_id": receipt.perspective_instance_id,
+            "observed_transfer_mode": receipt.observed_transfer_mode.value,
+        },
+    )
+
+
+def _launch_evidence_fingerprint(evidence: TrustedLaunchEvidence) -> str:
+    return _canonical_digest(
+        "trusted-launch-evidence",
+        {
+            "evidence_id": evidence.evidence_id,
+            "runtime_launch_receipt_id": evidence.runtime_launch_receipt_id,
+            "session_id": evidence.session_id,
+            "home_process_instance_id": evidence.home_process_instance_id,
+            "host_process_instance_id": evidence.host_process_instance_id,
+            "previous_episode_id": evidence.previous_episode_id,
+            "episode_id": evidence.episode_id,
+            "perspective_instance_id": evidence.perspective_instance_id,
+            "room_id": evidence.room_id,
+            "continuity_edge_id": evidence.continuity_edge_id,
+            "previous_attachment_event_id": (
+                evidence.previous_attachment_event_id
+            ),
+            "attachment_event_id": evidence.attachment_event_id,
+            "transfer_mode": evidence.transfer_mode.value,
+            "continuity_status": evidence.continuity_status.value,
+        },
+    )
+
+
+def _proposal_fingerprint(
+    proposal: RoomParticipationGrantProposal,
+) -> str:
+    return _canonical_digest(
+        "room-grant-proposal",
+        {
+            "proposal_id": proposal.proposal_id,
+            "launch_evidence_id": proposal.launch_evidence_id,
+            "session_id": proposal.session_id,
+            "episode_id": proposal.episode_id,
+            "perspective_instance_id": proposal.perspective_instance_id,
+            "room_id": proposal.room_id,
+            "policy_id": proposal.policy_id,
+            "scopes": sorted(scope.value for scope in proposal.scopes),
+            "binding_digest": proposal.binding_digest,
+        },
+    )
+
+
+def _approval_fingerprint(
+    approval: AutomaticContinuationApproval,
+) -> str:
+    return _canonical_digest(
+        "automatic-continuation-approval",
+        {
+            "approval_id": approval.approval_id,
+            "proposal_id": approval.proposal_id,
+            "policy_id": approval.policy_id,
+            "binding_digest": approval.binding_digest,
+        },
+    )
+
+
+def _grant_fingerprint(grant: RoomParticipationGrant) -> str:
+    return _canonical_digest(
+        "room-participation-grant",
+        {
+            "grant_id": grant.grant_id,
+            "session_id": grant.session_id,
+            "episode_id": grant.episode_id,
+            "perspective_instance_id": grant.perspective_instance_id,
+            "room_id": grant.room_id,
+            "policy_id": grant.policy_id,
+            "scopes": sorted(scope.value for scope in grant.scopes),
+            "launch_evidence_id": grant.launch_evidence_id,
+            "proposal_id": grant.proposal_id,
+            "approval_id": grant.approval_id,
+            "binding_digest": grant.binding_digest,
+        },
+    )
+
+
+def _canonical_digest(kind: str, payload: dict[str, object]) -> str:
+    raw = json.dumps(
+        {"kind": kind, "payload": payload},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(raw).hexdigest()
 
 
 def _grant_binding_digest(
