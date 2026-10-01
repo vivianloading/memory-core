@@ -18,6 +18,7 @@ from home_memory_core.living_continuity import (
     resolve_continuity_topology,
     resolve_room_attachment,
 )
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.store_domain import assert_synthetic_store_domain
 
 
@@ -137,7 +138,11 @@ def _living_schema_script() -> str:
                     episode_id TEXT PRIMARY KEY
                         CHECK (length(trim(episode_id)) > 0),
                     perspective_instance_id TEXT NOT NULL
-                        CHECK (length(trim(perspective_instance_id)) > 0),
+                        CHECK (length(trim(perspective_instance_id)) > 0)
+                        CHECK (
+                            perspective_instance_id <>
+                            '{SYNTHETIC_UNATTRIBUTED_INSTANCE_ID}'
+                        ),
                     runtime_instance_id TEXT
                         CHECK (
                             runtime_instance_id IS NULL
