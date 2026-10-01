@@ -356,21 +356,44 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 _marker=object(),
             )
 
-    def test_grant_from_another_authority_instance_is_rejected(self) -> None:
+    def test_same_host_lease_reuses_one_authority_registry(self) -> None:
         evidence, _, _, grant = self._grant()
-        other = open_room_participation_authority(
+        reopened = open_room_participation_authority(
             lease=self.lease,
             store=self.living,
         )
 
+        self.assertIs(reopened, self.authority)
+        reopened.require_grant(
+            grant=grant,
+            session_id=evidence.session_id,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            room_id="room-r",
+            required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+        )
+
+    def test_policy_suspension_revokes_grant_without_rewriting_room_intent(self) -> None:
+        evidence, _, _, grant = self._grant()
+        self.authority.suspend_policy(policy_id=self.policy.policy_id)
+
         with self.assertRaises(RoomParticipationAuthorizationError):
-            other.require_grant(
+            self.authority.require_grant(
                 grant=grant,
                 session_id=evidence.session_id,
                 episode_id="episode-b",
                 perspective_instance_id="perspective-b",
                 room_id="room-r",
                 required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=self.policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_HISTORY}
+                ),
             )
 
     def test_successor_launch_revokes_predecessor_episode_grant(self) -> None:
