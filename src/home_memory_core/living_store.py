@@ -48,6 +48,9 @@ _REQUIRED_TRIGGERS = frozenset(
         "living_episodes_no_delete",
         "living_continuity_edges_no_update",
         "living_continuity_edges_no_delete",
+        "living_continuity_edges_no_implicit_merge",
+        "living_continuity_edges_no_cycle",
+        "living_room_attachment_events_same_episode",
         "living_room_attachment_events_no_update",
         "living_room_attachment_events_no_delete",
     }
@@ -318,6 +321,47 @@ class LivingStore:
                     );
                 END;
 
+                CREATE TRIGGER living_continuity_edges_no_implicit_merge
+                BEFORE INSERT ON {CONTINUITY_EDGE_TABLE}
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM {CONTINUITY_EDGE_TABLE}
+                    WHERE next_episode_id = NEW.next_episode_id
+                      AND previous_episode_id <> NEW.previous_episode_id
+                )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer continuity graph cannot merge implicitly'
+                    );
+                END;
+
+                CREATE TRIGGER living_continuity_edges_no_cycle
+                BEFORE INSERT ON {CONTINUITY_EDGE_TABLE}
+                WHEN EXISTS (
+                    WITH RECURSIVE reachable(episode_id) AS (
+                        SELECT next_episode_id
+                        FROM {CONTINUITY_EDGE_TABLE}
+                        WHERE previous_episode_id = NEW.next_episode_id
+
+                        UNION
+
+                        SELECT edge.next_episode_id
+                        FROM {CONTINUITY_EDGE_TABLE} AS edge
+                        JOIN reachable
+                          ON edge.previous_episode_id = reachable.episode_id
+                    )
+                    SELECT 1
+                    FROM reachable
+                    WHERE episode_id = NEW.previous_episode_id
+                )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer continuity graph cannot contain a cycle'
+                    );
+                END;
+
                 CREATE TRIGGER living_continuity_edges_no_update
                 BEFORE UPDATE ON {CONTINUITY_EDGE_TABLE}
                 BEGIN
@@ -333,6 +377,23 @@ class LivingStore:
                     SELECT RAISE(
                         ABORT,
                         'Living Layer continuity edges are append-only'
+                    );
+                END;
+
+                CREATE TRIGGER living_room_attachment_events_same_episode
+                BEFORE INSERT ON {ATTACHMENT_TABLE}
+                WHEN NEW.supersedes_attachment_event_id IS NOT NULL
+                 AND EXISTS (
+                    SELECT 1
+                    FROM {ATTACHMENT_TABLE} AS previous
+                    WHERE previous.attachment_event_id =
+                        NEW.supersedes_attachment_event_id
+                      AND previous.episode_id <> NEW.episode_id
+                 )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer attachment correction must stay in one episode'
                     );
                 END;
 
