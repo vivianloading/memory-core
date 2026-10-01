@@ -424,6 +424,7 @@ class _SessionState:
 class _ProposalState:
     proposal: RoomParticipationGrantProposal
     fingerprint: str
+    approved: bool = False
 
 
 @dataclass
@@ -661,6 +662,11 @@ class RoomParticipationAuthority:
         """
 
         self._assert_live_proposal(proposal)
+        proposal_state = self._proposals[proposal.proposal_id]
+        if proposal_state.approved:
+            raise RoomParticipationAuthorizationError(
+                "grant proposal was already approved"
+            )
         self._assert_policy_active(policy)
         if proposal.policy_id != policy.policy_id:
             raise RoomParticipationAuthorizationError(
@@ -690,6 +696,7 @@ class RoomParticipationAuthority:
             approval=approval,
             fingerprint=_approval_fingerprint(approval),
         )
+        proposal_state.approved = True
         return approval
 
     @_guarded
