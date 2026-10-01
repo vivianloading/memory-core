@@ -41,7 +41,13 @@ Current transfer modes include live runtime, native checkpoint resume, partial
 state resume, history reconstruction, text/context handoff, and no known
 transfer.
 
-Current continuity evidence statuses are verified, partial, and unknown.
+The semantic model can represent verified, partial, and unknown continuity
+evidence states.
+
+The v0.1 persistence boundary is intentionally stricter: only unknown may be
+stored. Partial or verified continuity require a future typed verifier that can
+validate the supporting runtime/checkpoint receipts. A caller-provided string
+must never be enough to mint certainty.
 
 Forking is not a continuity-status value. It is a structural fact derived from
 the graph.
@@ -114,17 +120,25 @@ RoomAttachmentEvent inside an already-marked synthetic HOME database.
 Persistence does not widen their meaning:
 
 - Living Layer rows are append-only;
+- storage triggers reject implicit continuity merges, continuity cycles, and
+  cross-Episode attachment corrections even through raw SQL;
 - late Room correction appends a new event instead of rewriting the old one;
 - support refs are stored inside the immutable parent record so their set cannot
   be silently extended after the fact;
 - continuity forks remain derived topology;
 - PerspectiveInstance remains distinct from Room;
 - no same_self field exists in the schema;
+- schema drift fails closed, including unexpected identity-like columns;
+- backup/restore validates the complete Living Layer graph when it is present;
 - this milestone does not feed Living Layer state to model delivery.
 
-The persistence API is synthetic-only. It is not a real-data enablement path and
-does not make a caller's continuity classification authoritative merely because
-it was stored.
+The persistence API is synthetic-only. It is not a real-data enablement path.
+In particular, v0.1 refuses to persist partial/verified continuity because the
+typed verification authority does not exist yet.
+
+Portable backup/restore is allowed to move these records between HOME roots, but
+moving hosts does not upgrade or downgrade subject continuity. Host migration is
+a technical event, not an identity verdict.
 
 ## Non-goals for this milestone
 
