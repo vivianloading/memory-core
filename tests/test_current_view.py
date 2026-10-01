@@ -288,6 +288,10 @@ class CurrentViewTests(unittest.TestCase):
         self.assertEqual(resolution.standing, CurrentStanding.ENDED)
         self.assertEqual(resolution.current_state_ids, ())
         self.assertIn("END_KIND_RESOLVED", resolution.reason_codes)
+        self.assertEqual(
+            resolution.candidates[0].end_events,
+            (end,),
+        )
 
     def test_end_event_is_not_known_before_it_is_recorded(self) -> None:
         record = self._room_record(
@@ -1035,6 +1039,27 @@ class CurrentViewTests(unittest.TestCase):
                 key="project.home.status",
                 records=(parent, child),
                 as_of=self.t0,
+            )
+
+    def test_one_current_key_cannot_change_state_kind(self) -> None:
+        project = self._room_record(
+            "typed-root",
+            key="stable.key",
+            state_kind=CurrentStateKind.PROJECT_STATUS,
+        )
+        preference = self._room_record(
+            "typed-child",
+            key="stable.key",
+            state_kind=CurrentStateKind.PREFERENCE,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+            supersedes_state_id=project.state_id,
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (project, preference),
+                key="stable.key",
             )
 
     def test_supersession_cycle_is_rejected(self) -> None:
