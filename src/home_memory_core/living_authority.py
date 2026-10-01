@@ -116,7 +116,7 @@ class SupportedRuntimeLaunchReceipt:
     host_process_instance_id: str
     episode_id: str
     perspective_instance_id: str
-    runtime_instance_id: str | None
+    runtime_instance_id: str
     observed_transfer_mode: TransferMode
     _marker: object = field(repr=False, compare=False)
 
@@ -134,16 +134,7 @@ class SupportedRuntimeLaunchReceipt:
             "perspective_instance_id",
         ):
             _require_text(field_name, getattr(self, field_name))
-        if (
-            self.runtime_instance_id is not None
-            and (
-                not isinstance(self.runtime_instance_id, str)
-                or not self.runtime_instance_id.strip()
-            )
-        ):
-            raise RoomLaunchEvidenceError(
-                "runtime_instance_id must be non-empty when present"
-            )
+        _require_text("runtime_instance_id", self.runtime_instance_id)
         if not isinstance(self.observed_transfer_mode, TransferMode):
             raise RoomLaunchEvidenceError(
                 "observed_transfer_mode must use TransferMode"
@@ -371,7 +362,7 @@ class RoomParticipationAuthority:
         *,
         episode_id: str,
         perspective_instance_id: str,
-        observed_runtime_instance_id: str | None,
+        observed_runtime_instance_id: str,
         observed_transfer_mode: TransferMode,
     ) -> SupportedRuntimeLaunchReceipt:
         """Record the actual supported-host launch before Room authority is derived.
@@ -390,6 +381,10 @@ class RoomParticipationAuthority:
             )
 
         episode = self._store.get_episode(episode_id)
+        if episode.runtime_instance_id is None:
+            raise RoomLaunchEvidenceError(
+                "automatic Room participation requires a concrete runtime instance"
+            )
         if episode.perspective_instance_id != perspective_instance_id:
             raise RoomLaunchEvidenceError(
                 "runtime launch perspective does not match persisted Episode"
@@ -399,11 +394,13 @@ class RoomParticipationAuthority:
                 "observed runtime instance does not match persisted Episode"
             )
 
-        old_receipt_id = self._pending_launch_by_episode.get(episode_id)
-        if old_receipt_id is not None:
-            old = self._runtime_launches.get(old_receipt_id)
-            if old is not None:
-                old.consumed = True
+        if (
+            episode_id in self._pending_launch_by_episode
+            or episode_id in self._session_by_episode
+        ):
+            raise RoomLaunchEvidenceError(
+                "Episode already has a runtime launch; a new runtime requires a new Episode"
+            )
 
         receipt = SupportedRuntimeLaunchReceipt(
             receipt_id=f"runtime-launch-{secrets.token_hex(16)}",
