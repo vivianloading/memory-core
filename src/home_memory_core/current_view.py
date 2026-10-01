@@ -326,9 +326,10 @@ class CurrentStateEndEvent:
 
 @dataclass(frozen=True)
 class CurrentCandidate:
-    """One exact historical record plus its derived as-of standing."""
+    """Exact historical state/end evidence plus derived as-of standing."""
 
     record: CurrentStateRecord
+    end_events: tuple[CurrentStateEndEvent, ...]
     standing: CurrentStanding
     reason_codes: tuple[str, ...]
 
@@ -701,6 +702,7 @@ def _candidate_for(
     if len(end_events) > 1:
         return CurrentCandidate(
             record=record,
+            end_events=end_events,
             standing=CurrentStanding.CONFLICTING,
             reason_codes=("MULTIPLE_EFFECTIVE_END_EVENTS",),
         )
@@ -708,6 +710,7 @@ def _candidate_for(
         end_event = end_events[0]
         return CurrentCandidate(
             record=record,
+            end_events=end_events,
             standing=CurrentStanding.ENDED,
             reason_codes=(
                 "EXPLICIT_END_EVENT",
@@ -718,6 +721,7 @@ def _candidate_for(
     if record.validity_rule is ValidityRule.DURABLE_UNTIL_CHANGED:
         return CurrentCandidate(
             record=record,
+            end_events=end_events,
             standing=CurrentStanding.CURRENT,
             reason_codes=("DURABLE_UNTIL_CHANGED",),
         )
@@ -727,11 +731,13 @@ def _candidate_for(
         if as_of >= record.valid_until:
             return CurrentCandidate(
                 record=record,
+                end_events=end_events,
                 standing=CurrentStanding.EXPIRED,
                 reason_codes=("EXPLICIT_VALIDITY_INTERVAL_ENDED",),
             )
         return CurrentCandidate(
             record=record,
+            end_events=end_events,
             standing=CurrentStanding.CURRENT,
             reason_codes=("WITHIN_EXPLICIT_VALIDITY_INTERVAL",),
         )
@@ -742,11 +748,13 @@ def _candidate_for(
         if as_of >= stale_at:
             return CurrentCandidate(
                 record=record,
+                end_events=end_events,
                 standing=CurrentStanding.LAST_KNOWN,
                 reason_codes=("STALE_TO_LAST_KNOWN",),
             )
         return CurrentCandidate(
             record=record,
+            end_events=end_events,
             standing=CurrentStanding.CURRENT,
             reason_codes=("FRESH_WITHIN_STALENESS_WINDOW",),
         )
@@ -754,6 +762,7 @@ def _candidate_for(
     if record.validity_rule is ValidityRule.OPEN_UNTIL_RESOLVED:
         return CurrentCandidate(
             record=record,
+            end_events=end_events,
             standing=CurrentStanding.UNRESOLVED,
             reason_codes=("OPEN_UNTIL_EXPLICITLY_RESOLVED",),
         )
@@ -838,6 +847,15 @@ def _validate_current_graph(
         if event.end_event_id in seen_end_ids:
             raise CurrentViewError("duplicate end_event_id")
         seen_end_ids.add(event.end_event_id)
+
+    state_kinds = {
+        record.state_kind
+        for record in records
+    }
+    if len(state_kinds) > 1:
+        raise CurrentViewError(
+            "one Current key cannot change state_kind across history"
+        )
 
     parent_by_child: dict[str, str] = {}
     children_by_parent: dict[str, set[str]] = {}
