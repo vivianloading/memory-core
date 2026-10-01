@@ -296,10 +296,19 @@ class CurrentStateEndEvent:
 
 @dataclass(frozen=True)
 class CurrentCandidate:
-    state_id: str
+    """One exact historical record plus its derived as-of standing."""
+
+    record: CurrentStateRecord
     standing: CurrentStanding
-    value: str
     reason_codes: tuple[str, ...]
+
+    @property
+    def state_id(self) -> str:
+        return self.record.state_id
+
+    @property
+    def value(self) -> str:
+        return self.record.value
 
 
 @dataclass(frozen=True)
@@ -661,17 +670,15 @@ def _candidate_for(
 ) -> CurrentCandidate:
     if len(end_events) > 1:
         return CurrentCandidate(
-            state_id=record.state_id,
+            record=record,
             standing=CurrentStanding.CONFLICTING,
-            value=record.value,
             reason_codes=("MULTIPLE_EFFECTIVE_END_EVENTS",),
         )
     if len(end_events) == 1:
         end_event = end_events[0]
         return CurrentCandidate(
-            state_id=record.state_id,
+            record=record,
             standing=CurrentStanding.ENDED,
-            value=record.value,
             reason_codes=(
                 "EXPLICIT_END_EVENT",
                 f"END_KIND_{end_event.end_kind.value.upper()}",
@@ -680,9 +687,8 @@ def _candidate_for(
 
     if record.validity_rule is ValidityRule.DURABLE_UNTIL_CHANGED:
         return CurrentCandidate(
-            state_id=record.state_id,
+            record=record,
             standing=CurrentStanding.CURRENT,
-            value=record.value,
             reason_codes=("DURABLE_UNTIL_CHANGED",),
         )
 
@@ -690,15 +696,13 @@ def _candidate_for(
         assert record.valid_until is not None
         if as_of >= record.valid_until:
             return CurrentCandidate(
-                state_id=record.state_id,
+                record=record,
                 standing=CurrentStanding.EXPIRED,
-                value=record.value,
                 reason_codes=("EXPLICIT_VALIDITY_INTERVAL_ENDED",),
             )
         return CurrentCandidate(
-            state_id=record.state_id,
+            record=record,
             standing=CurrentStanding.CURRENT,
-            value=record.value,
             reason_codes=("WITHIN_EXPLICIT_VALIDITY_INTERVAL",),
         )
 
@@ -713,17 +717,15 @@ def _candidate_for(
                 reason_codes=("STALE_TO_LAST_KNOWN",),
             )
         return CurrentCandidate(
-            state_id=record.state_id,
+            record=record,
             standing=CurrentStanding.CURRENT,
-            value=record.value,
             reason_codes=("FRESH_WITHIN_STALENESS_WINDOW",),
         )
 
     if record.validity_rule is ValidityRule.OPEN_UNTIL_RESOLVED:
         return CurrentCandidate(
-            state_id=record.state_id,
+            record=record,
             standing=CurrentStanding.UNRESOLVED,
-            value=record.value,
             reason_codes=("OPEN_UNTIL_EXPLICITLY_RESOLVED",),
         )
 
