@@ -13,6 +13,11 @@ import zipfile
 from home_memory_core.host_config import CONFIG_SCHEMA, HomeMiniHostConfig, load_home_mini_host_config
 from home_memory_core.host_runtime import HostRuntimeLeaseError
 from home_memory_core.host_startup import start_home_mini_host
+from home_memory_core.living_store import (
+    LIVING_SCHEMA_MARKER_TABLE,
+    LivingStoreIntegrityError,
+    assert_living_schema,
+)
 from home_memory_core.store_domain import SYNTHETIC_STORE_DOMAIN, StoreDomainError, assert_synthetic_store_domain
 
 
@@ -304,11 +309,26 @@ def _validate_closed_synthetic_database(path: Path) -> None:
         if foreign_key_issue is not None:
             raise HostMigrationError("HOME database failed foreign_key_check")
         assert_synthetic_store_domain(connection)
+
+        living_marker = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (LIVING_SCHEMA_MARKER_TABLE,),
+        ).fetchone()
+        if living_marker is not None:
+            assert_living_schema(connection)
     except HostMigrationError:
         raise
     except StoreDomainError as exc:
         raise HostMigrationError(
             "closed migration accepts synthetic HOME stores only; real-domain backup remains locked"
+        ) from exc
+    except LivingStoreIntegrityError as exc:
+        raise HostMigrationError(
+            "HOME database contains an invalid Living Layer schema"
         ) from exc
     except sqlite3.Error as exc:
         raise HostMigrationError("HOME database could not be validated") from exc
