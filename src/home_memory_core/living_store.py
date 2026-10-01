@@ -899,6 +899,140 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
         )
 
 
+def assert_living_data_integrity(connection: sqlite3.Connection) -> None:
+    """Validate persisted Living Layer records as one semantic graph."""
+
+    assert_living_schema(connection)
+
+    room_ids = {
+        row[0]
+        for row in connection.execute(
+            f"SELECT room_id FROM {ROOM_TABLE}"
+        ).fetchall()
+    }
+
+    episodes: list[EpisodeRecord] = []
+    episode_ids: set[str] = set()
+    episode_rows = connection.execute(
+        f"""
+        SELECT
+            episode_id,
+            perspective_instance_id,
+            runtime_instance_id,
+            model_ref
+        FROM {EPISODE_TABLE}
+        ORDER BY rowid
+        """
+    ).fetchall()
+    try:
+        for row in episode_rows:
+            episode = EpisodeRecord(
+                episode_id=row[0],
+                perspective_instance_id=row[1],
+                runtime_instance_id=row[2],
+                model_ref=row[3],
+            )
+            episodes.append(episode)
+            episode_ids.add(episode.episode_id)
+    except LivingContinuityError as error:
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer episode is invalid"
+        ) from error
+
+    edges: list[ContinuityEdge] = []
+    edge_rows = connection.execute(
+        f"""
+        SELECT
+            edge_id,
+            previous_episode_id,
+            next_episode_id,
+            transfer_mode,
+            continuity_status,
+            support_refs_json
+        FROM {CONTINUITY_EDGE_TABLE}
+        ORDER BY rowid
+        """
+    ).fetchall()
+    try:
+        for row in edge_rows:
+            status = ContinuityStatus(row[4])
+            if status is not ContinuityStatus.UNKNOWN:
+                raise LivingStoreIntegrityError(
+                    "persisted continuity certainty exceeds the v0.1 authority boundary"
+                )
+            edges.append(
+                ContinuityEdge(
+                    edge_id=row[0],
+                    previous_episode_id=row[1],
+                    next_episode_id=row[2],
+                    transfer_mode=TransferMode(row[3]),
+                    continuity_status=status,
+                    support_refs=_decode_support_refs(row[5]),
+                )
+            )
+        resolve_continuity_topology(
+            episodes=tuple(episodes),
+            edges=tuple(edges),
+        )
+    except LivingStoreIntegrityError:
+        raise
+    except (ValueError, LivingContinuityError) as error:
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer continuity graph is invalid"
+        ) from error
+
+    events_by_episode: dict[str, list[RoomAttachmentEvent]] = {}
+    attachment_rows = connection.execute(
+        f"""
+        SELECT
+            attachment_event_id,
+            episode_id,
+            route_kind,
+            room_id,
+            basis,
+            supersedes_attachment_event_id,
+            support_refs_json
+        FROM {ATTACHMENT_TABLE}
+        ORDER BY rowid
+        """
+    ).fetchall()
+    try:
+        for row in attachment_rows:
+            event = RoomAttachmentEvent(
+                attachment_event_id=row[0],
+                episode_id=row[1],
+                route_kind=RoomRouteKind(row[2]),
+                room_id=row[3],
+                basis=row[4],
+                supersedes_attachment_event_id=row[5],
+                support_refs=_decode_support_refs(row[6]),
+            )
+            if event.episode_id not in episode_ids:
+                raise LivingStoreIntegrityError(
+                    "persisted room attachment references a missing episode"
+                )
+            if (
+                event.route_kind is RoomRouteKind.ATTACHED
+                and event.room_id not in room_ids
+            ):
+                raise LivingStoreIntegrityError(
+                    "persisted room attachment references a missing room"
+                )
+            events_by_episode.setdefault(event.episode_id, []).append(event)
+
+        for episode_id, events in events_by_episode.items():
+            resolve_room_attachment(
+                episode_id=episode_id,
+                events=tuple(events),
+            )
+    except LivingStoreIntegrityError:
+        raise
+    except (ValueError, LivingContinuityError) as error:
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer room routing is invalid"
+        ) from error
+
+
 def _encode_support_refs(support_refs: tuple[str, ...]) -> str:
     return json.dumps(
         list(support_refs),
