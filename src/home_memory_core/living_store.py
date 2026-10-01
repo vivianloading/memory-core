@@ -53,6 +53,42 @@ _REQUIRED_TRIGGERS = frozenset(
     }
 )
 
+_REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
+    LIVING_SCHEMA_MARKER_TABLE: frozenset(
+        {"marker_key", "schema_version"}
+    ),
+    ROOM_TABLE: frozenset({"room_id"}),
+    EPISODE_TABLE: frozenset(
+        {
+            "episode_id",
+            "perspective_instance_id",
+            "runtime_instance_id",
+            "model_ref",
+        }
+    ),
+    CONTINUITY_EDGE_TABLE: frozenset(
+        {
+            "edge_id",
+            "previous_episode_id",
+            "next_episode_id",
+            "transfer_mode",
+            "continuity_status",
+            "support_refs_json",
+        }
+    ),
+    ATTACHMENT_TABLE: frozenset(
+        {
+            "attachment_event_id",
+            "episode_id",
+            "route_kind",
+            "room_id",
+            "basis",
+            "supersedes_attachment_event_id",
+            "support_refs_json",
+        }
+    ),
+}
+
 
 class LivingStoreError(RuntimeError):
     """Base error for Living Layer persistence."""
@@ -765,6 +801,18 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
         raise LivingStoreIntegrityError(
             "Living Layer schema is missing or incomplete"
         )
+
+    for table_name, required_columns in _REQUIRED_COLUMNS.items():
+        actual_columns = {
+            row[1]
+            for row in connection.execute(
+                f"PRAGMA table_info({table_name})"
+            ).fetchall()
+        }
+        if not required_columns.issubset(actual_columns):
+            raise LivingStoreIntegrityError(
+                f"Living Layer table columns are incomplete: {table_name}"
+            )
 
     marker_rows = connection.execute(
         f"""
