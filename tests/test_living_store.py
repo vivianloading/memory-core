@@ -133,6 +133,53 @@ class LivingStoreTest(unittest.TestCase):
         self.assertEqual(resolution.decision, "attached")
         self.assertEqual(resolution.room_id, room.room_id)
 
+    def test_continuation_path_snapshot_keeps_route_edge_and_topology_together(self) -> None:
+        room = RoomRecord(room_id="room-snapshot")
+        first = self._episode("snapshot-a")
+        second = self._episode("snapshot-b")
+        self.store.add_room(room)
+        self.store.add_episode(first)
+        self.store.add_episode(second)
+        edge = self._edge(
+            "snapshot-edge",
+            first.episode_id,
+            second.episode_id,
+        )
+        self.store.add_continuity_edge(edge)
+        self.store.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="snapshot-route-a",
+                episode_id=first.episode_id,
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id=room.room_id,
+                basis="existing_line",
+            )
+        )
+        self.store.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="snapshot-route-b",
+                episode_id=second.episode_id,
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id=room.room_id,
+                basis="ordinary_handoff",
+            )
+        )
+
+        snapshot = self.store.read_continuation_path_snapshot(
+            previous_episode_id=first.episode_id,
+            episode_id=second.episode_id,
+        )
+
+        self.assertEqual(snapshot.previous_episode, first)
+        self.assertEqual(snapshot.episode, second)
+        self.assertEqual(snapshot.previous_route.room_id, room.room_id)
+        self.assertEqual(snapshot.current_route.room_id, room.room_id)
+        self.assertEqual(snapshot.edges, (edge,))
+        self.assertEqual(
+            snapshot.topology.head_episode_ids,
+            frozenset({second.episode_id}),
+        )
+
     def test_persistence_refuses_certainty_without_typed_verifier(self) -> None:
         first = self._episode("episode-certainty-a")
         second = self._episode("episode-certainty-b")
