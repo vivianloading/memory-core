@@ -208,15 +208,19 @@ payload B.
 This layer therefore creates an exact grant proposal and computes a binding
 digest over:
 
+- launch-evidence id
+- exact continuation-policy fingerprint
 - session
 - Episode
 - PerspectiveInstance
 - Room
-- policy
+- policy id
 - scope set
 
-Automatic policy approval is bound to that exact proposal digest. Grant issuance
-rejects an approval for another proposal or another digest.
+A grant proposal may receive only one approval, and an approval may issue only
+one grant. Automatic policy approval is bound to that exact proposal digest.
+Grant issuance rejects an approval for another proposal, policy payload, or
+digest.
 
 A future explicit confirmation UI must display and confirm the same binding
 object/digest rather than reconstructing authorization from labels or prose.
