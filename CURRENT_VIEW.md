@@ -34,6 +34,12 @@ represented with validity time instead: valid_from may be later than recorded_at
 allowing HOME to know a future-effective state without pretending its underlying
 event already happened.
 
+Append-only references also obey record causality: a superseding record cannot
+be recorded before the record it supersedes, and an end event cannot be recorded
+before its target state. An end event also cannot end a state before that state's
+validity begins. Retroactive valid_from values remain allowed; the rule is about
+reference/effect ordering, not forbidding late-discovered history.
+
 A future-valid state may therefore be known without becoming current early.
 
 ## Namespaces
