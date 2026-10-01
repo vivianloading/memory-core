@@ -57,6 +57,10 @@ not deleted or rewritten.
 
 Supersession cannot cross namespace, owner or key.
 
+One namespace/owner/key also keeps one stable state_kind across its history.
+Changing a key from, for example, project_status into preference is a schema
+mistake, not a revision.
+
 Multiple children of one historical record are allowed. They are competing
 heads, not an invitation to choose the newest write.
 
@@ -159,10 +163,10 @@ CurrentResolution separates:
 - future_state_ids — known records whose valid_from is still in the future.
 
 Each CurrentCandidate retains the exact immutable CurrentStateRecord it was
-derived from, plus only the derived standing and reason codes. This keeps
-validity rule, downgrade rule, semantic ownership, Episode/Perspective
-attribution and source references inspectable without reconstructing them from
-display text.
+derived from, the exact effective end-event evidence (when any), and only the
+derived standing/reason codes. This keeps validity rule, downgrade rule,
+semantic ownership, Episode/Perspective attribution and source references
+inspectable without reconstructing them from display text.
 
 A record whose recorded_at is later than as_of is not known in that historical
 view at all. Even its key must not appear in a derived historical view before
