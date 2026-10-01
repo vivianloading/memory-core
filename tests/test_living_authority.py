@@ -182,6 +182,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         with self.assertRaises(RoomLaunchEvidenceError):
             TrustedLaunchEvidence(
                 evidence_id="forged",
+                runtime_launch_receipt_id="forged-runtime-launch",
                 session_id="forged-session",
                 home_process_instance_id="forged-process",
                 host_process_instance_id="forged-host",
