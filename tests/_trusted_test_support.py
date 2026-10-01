@@ -13,6 +13,7 @@ from home_memory_core import real_normal_read
 from home_memory_core import real_relationships
 from home_memory_core import real_stop_use
 from home_memory_core import real_source_origin
+from home_memory_core import living_authority
 from home_memory_core import source_origin
 from home_memory_core import store_domain
 
@@ -270,4 +271,20 @@ def trusted_test_synchronous_handoff_sink(
         destination_class=destination_class,
         _handler=handler,
         _marker=real_delivery._TRUSTED_SYNC_HANDOFF_SINK_MARKER,
+    )
+
+
+def trusted_test_room_continuation_policy(
+    *,
+    policy_id: str,
+    room_id: str,
+    allowed_scopes,
+    source_event_ref: str = "synthetic-inhabitant-policy-event",
+) -> living_authority.TrustedRoomContinuationPolicy:
+    return living_authority.TrustedRoomContinuationPolicy(
+        policy_id=policy_id,
+        room_id=room_id,
+        allowed_scopes=frozenset(allowed_scopes),
+        source_event_ref=source_event_ref,
+        _marker=living_authority._CONTINUATION_POLICY_MARKER,
     )
