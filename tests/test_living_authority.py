@@ -57,6 +57,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             store=self.living,
         )
         self.policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-room-r-v1",
             room_id="room-r",
             allowed_scopes={
@@ -275,6 +277,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
 
         policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-lineage",
             room_id="room-r",
             established_episode_id="lineage-a",
@@ -678,6 +682,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
         )
         sibling_policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-sibling",
             room_id="room-r",
             established_episode_id="episode-sibling",
@@ -860,6 +866,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
         )
         branch_policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-room-r-after-fork",
             room_id="room-r",
             established_episode_id="episode-b",
@@ -972,6 +980,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
     def test_policy_cannot_be_widened_before_first_registration(self) -> None:
         evidence = self._launch()
         policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-read-only-before-registration",
             room_id="room-r",
             allowed_scopes={
@@ -1000,6 +1010,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
     def test_registered_policy_cannot_be_renamed_and_widened(self) -> None:
         evidence = self._launch()
         policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-read-only-registered",
             room_id="room-r",
             allowed_scopes={
@@ -1032,6 +1044,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
     def test_dataclass_copy_cannot_reuse_policy_trust_marker(self) -> None:
         evidence = self._launch()
         policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-read-only-copy-source",
             room_id="room-r",
             allowed_scopes={
@@ -1056,6 +1070,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
     def test_suspended_policy_copy_cannot_resurrect_authority(self) -> None:
         evidence = self._launch()
         policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-read-only-suspended",
             room_id="room-r",
             allowed_scopes={
@@ -1143,6 +1159,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             ),
         )
         wider = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id=self.policy.policy_id,
             room_id="room-r",
             allowed_scopes={
@@ -1333,6 +1351,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
 
     def test_current_stance_grant_requires_and_preserves_first_person_scope(self) -> None:
         policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
             policy_id="policy-room-r-stance",
             room_id="room-r",
             allowed_scopes={
