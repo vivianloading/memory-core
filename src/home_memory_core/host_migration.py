@@ -14,8 +14,9 @@ from home_memory_core.host_config import CONFIG_SCHEMA, HomeMiniHostConfig, load
 from home_memory_core.host_runtime import HostRuntimeLeaseError
 from home_memory_core.host_startup import start_home_mini_host
 from home_memory_core.living_store import (
-    LIVING_SCHEMA_MARKER_TABLE,
+    LIVING_SCHEMA_TABLES,
     LivingStoreIntegrityError,
+    assert_living_data_integrity,
     assert_living_schema,
 )
 from home_memory_core.store_domain import SYNTHETIC_STORE_DOMAIN, StoreDomainError, assert_synthetic_store_domain
@@ -310,16 +311,20 @@ def _validate_closed_synthetic_database(path: Path) -> None:
             raise HostMigrationError("HOME database failed foreign_key_check")
         assert_synthetic_store_domain(connection)
 
-        living_marker = connection.execute(
-            """
-            SELECT 1
-            FROM sqlite_master
-            WHERE type = 'table' AND name = ?
-            """,
-            (LIVING_SCHEMA_MARKER_TABLE,),
-        ).fetchone()
-        if living_marker is not None:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        living_tables = table_names.intersection(LIVING_SCHEMA_TABLES)
+        if living_tables:
+            if living_tables != LIVING_SCHEMA_TABLES:
+                raise HostMigrationError(
+                    "HOME database contains a partial Living Layer schema"
+                )
             assert_living_schema(connection)
+            assert_living_data_integrity(connection)
     except HostMigrationError:
         raise
     except StoreDomainError as exc:
