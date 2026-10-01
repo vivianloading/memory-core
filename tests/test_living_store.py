@@ -10,6 +10,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
@@ -159,6 +160,63 @@ class LivingStoreTest(unittest.TestCase):
                 self.store.add_continuity_edge(edge)
 
         self.assertEqual(self.store.list_continuity_edges(), ())
+
+    def test_raw_sql_unattributed_episode_pollution_fails_closed(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        try:
+            connection.execute(
+                f"""
+                INSERT INTO {EPISODE_TABLE} (
+                    episode_id,
+                    perspective_instance_id,
+                    runtime_instance_id,
+                    model_ref
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "unattributed-episode",
+                    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+                    None,
+                    None,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        for operation in (
+            lambda: self.store.get_episode("unattributed-episode"),
+            self.store.list_continuity_edges,
+            self.store.resolve_continuity_topology,
+            lambda: self.store.add_room(RoomRecord(room_id="blocked-write")),
+        ):
+            with self.assertRaises(LivingStoreIntegrityError):
+                operation()
+
+    def test_canonical_schema_rejects_unattributed_episode_insert(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {EPISODE_TABLE} (
+                        episode_id,
+                        perspective_instance_id,
+                        runtime_instance_id,
+                        model_ref
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        "unattributed-episode",
+                        SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+                        None,
+                        None,
+                    ),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
 
     def test_late_room_correction_preserves_original_attachment(self) -> None:
         first_room = RoomRecord(room_id="room-r")
