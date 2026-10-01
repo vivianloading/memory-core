@@ -1328,22 +1328,29 @@ class RoomParticipationAuthority:
                 "continuation policy establishment route is no longer exact"
             )
 
-        parent_by_child = {
-            edge.next_episode_id: edge.previous_episode_id
+        edge_by_child = {
+            edge.next_episode_id: edge
             for edge in snapshot.edges
         }
+        route_by_episode = {
+            route.episode_id: route
+            for route in snapshot.routes
+        }
+
         current = evidence.previous_episode_id
         branch_path: list[str] = []
+        inherited_edges: list[ContinuityEdge] = []
         while True:
             branch_path.append(current)
             if current == policy.established_episode_id:
                 break
-            parent = parent_by_child.get(current)
-            if parent is None:
+            inherited_edge = edge_by_child.get(current)
+            if inherited_edge is None:
                 raise RoomParticipationAuthorizationError(
                     "continuation policy was not established on this branch"
                 )
-            current = parent
+            inherited_edges.append(inherited_edge)
+            current = inherited_edge.previous_episode_id
 
         crossed_forks = set(branch_path).intersection(
             snapshot.topology.fork_episode_ids
@@ -1353,6 +1360,30 @@ class RoomParticipationAuthority:
                 "continuation policy cannot auto-cross a fork; "
                 "the branch must establish a new policy"
             )
+
+        unsupported_edges = [
+            edge
+            for edge in inherited_edges
+            if (
+                edge.transfer_mode not in _AUTO_CONTINUATION_TRANSFER_MODES
+                or edge.continuity_status is not ContinuityStatus.UNKNOWN
+            )
+        ]
+        if unsupported_edges:
+            raise RoomParticipationAuthorizationError(
+                "continuation policy cannot auto-cross an explicit-entry barrier"
+            )
+
+        for episode_id in branch_path:
+            route = route_by_episode.get(episode_id)
+            if (
+                route is None
+                or route.decision != "attached"
+                or route.room_id != policy.room_id
+            ):
+                raise RoomParticipationAuthorizationError(
+                    "continuation policy cannot auto-cross a Room route break"
+                )
 
     def _revoke_episode_session(self, episode_id: str) -> None:
         old_session_id = self._session_by_episode.get(episode_id)
