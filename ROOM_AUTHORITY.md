@@ -70,8 +70,14 @@ Persisted RoomAttachment + ContinuityEdge records alone cannot create a launch
 receipt and therefore cannot create operational participation authority.
 
 The launch receipt is one-shot. Replaying it after successful continuation
-binding is rejected. A newer observed launch for the same Episode invalidates
-the older pending receipt.
+binding is rejected. One Episode may receive only one supported runtime launch:
+a retry or genuinely new runtime must create a new Episode rather than silently
+reusing the old Episode identity.
+
+Automatic participation also requires the Episode to carry a concrete
+runtime_instance_id. An Episode without that technical runtime binding remains
+valid Living history, but it cannot use this automatic operational authority
+path.
 
 This evidence answers only:
 
@@ -153,8 +159,8 @@ The grant is bound to:
 - launch-evidence id
 
 A new linear successor session revokes the predecessor Episode's process-local
-grant. Re-launching the same Episode revokes its older process-local session and
-grant. A process/host restart also invalidates old in-memory grants naturally.
+grant. Re-launching the same Episode is rejected; a new runtime must be a new
+Episode. A process/host restart also invalidates old in-memory grants naturally.
 
 For one live host lease/database pair, HOME reuses one process-local authority
 registry so two callers cannot accidentally create independent grant universes
