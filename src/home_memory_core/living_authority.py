@@ -25,6 +25,7 @@ from home_memory_core.process_boundary import (
 
 
 _AUTHORITY_MARKER = object()
+_RUNTIME_LAUNCH_RECEIPT_MARKER = object()
 _LAUNCH_EVIDENCE_MARKER = object()
 _CONTINUATION_POLICY_MARKER = object()
 _GRANT_PROPOSAL_MARKER = object()
@@ -107,6 +108,39 @@ class TrustedRoomContinuationPolicy:
 
 
 @dataclass(frozen=True)
+class SupportedRuntimeLaunchReceipt:
+    """One host-observed runtime launch, before Room continuation is authorized."""
+
+    receipt_id: str
+    session_id: str
+    home_process_instance_id: str
+    host_process_instance_id: str
+    episode_id: str
+    perspective_instance_id: str
+    observed_transfer_mode: TransferMode
+    _marker: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._marker is not _RUNTIME_LAUNCH_RECEIPT_MARKER:
+            raise RoomLaunchEvidenceError(
+                "runtime launch receipt must be issued by HOME launch authority"
+            )
+        for field_name in (
+            "receipt_id",
+            "session_id",
+            "home_process_instance_id",
+            "host_process_instance_id",
+            "episode_id",
+            "perspective_instance_id",
+        ):
+            _require_text(field_name, getattr(self, field_name))
+        if not isinstance(self.observed_transfer_mode, TransferMode):
+            raise RoomLaunchEvidenceError(
+                "observed_transfer_mode must use TransferMode"
+            )
+
+
+@dataclass(frozen=True)
 class TrustedLaunchEvidence:
     """Process-local proof that a supported HOME host launched one continuation.
 
@@ -123,6 +157,7 @@ class TrustedLaunchEvidence:
     perspective_instance_id: str
     room_id: str
     continuity_edge_id: str
+    previous_attachment_event_id: str
     attachment_event_id: str
     transfer_mode: TransferMode
     continuity_status: ContinuityStatus
@@ -143,6 +178,7 @@ class TrustedLaunchEvidence:
             "perspective_instance_id",
             "room_id",
             "continuity_edge_id",
+            "previous_attachment_event_id",
             "attachment_event_id",
         ):
             _require_text(field_name, getattr(self, field_name))
@@ -236,6 +272,12 @@ class RoomParticipationGrant:
 
 
 @dataclass
+class _RuntimeLaunchState:
+    receipt: SupportedRuntimeLaunchReceipt
+    consumed: bool = False
+
+
+@dataclass
 class _SessionState:
     evidence: TrustedLaunchEvidence
     active: bool = True
@@ -279,6 +321,8 @@ class RoomParticipationAuthority:
         self._store = store
         self._home_process_instance_id = current_home_process_instance_id()
         self._guard = RLock()
+        self._runtime_launches: dict[str, _RuntimeLaunchState] = {}
+        self._pending_launch_by_episode: dict[str, str] = {}
         self._sessions: dict[str, _SessionState] = {}
         self._session_by_episode: dict[str, str] = {}
         self._proposals: dict[str, RoomParticipationGrantProposal] = {}
@@ -289,25 +333,75 @@ class RoomParticipationAuthority:
         self._assert_live_host()
 
     @_guarded
+    def record_supported_runtime_launch(
+        self,
+        *,
+        episode_id: str,
+        perspective_instance_id: str,
+        observed_transfer_mode: TransferMode,
+    ) -> SupportedRuntimeLaunchReceipt:
+        """Record the actual supported-host launch before Room authority is derived.
+
+        The receipt is process/host/session bound and one-shot. It is deliberately
+        separate from persisted RoomAttachment/ContinuityEdge data so those
+        records cannot mint operational authority by themselves.
+        """
+
+        self._assert_live_host()
+        _require_text("episode_id", episode_id)
+        _require_text("perspective_instance_id", perspective_instance_id)
+        if not isinstance(observed_transfer_mode, TransferMode):
+            raise RoomLaunchEvidenceError(
+                "observed_transfer_mode must use TransferMode"
+            )
+
+        episode = self._store.get_episode(episode_id)
+        if episode.perspective_instance_id != perspective_instance_id:
+            raise RoomLaunchEvidenceError(
+                "runtime launch perspective does not match persisted Episode"
+            )
+
+        old_receipt_id = self._pending_launch_by_episode.get(episode_id)
+        if old_receipt_id is not None:
+            old = self._runtime_launches.get(old_receipt_id)
+            if old is not None:
+                old.consumed = True
+
+        receipt = SupportedRuntimeLaunchReceipt(
+            receipt_id=f"runtime-launch-{secrets.token_hex(16)}",
+            session_id=f"room-session-{secrets.token_hex(16)}",
+            home_process_instance_id=self._home_process_instance_id,
+            host_process_instance_id=self._lease.identity.process_instance_id,
+            episode_id=episode_id,
+            perspective_instance_id=perspective_instance_id,
+            observed_transfer_mode=observed_transfer_mode,
+            _marker=_RUNTIME_LAUNCH_RECEIPT_MARKER,
+        )
+        self._runtime_launches[receipt.receipt_id] = _RuntimeLaunchState(
+            receipt=receipt
+        )
+        self._pending_launch_by_episode[episode_id] = receipt.receipt_id
+        return receipt
+
+    @_guarded
     def begin_trusted_continuation(
         self,
         *,
+        launch_receipt: SupportedRuntimeLaunchReceipt,
         previous_episode_id: str,
-        episode_id: str,
-        perspective_instance_id: str,
         room_id: str,
     ) -> TrustedLaunchEvidence:
-        """Bind one fresh runtime session to an existing Living continuation path."""
+        """Bind one host-observed runtime launch to one Living continuation path."""
 
-        self._assert_live_host()
+        self._assert_live_runtime_launch(launch_receipt)
         for field_name, value in {
             "previous_episode_id": previous_episode_id,
-            "episode_id": episode_id,
-            "perspective_instance_id": perspective_instance_id,
             "room_id": room_id,
         }.items():
             _require_text(field_name, value)
 
+        episode_id = launch_receipt.episode_id
+        perspective_instance_id = launch_receipt.perspective_instance_id
         if previous_episode_id == episode_id:
             raise RoomLaunchEvidenceError(
                 "continuation launch requires a new Episode"
@@ -332,6 +426,7 @@ class RoomParticipationAuthority:
         if (
             previous_route.decision != "attached"
             or previous_route.room_id != room_id
+            or previous_route.active_attachment_event_id is None
         ):
             raise RoomLaunchEvidenceError(
                 "previous Episode is not actively routed to the requested Room"
@@ -357,6 +452,10 @@ class RoomParticipationAuthority:
                 "trusted continuation requires exactly one persisted handoff edge"
             )
         edge = matching[0]
+        if edge.transfer_mode != launch_receipt.observed_transfer_mode:
+            raise RoomLaunchEvidenceError(
+                "persisted transfer mode does not match observed runtime launch"
+            )
         if edge.transfer_mode not in _AUTO_CONTINUATION_TRANSFER_MODES:
             raise RoomLaunchEvidenceError(
                 "transfer mode requires explicit Room entry instead of auto-continuation"
@@ -372,9 +471,13 @@ class RoomParticipationAuthority:
                 "forked predecessor cannot auto-inherit Room participation policy"
             )
 
+        launch_state = self._runtime_launches[launch_receipt.receipt_id]
+        launch_state.consumed = True
+        self._pending_launch_by_episode.pop(episode_id, None)
         self._revoke_episode_session(previous_episode_id)
+        self._revoke_episode_session(episode_id)
 
-        session_id = f"room-session-{secrets.token_hex(16)}"
+        session_id = launch_receipt.session_id
         evidence = TrustedLaunchEvidence(
             evidence_id=f"launch-evidence-{secrets.token_hex(16)}",
             session_id=session_id,
@@ -385,6 +488,9 @@ class RoomParticipationAuthority:
             perspective_instance_id=perspective_instance_id,
             room_id=room_id,
             continuity_edge_id=edge.edge_id,
+            previous_attachment_event_id=(
+                previous_route.active_attachment_event_id
+            ),
             attachment_event_id=current_route.active_attachment_event_id,
             transfer_mode=edge.transfer_mode,
             continuity_status=edge.continuity_status,
@@ -684,6 +790,41 @@ class RoomParticipationAuthority:
                 "LivingStore does not belong to the leased HOME database"
             )
 
+    def _assert_live_runtime_launch(
+        self,
+        receipt: SupportedRuntimeLaunchReceipt,
+    ) -> None:
+        self._assert_live_host()
+        state = self._runtime_launches.get(
+            getattr(receipt, "receipt_id", "")
+        )
+        if (
+            not isinstance(receipt, SupportedRuntimeLaunchReceipt)
+            or receipt._marker is not _RUNTIME_LAUNCH_RECEIPT_MARKER
+            or state is None
+            or state.receipt is not receipt
+            or state.consumed
+        ):
+            raise RoomLaunchEvidenceError(
+                "runtime launch receipt is forged, stale, or already consumed"
+            )
+        if receipt.home_process_instance_id != self._home_process_instance_id:
+            raise RoomLaunchEvidenceError(
+                "runtime launch receipt belongs to another HOME process"
+            )
+        if (
+            receipt.host_process_instance_id
+            != self._lease.identity.process_instance_id
+        ):
+            raise RoomLaunchEvidenceError(
+                "runtime launch receipt belongs to another host lease"
+            )
+        episode = self._store.get_episode(receipt.episode_id)
+        if episode.perspective_instance_id != receipt.perspective_instance_id:
+            raise RoomLaunchEvidenceError(
+                "runtime launch receipt no longer matches Episode attribution"
+            )
+
     def _assert_live_launch_evidence(
         self,
         evidence: TrustedLaunchEvidence,
@@ -765,6 +906,8 @@ class RoomParticipationAuthority:
         if (
             previous_route.decision != "attached"
             or previous_route.room_id != evidence.room_id
+            or previous_route.active_attachment_event_id
+            != evidence.previous_attachment_event_id
             or current_route.decision != "attached"
             or current_route.room_id != evidence.room_id
             or current_route.active_attachment_event_id
