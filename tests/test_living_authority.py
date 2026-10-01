@@ -5,7 +5,10 @@ import tempfile
 import unittest
 
 import home_memory_core.living_authority as authority_module
-from _trusted_test_support import trusted_test_room_continuation_policy
+from _trusted_test_support import (
+    trusted_test_room_continuation_policy,
+    trusted_test_runtime_launch_issuer,
+)
 from home_memory_core.host_runtime import acquire_home_single_instance
 from home_memory_core.living_authority import (
     AutomaticContinuationApproval,
@@ -17,6 +20,7 @@ from home_memory_core.living_authority import (
     SupportedRuntimeLaunchReceipt,
     TrustedLaunchEvidence,
     TrustedRoomContinuationPolicy,
+    TrustedRuntimeLaunchIssuer,
     open_room_participation_authority,
 )
 from home_memory_core.living_continuity import (
@@ -45,6 +49,10 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             db_path=self.db_path,
         )
         self.authority = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+        self.launcher = trusted_test_runtime_launch_issuer(
             lease=self.lease,
             store=self.living,
         )
@@ -116,7 +124,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         )
 
     def _launch(self):
-        receipt = self.authority.record_supported_runtime_launch(
+        receipt = self.launcher.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
             observed_runtime_instance_id="runtime-b",
@@ -206,6 +214,19 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 room_id="room-r",
             )
 
+    def test_runtime_launch_issuer_cannot_be_caller_minted(self) -> None:
+        with self.assertRaises(RoomLaunchEvidenceError):
+            TrustedRuntimeLaunchIssuer(
+                lease=self.lease,
+                store=self.living,
+                _marker=object(),
+            )
+
+    def test_room_authority_cannot_self_attest_runtime_launch(self) -> None:
+        self.assertFalse(
+            hasattr(self.authority, "record_supported_runtime_launch")
+        )
+
     def test_forged_runtime_launch_receipt_is_rejected(self) -> None:
         with self.assertRaises(RoomLaunchEvidenceError):
             SupportedRuntimeLaunchReceipt(
@@ -221,7 +242,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
 
     def test_runtime_launch_receipt_is_one_shot(self) -> None:
-        receipt = self.authority.record_supported_runtime_launch(
+        receipt = self.launcher.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
             observed_runtime_instance_id="runtime-b",
@@ -240,7 +261,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
 
     def test_observed_launch_mode_must_match_persisted_edge(self) -> None:
-        receipt = self.authority.record_supported_runtime_launch(
+        receipt = self.launcher.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
             observed_runtime_instance_id="runtime-b",
@@ -254,14 +275,14 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
 
     def test_episode_cannot_receive_two_runtime_launch_receipts(self) -> None:
-        first = self.authority.record_supported_runtime_launch(
+        first = self.launcher.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
             observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
         with self.assertRaises(RoomLaunchEvidenceError):
-            self.authority.record_supported_runtime_launch(
+            self.launcher.record_supported_runtime_launch(
                 episode_id="episode-b",
                 perspective_instance_id="perspective-b",
                 observed_runtime_instance_id="runtime-b",
@@ -276,7 +297,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         self.assertEqual(evidence.episode_id, "episode-b")
 
     def test_runtime_launch_receipt_in_memory_tamper_is_detected(self) -> None:
-        receipt = self.authority.record_supported_runtime_launch(
+        receipt = self.launcher.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
             observed_runtime_instance_id="runtime-b",
@@ -303,7 +324,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
         )
         with self.assertRaises(RoomLaunchEvidenceError):
-            self.authority.record_supported_runtime_launch(
+            self.launcher.record_supported_runtime_launch(
                 episode_id="episode-no-runtime",
                 perspective_instance_id="perspective-no-runtime",
                 observed_runtime_instance_id="runtime-invented",
@@ -312,7 +333,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
 
     def test_runtime_instance_binding_mismatch_blocks_launch(self) -> None:
         with self.assertRaises(RoomLaunchEvidenceError):
-            self.authority.record_supported_runtime_launch(
+            self.launcher.record_supported_runtime_launch(
                 episode_id="episode-b",
                 perspective_instance_id="perspective-b",
                 observed_runtime_instance_id="runtime-wrong",
@@ -321,7 +342,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
 
     def test_perspective_binding_mismatch_blocks_launch(self) -> None:
         with self.assertRaises(RoomLaunchEvidenceError):
-            self.authority.record_supported_runtime_launch(
+            self.launcher.record_supported_runtime_launch(
                 episode_id="episode-b",
                 perspective_instance_id="perspective-a",
                 observed_runtime_instance_id="runtime-b",
@@ -751,7 +772,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
         )
 
-        receipt = self.authority.record_supported_runtime_launch(
+        receipt = self.launcher.record_supported_runtime_launch(
             episode_id="episode-c",
             perspective_instance_id="perspective-c",
             observed_runtime_instance_id="runtime-c",
@@ -777,7 +798,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         evidence, _, _, grant = self._grant()
 
         with self.assertRaises(RoomLaunchEvidenceError):
-            self.authority.record_supported_runtime_launch(
+            self.launcher.record_supported_runtime_launch(
                 episode_id="episode-b",
                 perspective_instance_id="perspective-b",
                 observed_runtime_instance_id="runtime-b",
