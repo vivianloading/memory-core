@@ -42,15 +42,19 @@ _REQUIRED_TRIGGERS = frozenset(
     {
         "living_schema_marker_no_update",
         "living_schema_marker_no_delete",
+        "living_rooms_no_replace",
         "living_rooms_no_update",
         "living_rooms_no_delete",
+        "living_episodes_no_replace",
         "living_episodes_no_update",
         "living_episodes_no_delete",
+        "living_continuity_edges_no_replace",
         "living_continuity_edges_no_update",
         "living_continuity_edges_no_delete",
         "living_continuity_edges_no_implicit_merge",
         "living_continuity_edges_no_cycle",
         "living_room_attachment_events_same_episode",
+        "living_room_attachment_events_no_replace",
         "living_room_attachment_events_no_update",
         "living_room_attachment_events_no_delete",
     }
@@ -105,41 +109,8 @@ class LivingStoreConflictError(LivingStoreError):
     """A write conflicts with an existing immutable Living Layer record."""
 
 
-class LivingStore:
-    """Synthetic-only persistence for the first HOME Living Layer slice.
-
-    This store deliberately does not enable real-data use, model delivery,
-    identity adjudication, Current View, Shared Space, or Wake Packet behavior.
-    """
-
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = Path(db_path)
-
-    def initialize(self) -> None:
-        """Install Living Layer tables inside an existing synthetic HOME store.
-
-        The ordinary synthetic MemoryStore must already be initialized. This
-        method never creates, converts, or relaxes the HOME store-domain marker.
-        """
-
-        connection = self._connect()
-        try:
-            assert_synthetic_store_domain(connection)
-            existing = self._existing_living_tables(connection)
-
-            if existing:
-                if existing != LIVING_SCHEMA_TABLES:
-                    raise LivingStoreIntegrityError(
-                        "partial Living Layer schema exists"
-                    )
-                assert_living_schema(connection)
-                return
-
-            # sqlite3.Connection.executescript() commits a pending transaction
-            # before running. Put BEGIN inside the script so schema installation
-            # itself remains atomic.
-            connection.executescript(
-                f"""
+def _living_schema_script() -> str:
+    return f"""
                 BEGIN IMMEDIATE;
 
                 CREATE TABLE {LIVING_SCHEMA_MARKER_TABLE} (
@@ -285,6 +256,20 @@ class LivingStore:
                     );
                 END;
 
+                CREATE TRIGGER living_rooms_no_replace
+                BEFORE INSERT ON {ROOM_TABLE}
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM {ROOM_TABLE}
+                    WHERE room_id = NEW.room_id
+                )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer room id already exists'
+                    );
+                END;
+
                 CREATE TRIGGER living_rooms_no_update
                 BEFORE UPDATE ON {ROOM_TABLE}
                 BEGIN
@@ -303,6 +288,20 @@ class LivingStore:
                     );
                 END;
 
+                CREATE TRIGGER living_episodes_no_replace
+                BEFORE INSERT ON {EPISODE_TABLE}
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM {EPISODE_TABLE}
+                    WHERE episode_id = NEW.episode_id
+                )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer episode id already exists'
+                    );
+                END;
+
                 CREATE TRIGGER living_episodes_no_update
                 BEFORE UPDATE ON {EPISODE_TABLE}
                 BEGIN
@@ -318,6 +317,24 @@ class LivingStore:
                     SELECT RAISE(
                         ABORT,
                         'Living Layer episodes are append-only'
+                    );
+                END;
+
+                CREATE TRIGGER living_continuity_edges_no_replace
+                BEFORE INSERT ON {CONTINUITY_EDGE_TABLE}
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM {CONTINUITY_EDGE_TABLE}
+                    WHERE edge_id = NEW.edge_id
+                       OR (
+                            previous_episode_id = NEW.previous_episode_id
+                            AND next_episode_id = NEW.next_episode_id
+                       )
+                )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer continuity edge already exists'
                     );
                 END;
 
@@ -380,6 +397,20 @@ class LivingStore:
                     );
                 END;
 
+                CREATE TRIGGER living_room_attachment_events_no_replace
+                BEFORE INSERT ON {ATTACHMENT_TABLE}
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM {ATTACHMENT_TABLE}
+                    WHERE attachment_event_id = NEW.attachment_event_id
+                )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'Living Layer attachment event id already exists'
+                    );
+                END;
+
                 CREATE TRIGGER living_room_attachment_events_same_episode
                 BEFORE INSERT ON {ATTACHMENT_TABLE}
                 WHEN NEW.supersedes_attachment_event_id IS NOT NULL
@@ -415,7 +446,42 @@ class LivingStore:
                     );
                 END;
                 """
-            )
+
+
+class LivingStore:
+    """Synthetic-only persistence for the first HOME Living Layer slice.
+
+    This store deliberately does not enable real-data use, model delivery,
+    identity adjudication, Current View, Shared Space, or Wake Packet behavior.
+    """
+
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = Path(db_path)
+
+    def initialize(self) -> None:
+        """Install Living Layer tables inside an existing synthetic HOME store.
+
+        The ordinary synthetic MemoryStore must already be initialized. This
+        method never creates, converts, or relaxes the HOME store-domain marker.
+        """
+
+        connection = self._connect()
+        try:
+            assert_synthetic_store_domain(connection)
+            existing = self._existing_living_tables(connection)
+
+            if existing:
+                if existing != LIVING_SCHEMA_TABLES:
+                    raise LivingStoreIntegrityError(
+                        "partial Living Layer schema exists"
+                    )
+                assert_living_schema(connection)
+                return
+
+            # sqlite3.Connection.executescript() commits a pending transaction
+            # before running. Put BEGIN inside the script so schema installation
+            # itself remains atomic.
+            connection.executescript(_living_schema_script())
 
             assert_living_schema(connection)
             connection.commit()
@@ -665,6 +731,11 @@ class LivingStore:
     ) -> tuple[RoomAttachmentEvent, ...]:
         connection = self._read_connection()
         try:
+            if connection.execute(
+                f"SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone() is None:
+                raise KeyError(episode_id)
             return self._read_room_attachment_events(
                 connection,
                 episode_id=episode_id,
@@ -679,6 +750,11 @@ class LivingStore:
     ) -> RoomAttachmentResolution:
         connection = self._read_connection()
         try:
+            if connection.execute(
+                f"SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone() is None:
+                raise KeyError(episode_id)
             events = self._read_room_attachment_events(
                 connection,
                 episode_id=episode_id,
@@ -699,6 +775,7 @@ class LivingStore:
             connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
             assert_living_schema(connection)
+            assert_living_data_integrity(connection)
             return connection
         except Exception:
             connection.close()
@@ -782,15 +859,19 @@ class LivingStore:
         result: list[ContinuityEdge] = []
         for row in rows:
             try:
+                status = ContinuityStatus(row["continuity_status"])
+                if status is not ContinuityStatus.UNKNOWN:
+                    raise LivingStoreIntegrityError(
+                        "persisted continuity certainty exceeds "
+                        "the v0.1 authority boundary"
+                    )
                 result.append(
                     ContinuityEdge(
                         edge_id=row["edge_id"],
                         previous_episode_id=row["previous_episode_id"],
                         next_episode_id=row["next_episode_id"],
                         transfer_mode=TransferMode(row["transfer_mode"]),
-                        continuity_status=ContinuityStatus(
-                            row["continuity_status"]
-                        ),
+                        continuity_status=status,
                         support_refs=_decode_support_refs(
                             row["support_refs_json"]
                         ),
@@ -851,28 +932,22 @@ class LivingStore:
 
 
 def assert_living_schema(connection: sqlite3.Connection) -> None:
-    tables = {
-        row[0]
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
-    if not LIVING_SCHEMA_TABLES.issubset(tables):
+    expected = _reference_schema_snapshot()
+
+    actual_objects = _schema_sql_snapshot(connection)
+    if actual_objects != expected["objects"]:
         raise LivingStoreIntegrityError(
-            "Living Layer schema is missing or incomplete"
+            "Living Layer schema definitions drifted"
         )
 
-    for table_name, required_columns in _REQUIRED_COLUMNS.items():
-        actual_columns = {
-            row[1]
-            for row in connection.execute(
-                f"PRAGMA table_info({table_name})"
-            ).fetchall()
-        }
-        if actual_columns != required_columns:
-            raise LivingStoreIntegrityError(
-                f"Living Layer table columns drifted: {table_name}"
-            )
+    actual_xinfo = {
+        table_name: _table_xinfo_signature(connection, table_name)
+        for table_name in LIVING_SCHEMA_TABLES
+    }
+    if actual_xinfo != expected["xinfo"]:
+        raise LivingStoreIntegrityError(
+            "Living Layer table columns or generated-column state drifted"
+        )
 
     marker_rows = connection.execute(
         f"""
@@ -887,16 +962,123 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
             "Living Layer schema marker is invalid"
         )
 
-    triggers = {
-        row[0]
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
-        ).fetchall()
-    }
-    if not _REQUIRED_TRIGGERS.issubset(triggers):
-        raise LivingStoreIntegrityError(
-            "Living Layer append-only triggers are incomplete"
+
+def _reference_schema_snapshot() -> dict[str, object]:
+    reference = sqlite3.connect(":memory:")
+    try:
+        reference.executescript(_living_schema_script())
+        return {
+            "objects": _schema_sql_snapshot(reference),
+            "xinfo": {
+                table_name: _table_xinfo_signature(reference, table_name)
+                for table_name in LIVING_SCHEMA_TABLES
+            },
+        }
+    finally:
+        reference.close()
+
+
+def _schema_sql_snapshot(
+    connection: sqlite3.Connection,
+) -> dict[tuple[str, str], tuple[str, str]]:
+    expected_names = LIVING_SCHEMA_TABLES.union(_REQUIRED_TRIGGERS)
+    rows = connection.execute(
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE type IN ('table', 'trigger')
+        """
+    ).fetchall()
+
+    result: dict[tuple[str, str], tuple[str, str]] = {}
+    living_trigger_names: set[str] = set()
+    for row in rows:
+        object_type = row[0]
+        name = row[1]
+        table_name = row[2]
+        sql = row[3]
+
+        if object_type == "trigger" and table_name in LIVING_SCHEMA_TABLES:
+            living_trigger_names.add(name)
+
+        if name not in expected_names:
+            continue
+        if sql is None:
+            raise LivingStoreIntegrityError(
+                f"Living Layer schema object has no SQL: {name}"
+            )
+        result[(object_type, name)] = (
+            table_name,
+            _normalize_schema_sql(sql),
         )
+
+    expected_keys = {
+        ("table", table_name)
+        for table_name in LIVING_SCHEMA_TABLES
+    }.union(
+        {
+            ("trigger", trigger_name)
+            for trigger_name in _REQUIRED_TRIGGERS
+        }
+    )
+    if set(result) != expected_keys:
+        raise LivingStoreIntegrityError(
+            "Living Layer schema objects are missing or mis-typed"
+        )
+    if living_trigger_names != _REQUIRED_TRIGGERS:
+        raise LivingStoreIntegrityError(
+            "Living Layer trigger set drifted"
+        )
+
+    manual_indexes = connection.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND sql IS NOT NULL
+          AND tbl_name IN (
+              'living_schema_marker',
+              'living_rooms',
+              'living_episodes',
+              'living_continuity_edges',
+              'living_room_attachment_events'
+          )
+        """
+    ).fetchall()
+    if manual_indexes:
+        raise LivingStoreIntegrityError(
+            "Living Layer contains unexpected manual indexes"
+        )
+
+    return result
+
+
+def _table_xinfo_signature(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> tuple[tuple[object, ...], ...]:
+    if table_name not in LIVING_SCHEMA_TABLES:
+        raise LivingStoreIntegrityError(
+            "cannot inspect unknown Living Layer table"
+        )
+    rows = connection.execute(
+        f"PRAGMA table_xinfo({table_name})"
+    ).fetchall()
+    return tuple(
+        (
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+        )
+        for row in rows
+    )
+
+
+def _normalize_schema_sql(sql: str) -> str:
+    return " ".join(sql.split())
 
 
 def assert_living_data_integrity(connection: sqlite3.Connection) -> None:
@@ -904,12 +1086,18 @@ def assert_living_data_integrity(connection: sqlite3.Connection) -> None:
 
     assert_living_schema(connection)
 
-    room_ids = {
-        row[0]
-        for row in connection.execute(
-            f"SELECT room_id FROM {ROOM_TABLE}"
-        ).fetchall()
-    }
+    room_ids: set[str] = set()
+    room_rows = connection.execute(
+        f"SELECT room_id FROM {ROOM_TABLE} ORDER BY rowid"
+    ).fetchall()
+    try:
+        for row in room_rows:
+            room = RoomRecord(room_id=row[0])
+            room_ids.add(room.room_id)
+    except LivingContinuityError as error:
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer room is invalid"
+        ) from error
 
     episodes: list[EpisodeRecord] = []
     episode_ids: set[str] = set()
