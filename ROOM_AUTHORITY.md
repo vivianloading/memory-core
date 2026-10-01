@@ -74,10 +74,16 @@ lease and binds one fresh process-local session to:
 Persisted RoomAttachment + ContinuityEdge records alone cannot create a launch
 receipt and therefore cannot create operational participation authority.
 
-The launch receipt is one-shot. Replaying it after successful continuation
-binding is rejected. One Episode may receive only one supported runtime launch:
-a retry or genuinely new runtime must create a new Episode rather than silently
-reusing the old Episode identity.
+The launch receipt is one-shot within the live supported host incarnation.
+Replaying it after successful continuation binding is rejected, and the same
+Episode cannot receive a second launch receipt in that incarnation.
+
+Across a host-process restart, the durable guard is the Episode's immutable
+runtime_instance_id: a genuinely new runtime must present its newly observed
+runtime id and therefore cannot truthfully reuse the old Episode. v0.1 does not
+persist a separate "launch already observed" ledger across process restarts.
+That stronger replay ledger belongs with the future production runtime adapter;
+until then the production launch-issuer factory remains intentionally absent.
 
 Automatic participation also requires the Episode to carry a concrete
 runtime_instance_id. An Episode without that technical runtime binding remains
@@ -224,6 +230,8 @@ digest.
 
 A future explicit confirmation UI must display and confirm the same binding
 object/digest rather than reconstructing authorization from labels or prose.
+The digest is a canonical payload-binding checksum, not a signature or MAC and
+must never be treated as an authentication credential by itself.
 
 ## Revalidation
 
