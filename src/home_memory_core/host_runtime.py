@@ -22,6 +22,9 @@ class HostRuntimeConfigurationError(RuntimeError):
     """The supported HOME host runtime configuration is unsafe or inconsistent."""
 
 
+_HOME_SINGLE_INSTANCE_LEASE_MARKER = object()
+
+
 @dataclass(frozen=True)
 class HomeHostRuntimeIdentity:
     """Canonical host paths and one process-local runtime identity.
@@ -48,7 +51,17 @@ class HomeSingleInstanceLease:
     processes that bypass this boundary remain unsupported.
     """
 
-    def __init__(self, *, identity: HomeHostRuntimeIdentity, handle: IO[bytes]) -> None:
+    def __init__(
+        self,
+        *,
+        identity: HomeHostRuntimeIdentity,
+        handle: IO[bytes],
+        _marker: object,
+    ) -> None:
+        if _marker is not _HOME_SINGLE_INSTANCE_LEASE_MARKER:
+            raise HostRuntimeLeaseError(
+                "HOME host lease must be acquired through the supported runtime boundary"
+            )
         self._identity = identity
         self._handle = handle
         self._released = False
@@ -150,7 +163,11 @@ def acquire_home_single_instance(
         handle.close()
         raise
 
-    return HomeSingleInstanceLease(identity=identity, handle=handle)
+    return HomeSingleInstanceLease(
+        identity=identity,
+        handle=handle,
+        _marker=_HOME_SINGLE_INSTANCE_LEASE_MARKER,
+    )
 
 
 
