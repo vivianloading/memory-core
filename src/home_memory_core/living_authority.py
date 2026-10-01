@@ -24,6 +24,7 @@ from home_memory_core.process_boundary import (
 
 
 _AUTHORITY_MARKER = object()
+_RUNTIME_LAUNCH_ISSUER_MARKER = object()
 _RUNTIME_LAUNCH_RECEIPT_MARKER = object()
 _LAUNCH_EVIDENCE_MARKER = object()
 _CONTINUATION_POLICY_MARKER = object()
@@ -285,6 +286,136 @@ class _RuntimeLaunchState:
     consumed: bool = False
 
 
+_RUNTIME_LAUNCH_REGISTRY_GUARD = Lock()
+_RUNTIME_LAUNCH_REGISTRY: dict[
+    tuple[str, str, str, str],
+    _RuntimeLaunchState,
+] = {}
+_RUNTIME_LAUNCHED_EPISODES: set[
+    tuple[str, str, str, str]
+] = set()
+
+
+class TrustedRuntimeLaunchIssuer:
+    """Host-private observer that can attest one supported runtime launch.
+
+    v0.1 intentionally has no public production factory for this issuer.
+    The eventual runtime adapter must own it and call record_supported_runtime_launch
+    at the actual launch boundary. Synthetic tests receive one through trusted
+    test support.
+    """
+
+    def __init__(
+        self,
+        *,
+        lease: HomeSingleInstanceLease,
+        store: LivingStore,
+        _marker: object,
+    ) -> None:
+        if _marker is not _RUNTIME_LAUNCH_ISSUER_MARKER:
+            raise RoomLaunchEvidenceError(
+                "runtime launch issuer must come from trusted host bootstrap"
+            )
+        self._lease = lease
+        self._store = store
+        self._home_process_instance_id = current_home_process_instance_id()
+        self._guard = RLock()
+        self._assert_live_host()
+
+    def record_supported_runtime_launch(
+        self,
+        *,
+        episode_id: str,
+        perspective_instance_id: str,
+        observed_runtime_instance_id: str,
+        observed_transfer_mode: TransferMode,
+    ) -> SupportedRuntimeLaunchReceipt:
+        with self._guard:
+            self._assert_live_host()
+            _require_text("episode_id", episode_id)
+            _require_text("perspective_instance_id", perspective_instance_id)
+            _require_text(
+                "observed_runtime_instance_id",
+                observed_runtime_instance_id,
+            )
+            if not isinstance(observed_transfer_mode, TransferMode):
+                raise RoomLaunchEvidenceError(
+                    "observed_transfer_mode must use TransferMode"
+                )
+
+            episode = self._store.get_episode(episode_id)
+            if episode.runtime_instance_id is None:
+                raise RoomLaunchEvidenceError(
+                    "automatic Room participation requires a concrete runtime instance"
+                )
+            if episode.perspective_instance_id != perspective_instance_id:
+                raise RoomLaunchEvidenceError(
+                    "runtime launch perspective does not match persisted Episode"
+                )
+            if episode.runtime_instance_id != observed_runtime_instance_id:
+                raise RoomLaunchEvidenceError(
+                    "observed runtime instance does not match persisted Episode"
+                )
+
+            base = self._registry_base()
+            episode_key = (*base, episode_id)
+            with _RUNTIME_LAUNCH_REGISTRY_GUARD:
+                if episode_key in _RUNTIME_LAUNCHED_EPISODES:
+                    raise RoomLaunchEvidenceError(
+                        "Episode already has a runtime launch; "
+                        "a new runtime requires a new Episode"
+                    )
+
+                receipt = SupportedRuntimeLaunchReceipt(
+                    receipt_id=f"runtime-launch-{secrets.token_hex(16)}",
+                    session_id=f"room-session-{secrets.token_hex(16)}",
+                    home_process_instance_id=self._home_process_instance_id,
+                    host_process_instance_id=(
+                        self._lease.identity.process_instance_id
+                    ),
+                    episode_id=episode_id,
+                    perspective_instance_id=perspective_instance_id,
+                    runtime_instance_id=observed_runtime_instance_id,
+                    observed_transfer_mode=observed_transfer_mode,
+                    _marker=_RUNTIME_LAUNCH_RECEIPT_MARKER,
+                )
+                receipt_key = (*base, receipt.receipt_id)
+                _RUNTIME_LAUNCH_REGISTRY[receipt_key] = _RuntimeLaunchState(
+                    receipt=receipt,
+                    fingerprint=_runtime_launch_fingerprint(receipt),
+                )
+                _RUNTIME_LAUNCHED_EPISODES.add(episode_key)
+            return receipt
+
+    def _registry_base(self) -> tuple[str, str, str]:
+        return (
+            self._home_process_instance_id,
+            self._lease.identity.process_instance_id,
+            str(Path(self._store.db_path).resolve()),
+        )
+
+    def _assert_live_host(self) -> None:
+        require_home_process()
+        if (
+            current_home_process_instance_id()
+            != self._home_process_instance_id
+        ):
+            raise RoomParticipationStaleError(
+                "runtime launch issuer belongs to another HOME process"
+            )
+        if self._lease.released:
+            raise RoomParticipationStaleError(
+                "HOME host lease was released"
+            )
+        if (
+            Path(self._store.db_path).resolve()
+            != self._lease.identity.db_path
+        ):
+            raise RoomLaunchEvidenceError(
+                "runtime launch issuer store does not match host lease"
+            )
+
+
 @dataclass
 class _SessionState:
     evidence: TrustedLaunchEvidence
@@ -344,8 +475,6 @@ class RoomParticipationAuthority:
         self._store = store
         self._home_process_instance_id = current_home_process_instance_id()
         self._guard = RLock()
-        self._runtime_launches: dict[str, _RuntimeLaunchState] = {}
-        self._pending_launch_by_episode: dict[str, str] = {}
         self._sessions: dict[str, _SessionState] = {}
         self._session_by_episode: dict[str, str] = {}
         self._proposals: dict[str, _ProposalState] = {}
@@ -355,70 +484,6 @@ class RoomParticipationAuthority:
         self._policy_fingerprints: dict[str, str] = {}
         self._suspended_policy_ids: set[str] = set()
         self._assert_live_host()
-
-    @_guarded
-    def record_supported_runtime_launch(
-        self,
-        *,
-        episode_id: str,
-        perspective_instance_id: str,
-        observed_runtime_instance_id: str,
-        observed_transfer_mode: TransferMode,
-    ) -> SupportedRuntimeLaunchReceipt:
-        """Record the actual supported-host launch before Room authority is derived.
-
-        The receipt is process/host/session bound and one-shot. It is deliberately
-        separate from persisted RoomAttachment/ContinuityEdge data so those
-        records cannot mint operational authority by themselves.
-        """
-
-        self._assert_live_host()
-        _require_text("episode_id", episode_id)
-        _require_text("perspective_instance_id", perspective_instance_id)
-        if not isinstance(observed_transfer_mode, TransferMode):
-            raise RoomLaunchEvidenceError(
-                "observed_transfer_mode must use TransferMode"
-            )
-
-        episode = self._store.get_episode(episode_id)
-        if episode.runtime_instance_id is None:
-            raise RoomLaunchEvidenceError(
-                "automatic Room participation requires a concrete runtime instance"
-            )
-        if episode.perspective_instance_id != perspective_instance_id:
-            raise RoomLaunchEvidenceError(
-                "runtime launch perspective does not match persisted Episode"
-            )
-        if episode.runtime_instance_id != observed_runtime_instance_id:
-            raise RoomLaunchEvidenceError(
-                "observed runtime instance does not match persisted Episode"
-            )
-
-        if (
-            episode_id in self._pending_launch_by_episode
-            or episode_id in self._session_by_episode
-        ):
-            raise RoomLaunchEvidenceError(
-                "Episode already has a runtime launch; a new runtime requires a new Episode"
-            )
-
-        receipt = SupportedRuntimeLaunchReceipt(
-            receipt_id=f"runtime-launch-{secrets.token_hex(16)}",
-            session_id=f"room-session-{secrets.token_hex(16)}",
-            home_process_instance_id=self._home_process_instance_id,
-            host_process_instance_id=self._lease.identity.process_instance_id,
-            episode_id=episode_id,
-            perspective_instance_id=perspective_instance_id,
-            runtime_instance_id=observed_runtime_instance_id,
-            observed_transfer_mode=observed_transfer_mode,
-            _marker=_RUNTIME_LAUNCH_RECEIPT_MARKER,
-        )
-        self._runtime_launches[receipt.receipt_id] = _RuntimeLaunchState(
-            receipt=receipt,
-            fingerprint=_runtime_launch_fingerprint(receipt),
-        )
-        self._pending_launch_by_episode[episode_id] = receipt.receipt_id
-        return receipt
 
     @_guarded
     def begin_trusted_continuation(
@@ -504,9 +569,7 @@ class RoomParticipationAuthority:
                 "forked predecessor cannot auto-inherit Room participation policy"
             )
 
-        launch_state = self._runtime_launches[launch_receipt.receipt_id]
-        launch_state.consumed = True
-        self._pending_launch_by_episode.pop(episode_id, None)
+        self._consume_runtime_launch(launch_receipt)
         self._revoke_episode_session(previous_episode_id)
         self._revoke_episode_session(episode_id)
 
@@ -866,20 +929,25 @@ class RoomParticipationAuthority:
         receipt: SupportedRuntimeLaunchReceipt,
     ) -> None:
         self._assert_live_host()
-        state = self._runtime_launches.get(
-            getattr(receipt, "receipt_id", "")
-        )
         if (
             not isinstance(receipt, SupportedRuntimeLaunchReceipt)
             or receipt._marker is not _RUNTIME_LAUNCH_RECEIPT_MARKER
-            or state is None
-            or state.receipt is not receipt
-            or state.fingerprint != _runtime_launch_fingerprint(receipt)
-            or state.consumed
         ):
             raise RoomLaunchEvidenceError(
-                "runtime launch receipt is forged, stale, or already consumed"
+                "runtime launch receipt is forged or untrusted"
             )
+        key = (*self._runtime_launch_registry_base(), receipt.receipt_id)
+        with _RUNTIME_LAUNCH_REGISTRY_GUARD:
+            state = _RUNTIME_LAUNCH_REGISTRY.get(key)
+            if (
+                state is None
+                or state.receipt is not receipt
+                or state.fingerprint != _runtime_launch_fingerprint(receipt)
+                or state.consumed
+            ):
+                raise RoomLaunchEvidenceError(
+                    "runtime launch receipt is forged, stale, or already consumed"
+                )
         if receipt.home_process_instance_id != self._home_process_instance_id:
             raise RoomLaunchEvidenceError(
                 "runtime launch receipt belongs to another HOME process"
@@ -900,6 +968,31 @@ class RoomParticipationAuthority:
             raise RoomLaunchEvidenceError(
                 "runtime launch receipt no longer matches runtime instance"
             )
+
+    def _consume_runtime_launch(
+        self,
+        receipt: SupportedRuntimeLaunchReceipt,
+    ) -> None:
+        key = (*self._runtime_launch_registry_base(), receipt.receipt_id)
+        with _RUNTIME_LAUNCH_REGISTRY_GUARD:
+            state = _RUNTIME_LAUNCH_REGISTRY.get(key)
+            if (
+                state is None
+                or state.receipt is not receipt
+                or state.fingerprint != _runtime_launch_fingerprint(receipt)
+                or state.consumed
+            ):
+                raise RoomLaunchEvidenceError(
+                    "runtime launch receipt cannot be consumed"
+                )
+            state.consumed = True
+
+    def _runtime_launch_registry_base(self) -> tuple[str, str, str]:
+        return (
+            self._home_process_instance_id,
+            self._lease.identity.process_instance_id,
+            str(Path(self._store.db_path).resolve()),
+        )
 
     def _assert_live_launch_evidence(
         self,
@@ -970,23 +1063,27 @@ class RoomParticipationAuthority:
             raise RoomParticipationStaleError(
                 "launch evidence was altered or is not active here"
             )
-        launch_state = self._runtime_launches.get(
-            evidence.runtime_launch_receipt_id
+        launch_key = (
+            *self._runtime_launch_registry_base(),
+            evidence.runtime_launch_receipt_id,
         )
-        if (
-            launch_state is None
-            or launch_state.fingerprint
-            != _runtime_launch_fingerprint(launch_state.receipt)
-            or launch_state.receipt.session_id != evidence.session_id
-            or launch_state.receipt.episode_id != evidence.episode_id
-            or launch_state.receipt.perspective_instance_id
-            != evidence.perspective_instance_id
-            or launch_state.receipt.observed_transfer_mode
-            != evidence.transfer_mode
-        ):
-            raise RoomParticipationStaleError(
-                "host-observed runtime launch no longer matches launch evidence"
-            )
+        with _RUNTIME_LAUNCH_REGISTRY_GUARD:
+            launch_state = _RUNTIME_LAUNCH_REGISTRY.get(launch_key)
+            if (
+                launch_state is None
+                or not launch_state.consumed
+                or launch_state.fingerprint
+                != _runtime_launch_fingerprint(launch_state.receipt)
+                or launch_state.receipt.session_id != evidence.session_id
+                or launch_state.receipt.episode_id != evidence.episode_id
+                or launch_state.receipt.perspective_instance_id
+                != evidence.perspective_instance_id
+                or launch_state.receipt.observed_transfer_mode
+                != evidence.transfer_mode
+            ):
+                raise RoomParticipationStaleError(
+                    "host-observed runtime launch no longer matches launch evidence"
+                )
         if evidence.home_process_instance_id != self._home_process_instance_id:
             raise RoomParticipationStaleError(
                 "launch evidence belongs to another HOME process"
