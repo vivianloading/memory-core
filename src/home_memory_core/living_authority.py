@@ -13,7 +13,6 @@ from home_memory_core.host_runtime import HomeSingleInstanceLease
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
-    EpisodeRecord,
     RoomRouteKind,
     TransferMode,
 )
@@ -431,22 +430,18 @@ class RoomParticipationAuthority:
                 "continuation launch requires a new Episode"
             )
 
-        episode = self._store.get_episode(episode_id)
+        snapshot = self._store.read_continuation_path_snapshot(
+            previous_episode_id=previous_episode_id,
+            episode_id=episode_id,
+        )
+        episode = snapshot.episode
         if episode.perspective_instance_id != perspective_instance_id:
             raise RoomLaunchEvidenceError(
                 "launch perspective does not match persisted Episode attribution"
             )
 
-        previous = self._store.get_episode(previous_episode_id)
-        if not isinstance(previous, EpisodeRecord):
-            raise RoomLaunchEvidenceError("previous Episode is unavailable")
-
-        previous_route = self._store.resolve_room_attachment(
-            episode_id=previous_episode_id
-        )
-        current_route = self._store.resolve_room_attachment(
-            episode_id=episode_id
-        )
+        previous_route = snapshot.previous_route
+        current_route = snapshot.current_route
         if (
             previous_route.decision != "attached"
             or previous_route.room_id != room_id
@@ -464,7 +459,7 @@ class RoomParticipationAuthority:
                 "new Episode does not have one active route to the requested Room"
             )
 
-        edges = self._store.list_continuity_edges()
+        edges = snapshot.edges
         matching = tuple(
             edge
             for edge in edges
@@ -489,7 +484,7 @@ class RoomParticipationAuthority:
                 "v0.1 automatic continuation cannot mint continuity certainty"
             )
 
-        topology = self._store.resolve_continuity_topology()
+        topology = snapshot.topology
         if previous_episode_id in topology.fork_episode_ids:
             raise RoomLaunchEvidenceError(
                 "forked predecessor cannot auto-inherit Room participation policy"
@@ -978,17 +973,17 @@ class RoomParticipationAuthority:
                 "launch evidence belongs to another host lease"
             )
 
-        episode = self._store.get_episode(evidence.episode_id)
+        snapshot = self._store.read_continuation_path_snapshot(
+            previous_episode_id=evidence.previous_episode_id,
+            episode_id=evidence.episode_id,
+        )
+        episode = snapshot.episode
         if episode.perspective_instance_id != evidence.perspective_instance_id:
             raise RoomParticipationStaleError(
                 "Episode attribution no longer matches launch evidence"
             )
-        previous_route = self._store.resolve_room_attachment(
-            episode_id=evidence.previous_episode_id
-        )
-        current_route = self._store.resolve_room_attachment(
-            episode_id=evidence.episode_id
-        )
+        previous_route = snapshot.previous_route
+        current_route = snapshot.current_route
         if (
             previous_route.decision != "attached"
             or previous_route.room_id != evidence.room_id
@@ -1005,7 +1000,7 @@ class RoomParticipationAuthority:
 
         matching: list[ContinuityEdge] = [
             edge
-            for edge in self._store.list_continuity_edges()
+            for edge in snapshot.edges
             if edge.edge_id == evidence.continuity_edge_id
             and edge.previous_episode_id == evidence.previous_episode_id
             and edge.next_episode_id == evidence.episode_id
@@ -1024,7 +1019,7 @@ class RoomParticipationAuthority:
                 "continuation edge no longer satisfies auto-continuation rules"
             )
 
-        topology = self._store.resolve_continuity_topology()
+        topology = snapshot.topology
         if evidence.previous_episode_id in topology.fork_episode_ids:
             raise RoomParticipationStaleError(
                 "continuation path became a fork"
