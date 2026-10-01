@@ -1062,6 +1062,80 @@ class CurrentViewTests(unittest.TestCase):
                 key="stable.key",
             )
 
+    def test_superseding_state_cannot_be_recorded_before_parent(self) -> None:
+        parent = self._room_record(
+            "chronology-parent",
+            recorded_offset=timedelta(days=2),
+            valid_from_offset=timedelta(days=-5),
+        )
+        child = self._room_record(
+            "chronology-child",
+            recorded_offset=timedelta(days=1),
+            valid_from_offset=timedelta(days=-3),
+            supersedes_state_id=parent.state_id,
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (parent, child),
+                as_of_offset=timedelta(days=2),
+            )
+
+    def test_end_event_cannot_be_recorded_before_target_state(self) -> None:
+        record = self._room_record(
+            "late-recorded-state",
+            recorded_offset=timedelta(days=2),
+            valid_from_offset=timedelta(days=-5),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="early-recorded-end",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0 + timedelta(days=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="cannot reference a state HOME had not recorded yet",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-early-recorded-end",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                as_of_offset=timedelta(days=2),
+                end_events=(end,),
+            )
+
+    def test_end_event_cannot_predate_state_validity(self) -> None:
+        record = self._room_record(
+            "state-valid-later",
+            valid_from_offset=timedelta(days=2),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="end-before-validity",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(days=1),
+            recorded_at=self.t0 + timedelta(days=2),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="cannot end before the state can begin",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-before-validity",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                as_of_offset=timedelta(days=2),
+                end_events=(end,),
+            )
+
     def test_supersession_cycle_is_rejected(self) -> None:
         first = self._room_record(
             "state-a",
