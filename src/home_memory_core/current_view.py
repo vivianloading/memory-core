@@ -308,9 +308,24 @@ def resolve_current_state(
     if not isinstance(namespace, CurrentNamespace):
         raise CurrentViewError("namespace must use CurrentNamespace")
 
-    relevant = tuple(
+    known_global = tuple(
         record
         for record in records
+        if record.recorded_at <= as_of
+    )
+    known_end_global = tuple(
+        event
+        for event in end_events
+        if event.recorded_at <= as_of
+    )
+    _validate_global_ids(
+        records=known_global,
+        end_events=known_end_global,
+    )
+
+    relevant = tuple(
+        record
+        for record in known_global
         if (
             record.namespace is namespace
             and record.owner_id == owner_id
@@ -318,16 +333,8 @@ def resolve_current_state(
         )
     )
 
-    known = tuple(
-        record
-        for record in relevant
-        if record.recorded_at <= as_of
-    )
-    known_end_events = tuple(
-        event
-        for event in end_events
-        if event.recorded_at <= as_of
-    )
+    known = relevant
+    known_end_events = known_end_global
     _validate_current_graph(
         records=known,
         end_events=known_end_events,
@@ -395,7 +402,7 @@ def resolve_current_state(
     candidates = tuple(
         _candidate_for(
             record=record,
-            end_event=end_by_state.get(record.state_id),
+            end_events=end_by_state.get(record.state_id, ()),
             as_of=as_of,
         )
         for record in sorted(
@@ -457,16 +464,22 @@ def resolve_current_state(
     }
     if len(candidates) == 1:
         only = candidates[0]
+        conflict_ids = (
+            (only.state_id,)
+            if only.standing is CurrentStanding.CONFLICTING
+            else ()
+        )
         return CurrentResolution(
             namespace=namespace,
             owner_id=owner_id,
             key=key,
             standing=only.standing,
-            current_state_ids=(),
+            current_state_ids=conflict_ids,
             historical_state_ids=tuple(
                 sorted(
                     record.state_id
                     for record in effective
+                    if record.state_id not in set(conflict_ids)
                 )
             ),
             future_state_ids=future_ids,
@@ -552,10 +565,18 @@ def derive_current_view(
 def _candidate_for(
     *,
     record: CurrentStateRecord,
-    end_event: CurrentStateEndEvent | None,
+    end_events: tuple[CurrentStateEndEvent, ...],
     as_of: datetime,
 ) -> CurrentCandidate:
-    if end_event is not None:
+    if len(end_events) > 1:
+        return CurrentCandidate(
+            state_id=record.state_id,
+            standing=CurrentStanding.CONFLICTING,
+            value=record.value,
+            reason_codes=("MULTIPLE_EFFECTIVE_END_EVENTS",),
+        )
+    if len(end_events) == 1:
+        end_event = end_events[0]
         return CurrentCandidate(
             state_id=record.state_id,
             standing=CurrentStanding.ENDED,
@@ -623,27 +644,48 @@ def _effective_end_events(
     records: tuple[CurrentStateRecord, ...],
     end_events: tuple[CurrentStateEndEvent, ...],
     as_of: datetime,
-) -> dict[str, CurrentStateEndEvent]:
+) -> dict[str, tuple[CurrentStateEndEvent, ...]]:
     record_ids = {record.state_id for record in records}
-    effective: dict[str, CurrentStateEndEvent] = {}
-    seen_event_ids: set[str] = set()
+    effective: dict[str, list[CurrentStateEndEvent]] = {}
 
     for event in end_events:
-        if event.end_event_id in seen_event_ids:
-            raise CurrentViewError("duplicate end_event_id")
-        seen_event_ids.add(event.end_event_id)
-
         if event.state_id not in record_ids:
             continue
         if event.recorded_at > as_of or event.ended_at > as_of:
             continue
-        if event.state_id in effective:
-            raise CurrentViewError(
-                "multiple effective end events for one state are unresolved"
-            )
-        effective[event.state_id] = event
+        effective.setdefault(event.state_id, []).append(event)
 
-    return effective
+    return {
+        state_id: tuple(
+            sorted(
+                events,
+                key=lambda item: item.end_event_id,
+            )
+        )
+        for state_id, events in effective.items()
+    }
+
+
+def _validate_global_ids(
+    *,
+    records: tuple[CurrentStateRecord, ...],
+    end_events: tuple[CurrentStateEndEvent, ...],
+) -> None:
+    record_ids: set[str] = set()
+    for record in records:
+        if record.state_id in record_ids:
+            raise CurrentViewError("duplicate state_id")
+        record_ids.add(record.state_id)
+
+    end_ids: set[str] = set()
+    for event in end_events:
+        if event.end_event_id in end_ids:
+            raise CurrentViewError("duplicate end_event_id")
+        end_ids.add(event.end_event_id)
+        if event.state_id not in record_ids:
+            raise CurrentViewError(
+                "end event references unknown state"
+            )
 
 
 def _validate_current_graph(
