@@ -270,6 +270,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0 + timedelta(days=1),
             end_kind=EndKind.RESOLVED,
             reason="review completed",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-end-a",),
         )
 
@@ -300,6 +305,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0 + timedelta(days=3),
             end_kind=EndKind.RESOLVED,
             reason="learned later",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-end-late",),
         )
 
@@ -436,6 +446,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.WITHDRAWN,
             reason="one ending",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-right-end-a",),
         )
         right_end_b = CurrentStateEndEvent(
@@ -445,6 +460,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.COMPLETED,
             reason="competing ending",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-right-end-b",),
         )
 
@@ -485,6 +505,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.WITHDRAWN,
             reason="withdrawn",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-end-right",),
         )
 
@@ -726,6 +751,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.EXPLICIT_END,
             reason="other room only",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-other-end",),
         )
 
@@ -903,6 +933,11 @@ class CurrentViewTests(unittest.TestCase):
                 recorded_at=self.t0,
                 end_kind=EndKind.EXPLICIT_END,
                 reason="synthetic",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id="perspective-end",
                 source_refs=(),
             )
 
@@ -945,6 +980,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.WITHDRAWN,
             reason="first",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-end-a",),
         )
         second = CurrentStateEndEvent(
@@ -954,6 +994,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.COMPLETED,
             reason="second",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-end-b",),
         )
 
@@ -1003,6 +1048,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0,
             end_kind=EndKind.EXPLICIT_END,
             reason="orphan",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-end-orphan",),
         )
 
@@ -1021,6 +1071,11 @@ class CurrentViewTests(unittest.TestCase):
             recorded_at=self.t0 + timedelta(days=5),
             end_kind=EndKind.EXPLICIT_END,
             reason="future bad data",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
             source_refs=("source-future-orphan",),
         )
 
