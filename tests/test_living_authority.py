@@ -399,6 +399,36 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         with self.assertRaises(RoomLaunchEvidenceError):
             self._launch()
 
+    def test_unattached_new_episode_blocks_automatic_participation(self) -> None:
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-b-unattached",
+                episode_id="episode-b",
+                route_kind=RoomRouteKind.UNATTACHED,
+                room_id=None,
+                basis="route_withdrawn",
+                supersedes_attachment_event_id="route-b",
+            )
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self._launch()
+
+    def test_ambiguous_new_episode_route_blocks_automatic_participation(self) -> None:
+        self.living.add_room(RoomRecord(room_id="room-other"))
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-b-competing",
+                episode_id="episode-b",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-other",
+                basis="competing_route",
+            )
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self._launch()
+
     def test_new_room_route_requires_explicit_entry_instead_of_auto_policy(self) -> None:
         self.living.add_room(RoomRecord(room_id="room-new"))
         self.living.add_room_attachment(
@@ -971,6 +1001,36 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         self.assertNotIn("different_self", fields)
         self.assertNotIn("adopted", fields)
         self.assertNotIn("adoption_event_id", fields)
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_consume_parent_launch_receipt(self) -> None:
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child assertion
+            try:
+                self.authority.begin_trusted_continuation(
+                    launch_receipt=receipt,
+                    previous_episode_id="episode-a",
+                    room_id="room-r",
+                )
+            except Exception:
+                os._exit(0)
+            os._exit(2)
+
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+
+        evidence = self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-a",
+            room_id="room-r",
+        )
+        self.assertEqual(evidence.episode_id, "episode-b")
 
     @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
     def test_forked_child_cannot_reuse_parent_grant(self) -> None:
