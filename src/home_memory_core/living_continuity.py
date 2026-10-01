@@ -4,6 +4,8 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+
 
 class LivingContinuityError(ValueError):
     """A Living Layer record violated the continuity/room routing contract."""
@@ -66,6 +68,10 @@ class EpisodeRecord:
     def __post_init__(self) -> None:
         _require_nonempty("episode_id", self.episode_id)
         _require_nonempty("perspective_instance_id", self.perspective_instance_id)
+        if self.perspective_instance_id == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID:
+            raise LivingContinuityError(
+                "episode requires a concrete perspective instance"
+            )
         _require_optional_nonempty("runtime_instance_id", self.runtime_instance_id)
         _require_optional_nonempty("model_ref", self.model_ref)
 
