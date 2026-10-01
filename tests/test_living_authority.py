@@ -425,6 +425,26 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 ),
             )
 
+    def test_policy_tamper_after_grant_invalidates_use(self) -> None:
+        evidence, _, _, grant = self._grant(
+            scopes=frozenset({RoomParticipationScope.READ_HISTORY})
+        )
+        object.__setattr__(
+            self.policy,
+            "source_event_ref",
+            "tampered-policy-event",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.READ_HISTORY,
+            )
+
     def test_same_policy_id_cannot_be_rebound_to_wider_payload(self) -> None:
         evidence = self._launch()
         self.authority.prepare_grant(
