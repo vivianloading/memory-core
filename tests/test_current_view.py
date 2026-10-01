@@ -31,6 +31,7 @@ class CurrentViewTests(unittest.TestCase):
         *,
         key: str = "project.home.status",
         value: str = "building",
+        state_kind: CurrentStateKind = CurrentStateKind.PROJECT_STATUS,
         event_offset: timedelta = timedelta(0),
         recorded_offset: timedelta = timedelta(0),
         valid_from_offset: timedelta = timedelta(0),
@@ -48,7 +49,7 @@ class CurrentViewTests(unittest.TestCase):
             namespace=CurrentNamespace.ROOM,
             owner_id=room_id,
             key=key,
-            state_kind=CurrentStateKind.PROJECT_STATUS,
+            state_kind=state_kind,
             value=value,
             event_time=self.t0 + event_offset,
             recorded_at=self.t0 + recorded_offset,
@@ -144,20 +145,26 @@ class CurrentViewTests(unittest.TestCase):
         )
 
     def test_explicit_interval_expires_at_exact_boundary(self) -> None:
-        record = self._room_record(
+        record = self._shared_record(
             "state-window",
             validity_rule=ValidityRule.EXPLICIT_INTERVAL,
             downgrade_rule=DowngradeRule.TO_EXPIRED,
             valid_until_offset=timedelta(days=2),
         )
 
-        before = self._resolve_room(
-            (record,),
-            as_of_offset=timedelta(days=2) - timedelta(microseconds=1),
+        before = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0 + timedelta(days=2) - timedelta(microseconds=1),
         )
-        at_boundary = self._resolve_room(
-            (record,),
-            as_of_offset=timedelta(days=2),
+        at_boundary = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0 + timedelta(days=2),
         )
 
         self.assertEqual(before.standing, CurrentStanding.CURRENT)
@@ -173,6 +180,7 @@ class CurrentViewTests(unittest.TestCase):
             "preference-a",
             key="preference.coffee",
             value="tea",
+            state_kind=CurrentStateKind.PREFERENCE,
             validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
             downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
             stale_after=timedelta(days=7),
@@ -198,6 +206,7 @@ class CurrentViewTests(unittest.TestCase):
             "preference-late-record",
             key="preference.music",
             value="ambient",
+            state_kind=CurrentStateKind.PREFERENCE,
             event_offset=timedelta(days=-10),
             recorded_offset=timedelta(days=-2),
             validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
@@ -221,6 +230,7 @@ class CurrentViewTests(unittest.TestCase):
             "unfinished-a",
             key="unfinished.review",
             value="review PR",
+            state_kind=CurrentStateKind.UNFINISHED_WORK,
             validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
             downgrade_rule=DowngradeRule.NONE,
         )
@@ -241,6 +251,7 @@ class CurrentViewTests(unittest.TestCase):
             "unfinished-a",
             key="unfinished.review",
             value="review PR",
+            state_kind=CurrentStateKind.UNFINISHED_WORK,
             validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
             downgrade_rule=DowngradeRule.NONE,
         )
@@ -270,6 +281,7 @@ class CurrentViewTests(unittest.TestCase):
             "unfinished-a",
             key="unfinished.review",
             value="review PR",
+            state_kind=CurrentStateKind.UNFINISHED_WORK,
             validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
             downgrade_rule=DowngradeRule.NONE,
         )
@@ -337,8 +349,8 @@ class CurrentViewTests(unittest.TestCase):
         self.assertEqual(new.value, "building")
 
     def test_expired_successor_does_not_resurrect_superseded_parent(self) -> None:
-        old = self._room_record("state-old", value="old")
-        new = self._room_record(
+        old = self._shared_record("state-old", value="old")
+        new = self._shared_record(
             "state-new",
             value="temporary",
             validity_rule=ValidityRule.EXPLICIT_INTERVAL,
@@ -347,9 +359,12 @@ class CurrentViewTests(unittest.TestCase):
             supersedes_state_id=old.state_id,
         )
 
-        resolution = self._resolve_room(
-            (old, new),
-            as_of_offset=timedelta(days=3),
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(old, new),
+            as_of=self.t0 + timedelta(days=3),
         )
 
         self.assertEqual(resolution.standing, CurrentStanding.EXPIRED)
@@ -627,6 +642,7 @@ class CurrentViewTests(unittest.TestCase):
             "commitment",
             key="commitment.review",
             value="review tomorrow",
+            state_kind=CurrentStateKind.COMMITMENT,
             validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
             downgrade_rule=DowngradeRule.NONE,
         )
@@ -879,6 +895,7 @@ class CurrentViewTests(unittest.TestCase):
         with self.assertRaises(CurrentViewError):
             self._room_record(
                 "bad-contract",
+                state_kind=CurrentStateKind.PREFERENCE,
                 validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
                 downgrade_rule=DowngradeRule.NONE,
                 stale_after=timedelta(days=5),
@@ -887,17 +904,47 @@ class CurrentViewTests(unittest.TestCase):
         with self.assertRaises(CurrentViewError):
             self._room_record(
                 "bad-stale",
+                state_kind=CurrentStateKind.PREFERENCE,
                 validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
                 downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
                 stale_after=None,
             )
 
         with self.assertRaises(CurrentViewError):
-            self._room_record(
+            self._shared_record(
                 "bad-interval",
                 validity_rule=ValidityRule.EXPLICIT_INTERVAL,
                 downgrade_rule=DowngradeRule.TO_EXPIRED,
                 valid_until_offset=None,
+            )
+
+    def test_commitment_cannot_decay_from_silence(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "commitment-bad-decay",
+                state_kind=CurrentStateKind.COMMITMENT,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=timedelta(days=7),
+            )
+
+    def test_self_interpretation_requires_explicit_change_not_ttl(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "self-bad-ttl",
+                state_kind=CurrentStateKind.SELF_INTERPRETATION,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=timedelta(days=7),
+            )
+
+    def test_unfinished_work_uses_open_until_resolved(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "unfinished-bad-durable",
+                state_kind=CurrentStateKind.UNFINISHED_WORK,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
             )
 
     def test_current_records_contain_no_identity_verdict_fields(self) -> None:
