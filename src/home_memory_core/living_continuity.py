@@ -100,6 +100,13 @@ class ContinuityEdge:
                 "continuity_status must use ContinuityStatus"
             )
         _validate_refs(self.support_refs)
+        if (
+            self.continuity_status is ContinuityStatus.VERIFIED
+            and not self.support_refs
+        ):
+            raise LivingContinuityError(
+                "verified continuity requires at least one support ref"
+            )
 
 
 @dataclass(frozen=True)
