@@ -949,6 +949,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 perspective_instance_id=grant.perspective_instance_id,
                 room_id=grant.room_id,
                 policy_id=grant.policy_id,
+                policy_issuance_id=grant.policy_issuance_id,
                 scopes=widened,
             ),
         )
@@ -1066,6 +1067,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         with self.assertRaises(RoomParticipationAuthorizationError):
             TrustedRoomContinuationPolicy(
                 policy_id="forged",
+                issuance_id="forged-issuance",
                 room_id="room-r",
                 established_episode_id="episode-a",
                 established_attachment_event_id="route-a",
