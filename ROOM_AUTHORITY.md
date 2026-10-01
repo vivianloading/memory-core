@@ -139,11 +139,18 @@ grant when it is next checked.
 
 A TrustedRoomContinuationPolicy means:
 
-> This Room previously established that supported future Episodes arriving
-> through the trusted continuation path may receive fresh participation grants
-> within these exact scopes.
+> This Room previously established, at one exact Episode/Room-route point, that
+> supported future Episodes arriving through the trusted continuation path may
+> receive fresh participation grants within these exact scopes.
 
-The policy is not identity evidence.
+The policy is bound to its establishment Episode and exact active
+RoomAttachment event. Automatic use requires that establishment point to remain
+on the predecessor's ancestry and that no fork lies between the establishment
+point and the predecessor. A fork therefore stops automatic policy inheritance.
+If one descendant branch wants the same continuation behavior, that branch must
+establish a new policy after the fork.
+
+This branch anchor is continuity routing evidence, not identity evidence.
 
 The authority may operationally suspend a trusted policy, immediately making
 its process-local grants stale. That security action does not rewrite the
@@ -215,7 +222,7 @@ This layer therefore creates an exact grant proposal and computes a binding
 digest over:
 
 - launch-evidence id
-- exact continuation-policy fingerprint
+- exact continuation-policy fingerprint, including its branch anchor
 - session
 - Episode
 - PerspectiveInstance
