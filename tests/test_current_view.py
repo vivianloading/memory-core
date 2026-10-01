@@ -774,6 +774,36 @@ class CurrentViewTests(unittest.TestCase):
             {CurrentStanding.CURRENT, CurrentStanding.UNRESOLVED},
         )
 
+    def test_candidate_keeps_exact_historical_record_and_contract(self) -> None:
+        record = self._room_record(
+            "state-candidate",
+            state_kind=CurrentStateKind.PREFERENCE,
+            key="preference.candidate",
+            value="tea",
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(days=7),
+        )
+
+        resolution = self._resolve_room(
+            (record,),
+            key="preference.candidate",
+            as_of_offset=timedelta(days=8),
+        )
+        candidate = resolution.candidates[0]
+
+        self.assertIs(candidate.record, record)
+        self.assertEqual(candidate.state_id, record.state_id)
+        self.assertEqual(candidate.value, record.value)
+        self.assertEqual(
+            candidate.record.semantic_change_authority,
+            SemanticChangeAuthority.ROOM_FIRST_PERSON,
+        )
+        self.assertEqual(
+            candidate.record.downgrade_rule,
+            DowngradeRule.TO_LAST_KNOWN,
+        )
+
     def test_current_inputs_are_immutable_history_records(self) -> None:
         record = self._room_record("state-a")
 
