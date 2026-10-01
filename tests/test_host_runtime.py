@@ -10,6 +10,8 @@ import textwrap
 import unittest
 
 from home_memory_core.host_runtime import (
+    HomeHostRuntimeIdentity,
+    HomeSingleInstanceLease,
     HostRuntimeConfigurationError,
     HostRuntimeLeaseError,
     acquire_home_single_instance,
@@ -55,6 +57,36 @@ class HostRuntimeTests(unittest.TestCase):
                     db_path=root / "data" / "memory.db",
                     real_data_allowed=True,
                 )
+
+    def test_home_single_instance_lease_cannot_be_caller_minted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "home"
+            db = root / "data" / "memory.db"
+            db.parent.mkdir(parents=True, exist_ok=True)
+            fake_lock = db.parent / "fake.lock"
+            handle = fake_lock.open("a+b", buffering=0)
+            try:
+                identity = HomeHostRuntimeIdentity(
+                    runtime_root=root.resolve(),
+                    db_path=db.resolve(),
+                    process_instance_id="host-forged",
+                    owner_pid=os.getpid(),
+                    lock_path=fake_lock.resolve(),
+                    real_data_allowed=False,
+                )
+                with self.assertRaises(HostRuntimeLeaseError):
+                    HomeSingleInstanceLease(
+                        identity=identity,
+                        handle=handle,
+                        _marker=object(),
+                    )
+            finally:
+                handle.close()
+
+    def test_uninitialized_lease_object_cannot_pass_runtime_checks(self) -> None:
+        forged = object.__new__(HomeSingleInstanceLease)
+        with self.assertRaises(HostRuntimeLeaseError):
+            _ = forged.released
 
     def test_same_runtime_cannot_be_acquired_twice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

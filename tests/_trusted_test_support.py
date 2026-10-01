@@ -13,6 +13,7 @@ from home_memory_core import real_normal_read
 from home_memory_core import real_relationships
 from home_memory_core import real_stop_use
 from home_memory_core import real_source_origin
+from home_memory_core import living_authority
 from home_memory_core import source_origin
 from home_memory_core import store_domain
 
@@ -270,4 +271,44 @@ def trusted_test_synchronous_handoff_sink(
         destination_class=destination_class,
         _handler=handler,
         _marker=real_delivery._TRUSTED_SYNC_HANDOFF_SINK_MARKER,
+    )
+
+
+def trusted_test_room_continuation_policy(
+    *,
+    lease,
+    store,
+    policy_id: str,
+    room_id: str,
+    allowed_scopes,
+    established_episode_id: str = "episode-a",
+    established_attachment_event_id: str = "route-a",
+    source_event_ref: str = "synthetic-inhabitant-policy-event",
+) -> living_authority.TrustedRoomContinuationPolicy:
+    return living_authority._issue_trusted_room_continuation_policy_for_test(
+        lease=lease,
+        store=store,
+        policy_id=policy_id,
+        room_id=room_id,
+        established_episode_id=established_episode_id,
+        established_attachment_event_id=(
+            established_attachment_event_id
+        ),
+        allowed_scopes=frozenset(allowed_scopes),
+        source_event_ref=source_event_ref,
+        _issuer_marker=(
+            living_authority._CONTINUATION_POLICY_ISSUER_MARKER
+        ),
+    )
+
+
+def trusted_test_runtime_launch_issuer(
+    *,
+    lease,
+    store,
+) -> living_authority.TrustedRuntimeLaunchIssuer:
+    return living_authority.TrustedRuntimeLaunchIssuer(
+        lease=lease,
+        store=store,
+        _marker=living_authority._RUNTIME_LAUNCH_ISSUER_MARKER,
     )
