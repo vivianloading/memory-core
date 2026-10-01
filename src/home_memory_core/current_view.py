@@ -407,10 +407,7 @@ def resolve_current_state(
 
     known = relevant
     known_end_events = known_end_global
-    _validate_current_graph(
-        records=known,
-        end_events=known_end_events,
-    )
+    _validate_current_graph(records=known)
     if not known:
         return CurrentResolution(
             namespace=namespace,
@@ -580,23 +577,14 @@ def resolve_current_state(
     }
     if len(candidates) == 1:
         only = candidates[0]
-        conflict_ids = (
-            (only.state_id,)
-            if only.standing is CurrentStanding.CONFLICTING
-            else ()
-        )
         return CurrentResolution(
             namespace=namespace,
             owner_id=owner_id,
             key=key,
             standing=only.standing,
-            current_state_ids=conflict_ids,
+            current_state_ids=(),
             historical_state_ids=tuple(
-                sorted(
-                    record.state_id
-                    for record in effective
-                    if record.state_id not in set(conflict_ids)
-                )
+                sorted(record.state_id for record in effective)
             ),
             future_state_ids=future_ids,
             candidates=candidates,
@@ -834,19 +822,12 @@ def _validate_global_ids(
 def _validate_current_graph(
     *,
     records: tuple[CurrentStateRecord, ...],
-    end_events: tuple[CurrentStateEndEvent, ...],
 ) -> None:
     record_by_id: dict[str, CurrentStateRecord] = {}
     for record in records:
         if record.state_id in record_by_id:
             raise CurrentViewError("duplicate state_id")
         record_by_id[record.state_id] = record
-
-    seen_end_ids: set[str] = set()
-    for event in end_events:
-        if event.end_event_id in seen_end_ids:
-            raise CurrentViewError("duplicate end_event_id")
-        seen_end_ids.add(event.end_event_id)
 
     state_kinds = {
         record.state_kind
