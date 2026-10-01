@@ -105,6 +105,26 @@ class LivingContinuityTest(unittest.TestCase):
             {status.value for status in ContinuityStatus},
         )
 
+    def test_verified_continuity_requires_support(self) -> None:
+        with self.assertRaises(LivingContinuityError):
+            ContinuityEdge(
+                edge_id="verified-without-support",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-b",
+                transfer_mode=TransferMode.NATIVE_CHECKPOINT_RESUME,
+                continuity_status=ContinuityStatus.VERIFIED,
+            )
+
+        supported = ContinuityEdge(
+            edge_id="verified-with-support",
+            previous_episode_id="episode-a",
+            next_episode_id="episode-b",
+            transfer_mode=TransferMode.NATIVE_CHECKPOINT_RESUME,
+            continuity_status=ContinuityStatus.VERIFIED,
+            support_refs=("checkpoint-receipt-1",),
+        )
+        self.assertEqual(supported.continuity_status, ContinuityStatus.VERIFIED)
+
     def test_native_checkpoint_mode_does_not_force_verified_status(self) -> None:
         edge = ContinuityEdge(
             edge_id="checkpoint-edge",
