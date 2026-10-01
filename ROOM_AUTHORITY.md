@@ -38,7 +38,11 @@ Identity continuity may remain unknown throughout.
 ## Trusted launch evidence
 
 v0.1 treats the supported HOME host lease as the operational trust root for a
-local synthetic launch.
+local synthetic launch. The RoomParticipationAuthority object is host-private
+control state: it must not be delivered to a model, plugin, memory payload, or
+ordinary request data. Arbitrary code execution inside the trusted HOME process
+remains outside this milestone's threat model, matching the existing local
+authority boundaries.
 
 HOME first records a one-shot SupportedRuntimeLaunchReceipt at the actual
 supported-host launch boundary. That receipt binds the fresh process-local
