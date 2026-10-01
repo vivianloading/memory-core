@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -18,10 +19,15 @@ class TransferMode(StrEnum):
 
 
 class ContinuityStatus(StrEnum):
+    """Evidence strength for one continuity relation.
+
+    Forking is intentionally not a status here. Forking is a structural property
+    of the continuity graph and is derived by resolve_continuity_topology.
+    """
+
     VERIFIED = "verified"
     PARTIAL = "partial"
     UNKNOWN = "unknown"
-    FORKED = "forked"
 
 
 class RoomRouteKind(StrEnum):
@@ -96,6 +102,109 @@ class ContinuityEdge:
                 "continuity_status must use ContinuityStatus"
             )
         _validate_refs(self.evidence_refs)
+
+
+@dataclass(frozen=True)
+class ContinuityTopology:
+    """Structural view of Episode continuity.
+
+    Multiple outgoing edges are allowed and represent a fork. Multiple incoming
+    continuity parents are rejected in v0.1 because an implicit merge would make
+    first-person lineage ambiguous without an explicit merge contract.
+    """
+
+    episode_ids: frozenset[str]
+    root_episode_ids: frozenset[str]
+    head_episode_ids: frozenset[str]
+    fork_episode_ids: frozenset[str]
+
+
+def resolve_continuity_topology(
+    *,
+    episodes: tuple[EpisodeRecord, ...],
+    edges: tuple[ContinuityEdge, ...],
+) -> ContinuityTopology:
+    """Validate and derive structural continuity facts without identity claims."""
+
+    episode_by_id: dict[str, EpisodeRecord] = {}
+    for episode in episodes:
+        if not isinstance(episode, EpisodeRecord):
+            raise LivingContinuityError("episodes must contain EpisodeRecord values")
+        if episode.episode_id in episode_by_id:
+            raise LivingContinuityError("duplicate episode_id")
+        episode_by_id[episode.episode_id] = episode
+
+    edge_ids: set[str] = set()
+    edge_pairs: set[tuple[str, str]] = set()
+    incoming_parent: dict[str, str] = {}
+    adjacency: dict[str, set[str]] = {}
+    incoming_count: Counter[str] = Counter()
+    outgoing_count: Counter[str] = Counter()
+
+    for edge in edges:
+        if not isinstance(edge, ContinuityEdge):
+            raise LivingContinuityError("edges must contain ContinuityEdge values")
+        if edge.edge_id in edge_ids:
+            raise LivingContinuityError("duplicate continuity edge id")
+        edge_ids.add(edge.edge_id)
+
+        pair = (edge.previous_episode_id, edge.next_episode_id)
+        if pair in edge_pairs:
+            raise LivingContinuityError("duplicate continuity edge")
+        edge_pairs.add(pair)
+
+        if edge.previous_episode_id not in episode_by_id:
+            raise LivingContinuityError(
+                "continuity edge previous episode is missing"
+            )
+        if edge.next_episode_id not in episode_by_id:
+            raise LivingContinuityError(
+                "continuity edge next episode is missing"
+            )
+
+        existing_parent = incoming_parent.get(edge.next_episode_id)
+        if (
+            existing_parent is not None
+            and existing_parent != edge.previous_episode_id
+        ):
+            raise LivingContinuityError(
+                "continuity graph contains an implicit merge"
+            )
+        incoming_parent[edge.next_episode_id] = edge.previous_episode_id
+        adjacency.setdefault(edge.previous_episode_id, set()).add(
+            edge.next_episode_id
+        )
+        incoming_count[edge.next_episode_id] += 1
+        outgoing_count[edge.previous_episode_id] += 1
+
+    _assert_continuity_acyclic(
+        episode_ids=frozenset(episode_by_id),
+        adjacency=adjacency,
+    )
+
+    episode_ids = frozenset(episode_by_id)
+    roots = frozenset(
+        episode_id
+        for episode_id in episode_ids
+        if incoming_count[episode_id] == 0
+    )
+    heads = frozenset(
+        episode_id
+        for episode_id in episode_ids
+        if outgoing_count[episode_id] == 0
+    )
+    forks = frozenset(
+        episode_id
+        for episode_id in episode_ids
+        if outgoing_count[episode_id] > 1
+    )
+
+    return ContinuityTopology(
+        episode_ids=episode_ids,
+        root_episode_ids=roots,
+        head_episode_ids=heads,
+        fork_episode_ids=forks,
+    )
 
 
 @dataclass(frozen=True)
@@ -190,8 +299,7 @@ def resolve_room_attachment(
         previous_id = event.supersedes_attachment_event_id
         if previous_id is None:
             continue
-        previous = by_id.get(previous_id)
-        if previous is None:
+        if previous_id not in by_id:
             raise LivingContinuityError(
                 "room attachment supersession target is missing "
                 "or belongs to another episode"
@@ -231,6 +339,29 @@ def resolve_room_attachment(
         room_id=head.room_id,
         active_attachment_event_id=head.attachment_event_id,
     )
+
+
+def _assert_continuity_acyclic(
+    *,
+    episode_ids: frozenset[str],
+    adjacency: dict[str, set[str]],
+) -> None:
+    visited: set[str] = set()
+    active: set[str] = set()
+
+    def visit(episode_id: str) -> None:
+        if episode_id in active:
+            raise LivingContinuityError("continuity graph contains a cycle")
+        if episode_id in visited:
+            return
+        active.add(episode_id)
+        for next_episode_id in adjacency.get(episode_id, set()):
+            visit(next_episode_id)
+        active.remove(episode_id)
+        visited.add(episode_id)
+
+    for episode_id in episode_ids:
+        visit(episode_id)
 
 
 def _assert_attachment_acyclic(
