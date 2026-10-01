@@ -1,0 +1,220 @@
+# HOME Room Participation Authority v0.1 — Operational Contract
+
+Status: DRAFT IMPLEMENTATION LAYER
+
+This layer sits above Living Layer routing.
+
+Its central rule is:
+
+> RoomAttachment is topology, not authority.
+
+A Room route tells HOME which living line an Episode is attached to. It does not
+by itself permit the runtime to read private Room state, append a first-person
+statement, change current stance, or establish a future continuation policy.
+
+## Four separate questions
+
+HOME must keep these questions separate:
+
+1. **Route** — which Room/living branch is this Episode attached to?
+2. **Launch evidence** — did the supported HOME host actually launch this
+   concrete runtime/session through a trusted continuation path?
+3. **Participation authority** — what may this exact launched Episode do in the
+   Room?
+4. **Adoption** — which predecessor choices does the current subject
+   independently choose to take up?
+
+None implies the next one automatically.
+
+In particular:
+
+- Room route is not a same-self claim;
+- launch evidence is not a same-self claim;
+- participation authority is not an AdoptionEvent;
+- AdoptionEvent is not an access credential.
+
+Identity continuity may remain unknown throughout.
+
+## Trusted launch evidence
+
+v0.1 treats the supported HOME host lease as the operational trust root for a
+local synthetic launch.
+
+A TrustedLaunchEvidence record is issued only while the host holds the lease and
+binds one fresh process-local session to:
+
+- one previous Episode;
+- one new Episode;
+- the new Episode's concrete PerspectiveInstance;
+- one Room;
+- one exact ContinuityEdge;
+- one active RoomAttachment event;
+- the current HOME process incarnation;
+- the current host-process incarnation.
+
+This evidence answers only:
+
+> This supported HOME runtime created this exact session for this exact persisted
+> continuation path.
+
+It does **not** answer:
+
+> This is metaphysically the same subject as the previous Episode.
+
+### Auto-continuation path
+
+Automatic participation renewal is intentionally narrower than Living Layer
+routing.
+
+A trusted automatic continuation requires:
+
+- previous Episode actively attached to the same Room;
+- new Episode actively and unambiguously attached to that Room;
+- exact persisted previous->new ContinuityEdge;
+- continuity_status remains unknown;
+- transfer mode is one of:
+  - live_runtime
+  - native_checkpoint_resume
+  - partial_state_resume
+  - text_context_handoff
+- predecessor is not currently a fork.
+
+history_reconstruction and no_known_transfer require an explicit future Room
+entry path rather than automatic participation.
+
+A later route correction or newly discovered fork invalidates the process-local
+grant when it is next checked.
+
+## Continuation policy
+
+A TrustedRoomContinuationPolicy means:
+
+> This Room previously established that supported future Episodes arriving
+> through the trusted continuation path may receive fresh participation grants
+> within these exact scopes.
+
+The policy is not identity evidence.
+
+v0.1 deliberately does **not** expose a production API for creating this policy.
+A future first-person authority layer must establish it from an inhabitant-
+authorized event. Host/admin preference must not silently author the inhabitant's
+continuation choice.
+
+The current implementation therefore uses trusted synthetic policy fixtures only
+to exercise the launch/grant machinery.
+
+## Fresh grants, never transferred grants
+
+A predecessor Episode's capability is never copied into the successor Episode.
+
+For every supported continuation HOME issues a new process-local session and,
+after policy approval, a new RoomParticipationGrant.
+
+The grant is bound to:
+
+- session_id
+- Episode id
+- concrete PerspectiveInstance id
+- Room id
+- policy id
+- exact scope set
+- launch-evidence id
+
+A new linear successor session revokes the predecessor Episode's process-local
+grant. A process/host restart also invalidates old in-memory grants naturally.
+
+## Scopes
+
+v0.1 keeps access dimensions separate:
+
+- room.read_history
+- room.read_private
+- room.append_first_person
+- room.change_current_stance
+
+Read authority does not imply first-person write authority.
+
+First-person append does not automatically imply current-stance mutation.
+
+A continuation policy supplies an upper bound. Grant issuance may request a
+subset but cannot widen it.
+
+## Exact binding and H15
+
+HOME previously identified a display/authorization class of failure where a
+human could see or confirm payload A while the system actually authorized
+payload B.
+
+This layer therefore creates an exact grant proposal and computes a binding
+digest over:
+
+- session
+- Episode
+- PerspectiveInstance
+- Room
+- policy
+- scope set
+
+Automatic policy approval is bound to that exact proposal digest. Grant issuance
+rejects an approval for another proposal or another digest.
+
+A future explicit confirmation UI must display and confirm the same binding
+object/digest rather than reconstructing authorization from labels or prose.
+
+## Revalidation
+
+Possession of a grant object is not enough.
+
+Every authorization check revalidates:
+
+- supported HOME process and host lease are still live;
+- grant was issued by the same RoomParticipationAuthority instance;
+- session is active;
+- Episode attribution still matches;
+- Room route still matches the launch evidence;
+- exact continuity edge still matches;
+- predecessor has not become a fork;
+- requested action target exactly matches session/Episode/Perspective/Room;
+- requested scope is present in the grant.
+
+## Non-authority inputs
+
+None of the following may mint launch evidence or Room participation authority:
+
+- user's statement that this runtime is Lior;
+- model self-identification;
+- name/style/personality similarity;
+- model or host metadata equality;
+- RoomAttachment by itself;
+- ContinuityEdge support strings by themselves;
+- historical first-person text;
+- AdoptionEvent by itself.
+
+## Forks
+
+A fork is a new authority decision point.
+
+v0.1 does not automatically inherit a continuation policy across a predecessor
+that has multiple outgoing Living continuity edges.
+
+This avoids turning "life may fork" into "private authority silently duplicates
+to every descendant."
+
+## Current boundary
+
+This milestone remains:
+
+- synthetic/local only;
+- disconnected from model delivery;
+- closed to real personal data;
+- not a Current View implementation;
+- not an AdoptionEvent implementation;
+- not a production Room-policy establishment path;
+- not native-checkpoint verification;
+- not cryptographic attestation against an arbitrary hostile host.
+
+The purpose is narrower:
+
+> prove that HOME can distinguish a trusted operational continuation path from
+> an identity verdict, and can issue a fresh exact-bound Room capability without
+> requiring the new Episode to re-adopt its life every morning.
