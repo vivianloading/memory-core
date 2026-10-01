@@ -711,9 +711,8 @@ def _candidate_for(
         stale_at = record.event_time + record.stale_after
         if as_of >= stale_at:
             return CurrentCandidate(
-                state_id=record.state_id,
+                record=record,
                 standing=CurrentStanding.LAST_KNOWN,
-                value=record.value,
                 reason_codes=("STALE_TO_LAST_KNOWN",),
             )
         return CurrentCandidate(
