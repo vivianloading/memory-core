@@ -38,17 +38,22 @@ Identity continuity may remain unknown throughout.
 ## Trusted launch evidence
 
 v0.1 treats the supported HOME host lease as the operational trust root for a
-local synthetic launch. The RoomParticipationAuthority object is host-private
-control state: it must not be delivered to a model, plugin, memory payload, or
-ordinary request data. Arbitrary code execution inside the trusted HOME process
-remains outside this milestone's threat model, matching the existing local
-authority boundaries.
+local synthetic launch. The lease itself is caller-mint resistant: supported
+construction requires the private runtime marker and every use revalidates that
+marker plus process ownership.
 
-HOME first records a one-shot SupportedRuntimeLaunchReceipt at the actual
-supported-host launch boundary. That receipt binds the fresh process-local
-session to the new Episode, concrete PerspectiveInstance, persisted runtime
-instance (when present), HOME process, host lease, and the transfer mode the
-launcher actually observed.
+Launch observation and Room authorization are deliberately separate. A
+TrustedRuntimeLaunchIssuer is host-private launcher control state; the
+RoomParticipationAuthority cannot mint launch receipts for itself. Neither
+object may be delivered to a model, plugin, memory payload, or ordinary request
+data. Arbitrary code execution inside the trusted HOME process remains outside
+this milestone's threat model, matching the existing local authority boundaries.
+
+HOME first records a one-shot SupportedRuntimeLaunchReceipt through the trusted
+runtime-launch issuer at the actual supported-host launch boundary. That receipt
+binds the fresh process-local session to the new Episode, concrete
+PerspectiveInstance, concrete persisted runtime instance, HOME process, host
+lease, and the transfer mode the launcher actually observed.
 
 Only then may HOME bind that receipt to persisted Living topology and mint
 TrustedLaunchEvidence.
@@ -78,6 +83,13 @@ Automatic participation also requires the Episode to carry a concrete
 runtime_instance_id. An Episode without that technical runtime binding remains
 valid Living history, but it cannot use this automatic operational authority
 path.
+
+This milestone intentionally exposes no production factory for
+TrustedRuntimeLaunchIssuer yet. Synthetic tests receive it only through trusted
+test support. The future runtime adapter must own the issuer and call it at the
+actual launch boundary; until that adapter exists, this PR defines and exercises
+the evidence contract without pretending a production launcher has already been
+built.
 
 This evidence answers only:
 
