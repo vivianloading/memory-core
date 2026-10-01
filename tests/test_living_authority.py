@@ -711,6 +711,115 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 ),
             )
 
+    def test_policy_lineage_rejects_ancestor_history_reconstruction(self) -> None:
+        evidence, policy = self._seed_policy_lineage_case(
+            first_mode=TransferMode.HISTORY_RECONSTRUCTION,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.APPEND_FIRST_PERSON}
+                ),
+            )
+
+    def test_policy_lineage_rejects_ancestor_no_known_transfer(self) -> None:
+        evidence, policy = self._seed_policy_lineage_case(
+            first_mode=TransferMode.NO_KNOWN_TRANSFER,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.APPEND_FIRST_PERSON}
+                ),
+            )
+
+    def test_policy_lineage_rejects_unattached_intermediate_episode(self) -> None:
+        evidence, policy = self._seed_policy_lineage_case(
+            middle_route="unattached",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.APPEND_FIRST_PERSON}
+                ),
+            )
+
+    def test_policy_lineage_rejects_intermediate_other_room(self) -> None:
+        evidence, policy = self._seed_policy_lineage_case(
+            middle_route="other-room",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.APPEND_FIRST_PERSON}
+                ),
+            )
+
+    def test_policy_lineage_rejects_ambiguous_intermediate_route(self) -> None:
+        evidence, policy = self._seed_policy_lineage_case(
+            ambiguous_middle=True,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.APPEND_FIRST_PERSON}
+                ),
+            )
+
+    def test_intermediate_route_correction_invalidates_existing_grant(self) -> None:
+        evidence, policy = self._seed_policy_lineage_case()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.APPEND_FIRST_PERSON}
+            ),
+        )
+        approval = self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=policy,
+        )
+        grant = self.authority.issue_grant(
+            proposal=proposal,
+            approval=approval,
+        )
+        self.living.add_room(RoomRecord(room_id="room-other"))
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="lineage-route-x-corrected",
+                episode_id="lineage-x",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-other",
+                basis="late_intermediate_correction",
+                supersedes_attachment_event_id="lineage-route-x",
+            )
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="lineage-c",
+                perspective_instance_id="perspective-lineage-c",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
     def test_policy_reestablished_after_fork_can_continue_on_that_branch(self) -> None:
         self.living.add_episode(
             EpisodeRecord(
@@ -861,6 +970,121 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 perspective_instance_id="perspective-b",
                 room_id="room-r",
                 required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_policy_cannot_be_widened_before_first_registration(self) -> None:
+        evidence = self._launch()
+        policy = trusted_test_room_continuation_policy(
+            policy_id="policy-read-only-before-registration",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+        object.__setattr__(
+            policy,
+            "allowed_scopes",
+            frozenset(RoomParticipationScope),
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {
+                        RoomParticipationScope.READ_PRIVATE,
+                        RoomParticipationScope.APPEND_FIRST_PERSON,
+                        RoomParticipationScope.CHANGE_CURRENT_STANCE,
+                    }
+                ),
+            )
+
+    def test_registered_policy_cannot_be_renamed_and_widened(self) -> None:
+        evidence = self._launch()
+        policy = trusted_test_room_continuation_policy(
+            policy_id="policy-read-only-registered",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+        self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        object.__setattr__(policy, "policy_id", "policy-renamed")
+        object.__setattr__(
+            policy,
+            "allowed_scopes",
+            frozenset(RoomParticipationScope),
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_PRIVATE}
+                ),
+            )
+
+    def test_dataclass_copy_cannot_reuse_policy_trust_marker(self) -> None:
+        evidence = self._launch()
+        policy = trusted_test_room_continuation_policy(
+            policy_id="policy-read-only-copy-source",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+        copied = dataclasses.replace(
+            policy,
+            policy_id="policy-forged-copy",
+            allowed_scopes=frozenset(RoomParticipationScope),
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=copied,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_PRIVATE}
+                ),
+            )
+
+    def test_suspended_policy_copy_cannot_resurrect_authority(self) -> None:
+        evidence = self._launch()
+        policy = trusted_test_room_continuation_policy(
+            policy_id="policy-read-only-suspended",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+        self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        self.authority.suspend_policy(policy_id=policy.policy_id)
+        copied = dataclasses.replace(
+            policy,
+            policy_id="policy-resurrected-copy",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=copied,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_HISTORY}
+                ),
             )
 
     def test_registered_policy_payload_cannot_be_mutated_to_widen_scope(self) -> None:
