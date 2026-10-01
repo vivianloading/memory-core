@@ -1191,6 +1191,62 @@ class CurrentViewTests(unittest.TestCase):
 
         self.assertEqual(prior.standing, CurrentStanding.CURRENT)
 
+    def test_event_time_cannot_be_future_relative_to_record_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "future-event",
+                event_offset=timedelta(days=1),
+                recorded_offset=timedelta(0),
+                valid_from_offset=timedelta(days=1),
+            )
+
+    def test_end_time_cannot_be_future_relative_to_record_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="future-end",
+                state_id="state-a",
+                ended_at=self.t0 + timedelta(days=1),
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="future end cannot already be recorded as happened",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id="perspective-end",
+                source_refs=("source-future-end",),
+            )
+
+    def test_future_validity_is_allowed_without_future_event_time(self) -> None:
+        record = self._shared_record(
+            "scheduled-shared-state",
+            event_offset=timedelta(0),
+            recorded_offset=timedelta(0),
+            valid_from_offset=timedelta(days=3),
+        )
+
+        before = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0,
+        )
+        after = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0 + timedelta(days=3),
+        )
+
+        self.assertEqual(before.standing, CurrentStanding.UNKNOWN)
+        self.assertEqual(
+            before.future_state_ids,
+            ("scheduled-shared-state",),
+        )
+        self.assertEqual(after.standing, CurrentStanding.CURRENT)
+
     def test_source_refs_must_be_immutable_and_unique(self) -> None:
         with self.assertRaises(CurrentViewError):
             dataclasses.replace(
