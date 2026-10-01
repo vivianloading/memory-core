@@ -1643,6 +1643,76 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
             )
 
+    def test_policy_issuance_does_not_cross_host_incarnation(self) -> None:
+        old_policy = trusted_test_room_continuation_policy(
+            lease=self.lease,
+            store=self.living,
+            policy_id="policy-old-host",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+
+        self.lease.release()
+        self.lease = acquire_home_single_instance(
+            runtime_root=self.root,
+            db_path=self.db_path,
+        )
+        self.authority = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+        self.launcher = trusted_test_runtime_launch_issuer(
+            lease=self.lease,
+            store=self.living,
+        )
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c-new-host",
+                perspective_instance_id="perspective-c-new-host",
+                runtime_instance_id="runtime-c-new-host",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-b-c-new-host",
+                previous_episode_id="episode-b",
+                next_episode_id="episode-c-new-host",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-c-new-host",
+                episode_id="episode-c-new-host",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="ordinary_handoff",
+            )
+        )
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="episode-c-new-host",
+            perspective_instance_id="perspective-c-new-host",
+            observed_runtime_instance_id="runtime-c-new-host",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        evidence = self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-b",
+            room_id="room-r",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=old_policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_HISTORY}
+                ),
+            )
+
     def test_old_launch_receipt_does_not_cross_host_incarnation(self) -> None:
         receipt = self.launcher.record_supported_runtime_launch(
             episode_id="episode-b",
