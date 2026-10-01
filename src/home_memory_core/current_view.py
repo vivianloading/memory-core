@@ -473,7 +473,18 @@ def resolve_current_state(
             historical_state_ids=historical,
             future_state_ids=future_ids,
             candidates=candidates,
-            reason_codes=("CONFLICTING_HEAD_SEMANTICS",),
+            reason_codes=(
+                "CONFLICTING_HEAD_SEMANTICS",
+                *tuple(
+                    sorted(
+                        {
+                            reason
+                            for candidate in conflict_candidates
+                            for reason in candidate.reason_codes
+                        }
+                    )
+                ),
+            ),
         )
 
     eligible = tuple(
