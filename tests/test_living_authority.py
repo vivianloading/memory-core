@@ -429,6 +429,183 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         with self.assertRaises(RoomLaunchEvidenceError):
             self._launch()
 
+    def test_policy_does_not_auto_cross_ancestor_fork(self) -> None:
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-fork-sibling",
+                perspective_instance_id="perspective-fork-sibling",
+                runtime_instance_id="runtime-fork-sibling",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-fork-sibling",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-fork-sibling",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c-after-fork",
+                perspective_instance_id="perspective-c-after-fork",
+                runtime_instance_id="runtime-c-after-fork",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-b-c-after-fork",
+                previous_episode_id="episode-b",
+                next_episode_id="episode-c-after-fork",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-c-after-fork",
+                episode_id="episode-c-after-fork",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="ordinary_handoff",
+            )
+        )
+
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="episode-c-after-fork",
+            perspective_instance_id="perspective-c-after-fork",
+            observed_runtime_instance_id="runtime-c-after-fork",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        evidence = self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-b",
+            room_id="room-r",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=self.policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_HISTORY}
+                ),
+            )
+
+    def test_policy_reestablished_after_fork_can_continue_on_that_branch(self) -> None:
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-fork-sibling",
+                perspective_instance_id="perspective-fork-sibling",
+                runtime_instance_id="runtime-fork-sibling",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-fork-sibling",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-fork-sibling",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c-after-fork",
+                perspective_instance_id="perspective-c-after-fork",
+                runtime_instance_id="runtime-c-after-fork",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-b-c-after-fork",
+                previous_episode_id="episode-b",
+                next_episode_id="episode-c-after-fork",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-c-after-fork",
+                episode_id="episode-c-after-fork",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="ordinary_handoff",
+            )
+        )
+        branch_policy = trusted_test_room_continuation_policy(
+            policy_id="policy-room-r-after-fork",
+            room_id="room-r",
+            established_episode_id="episode-b",
+            established_attachment_event_id="route-b",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="episode-c-after-fork",
+            perspective_instance_id="perspective-c-after-fork",
+            observed_runtime_instance_id="runtime-c-after-fork",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        evidence = self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-b",
+            room_id="room-r",
+        )
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=branch_policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        approval = self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=branch_policy,
+        )
+        grant = self.authority.issue_grant(
+            proposal=proposal,
+            approval=approval,
+        )
+
+        self.authority.require_grant(
+            grant=grant,
+            session_id=evidence.session_id,
+            episode_id="episode-c-after-fork",
+            perspective_instance_id="perspective-c-after-fork",
+            room_id="room-r",
+            required_scope=RoomParticipationScope.READ_HISTORY,
+        )
+
+    def test_policy_anchor_route_revision_invalidates_grant(self) -> None:
+        evidence, _, _, grant = self._grant(
+            scopes=frozenset({RoomParticipationScope.READ_HISTORY})
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-a-policy-revised",
+                episode_id="episode-a",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="policy_anchor_route_revision",
+                supersedes_attachment_event_id="route-a",
+            )
+        )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.READ_HISTORY,
+            )
+
     def test_new_room_route_requires_explicit_entry_instead_of_auto_policy(self) -> None:
         self.living.add_room(RoomRecord(room_id="room-new"))
         self.living.add_room_attachment(
@@ -808,6 +985,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             TrustedRoomContinuationPolicy(
                 policy_id="forged",
                 room_id="room-r",
+                established_episode_id="episode-a",
+                established_attachment_event_id="route-a",
                 allowed_scopes=frozenset(
                     {RoomParticipationScope.APPEND_FIRST_PERSON}
                 ),
