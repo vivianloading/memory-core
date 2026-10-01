@@ -788,6 +788,7 @@ class LivingStore:
             connection.execute("BEGIN")
             assert_synthetic_store_domain(connection)
             assert_living_schema(connection)
+            assert_living_data_integrity(connection)
             return connection
         except Exception:
             connection.close()
