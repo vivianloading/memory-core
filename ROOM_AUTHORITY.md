@@ -40,17 +40,33 @@ Identity continuity may remain unknown throughout.
 v0.1 treats the supported HOME host lease as the operational trust root for a
 local synthetic launch.
 
-A TrustedLaunchEvidence record is issued only while the host holds the lease and
-binds one fresh process-local session to:
+HOME first records a one-shot SupportedRuntimeLaunchReceipt at the actual
+supported-host launch boundary. That receipt binds the fresh process-local
+session to the new Episode, concrete PerspectiveInstance, HOME process, host
+lease, and the transfer mode the launcher actually observed.
+
+Only then may HOME bind that receipt to persisted Living topology and mint
+TrustedLaunchEvidence.
+
+A TrustedLaunchEvidence record is therefore issued only while the host holds the
+lease and binds one fresh process-local session to:
 
 - one previous Episode;
 - one new Episode;
 - the new Episode's concrete PerspectiveInstance;
 - one Room;
-- one exact ContinuityEdge;
-- one active RoomAttachment event;
+- one exact ContinuityEdge whose transfer mode matches the host-observed launch;
+- the predecessor's exact active RoomAttachment event;
+- the new Episode's exact active RoomAttachment event;
 - the current HOME process incarnation;
 - the current host-process incarnation.
+
+Persisted RoomAttachment + ContinuityEdge records alone cannot create a launch
+receipt and therefore cannot create operational participation authority.
+
+The launch receipt is one-shot. Replaying it after successful continuation
+binding is rejected. A newer observed launch for the same Episode invalidates
+the older pending receipt.
 
 This evidence answers only:
 
@@ -95,6 +111,12 @@ A TrustedRoomContinuationPolicy means:
 
 The policy is not identity evidence.
 
+The authority may operationally suspend a trusted policy, immediately making
+its process-local grants stale. That security action does not rewrite the
+inhabitant's historical intent into "I no longer want to live here." Resuming or
+changing the normative policy requires a future explicit policy event rather
+than silently toggling the old one back on.
+
 v0.1 deliberately does **not** expose a production API for creating this policy.
 A future first-person authority layer must establish it from an inhabitant-
 authorized event. Host/admin preference must not silently author the inhabitant's
@@ -121,7 +143,12 @@ The grant is bound to:
 - launch-evidence id
 
 A new linear successor session revokes the predecessor Episode's process-local
+grant. Re-launching the same Episode revokes its older process-local session and
 grant. A process/host restart also invalidates old in-memory grants naturally.
+
+For one live host lease/database pair, HOME reuses one process-local authority
+registry so two callers cannot accidentally create independent grant universes
+inside the same supported host process.
 
 ## Scopes
 
