@@ -120,6 +120,8 @@ RoomAttachmentEvent inside an already-marked synthetic HOME database.
 Persistence does not widen their meaning:
 
 - Living Layer rows are append-only;
+- BEFORE INSERT conflict guards reject INSERT OR REPLACE attempts before SQLite
+  can delete/reinsert an existing immutable ID or continuity pair;
 - storage triggers reject implicit continuity merges, continuity cycles, and
   cross-Episode attachment corrections even through raw SQL;
 - late Room correction appends a new event instead of rewriting the old one;
@@ -128,7 +130,11 @@ Persistence does not widen their meaning:
 - continuity forks remain derived topology;
 - PerspectiveInstance remains distinct from Room;
 - no same_self field exists in the schema;
-- schema drift fails closed, including unexpected identity-like columns;
+- ordinary readers validate the complete Living Layer graph in their read
+  snapshot and reject persisted partial/verified certainty in v0.1;
+- schema drift fails closed against canonical table/trigger definitions and
+  table_xinfo metadata, including generated identity-like columns and same-name
+  no-op trigger replacements;
 - backup/restore validates the complete Living Layer graph when it is present;
 - this milestone does not feed Living Layer state to model delivery.
 
@@ -139,6 +145,12 @@ typed verification authority does not exist yet.
 Portable backup/restore is allowed to move these records between HOME roots, but
 moving hosts does not upgrade or downgrade subject continuity. Host migration is
 a technical event, not an identity verdict.
+
+This is a fail-closed application/storage contract, not a claim of cryptographic
+tamper evidence against an actor with arbitrary database-file ownership. A
+future real-data deployment must add host access control and, if required,
+external integrity/chain-of-custody mechanisms rather than pretending SQLite
+schema guards alone can prove an untouched past.
 
 ## Non-goals for this milestone
 
