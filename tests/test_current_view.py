@@ -779,7 +779,7 @@ class CurrentViewTests(unittest.TestCase):
         with self.assertRaises(CurrentViewError):
             self._resolve_room((first, second))
 
-    def test_multiple_effective_end_events_stay_unresolved_as_integrity_error(self) -> None:
+    def test_multiple_effective_end_events_remain_conflicting(self) -> None:
         record = self._room_record("state-a")
         first = CurrentStateEndEvent(
             end_event_id="end-a",
@@ -800,11 +800,80 @@ class CurrentViewTests(unittest.TestCase):
             source_refs=("source-end-b",),
         )
 
+        resolution = self._resolve_room(
+            (record,),
+            end_events=(first, second),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.CONFLICTING,
+        )
+        self.assertEqual(
+            resolution.current_state_ids,
+            ("state-a",),
+        )
+        self.assertIn(
+            "MULTIPLE_EFFECTIVE_END_EVENTS",
+            resolution.reason_codes,
+        )
+
+    def test_duplicate_state_id_is_rejected_across_keys(self) -> None:
+        first = self._room_record(
+            "duplicate-id",
+            key="first.key",
+        )
+        second = self._room_record(
+            "duplicate-id",
+            key="second.key",
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-r",
+                key="first.key",
+                records=(first, second),
+                as_of=self.t0,
+            )
+
+    def test_end_event_for_unknown_state_is_rejected_when_known(self) -> None:
+        record = self._room_record("state-a")
+        orphan = CurrentStateEndEvent(
+            end_event_id="end-orphan",
+            state_id="missing-state",
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="orphan",
+            source_refs=("source-end-orphan",),
+        )
+
         with self.assertRaises(CurrentViewError):
             self._resolve_room(
                 (record,),
-                end_events=(first, second),
+                end_events=(orphan,),
             )
+
+    def test_future_recorded_invalid_history_does_not_change_prior_as_of(self) -> None:
+        visible = self._room_record("visible")
+        future_orphan = CurrentStateEndEvent(
+            end_event_id="future-orphan",
+            state_id="missing-state",
+            ended_at=self.t0 + timedelta(days=5),
+            recorded_at=self.t0 + timedelta(days=5),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="future bad data",
+            source_refs=("source-future-orphan",),
+        )
+
+        prior = self._resolve_room(
+            (visible,),
+            as_of_offset=timedelta(days=1),
+            end_events=(future_orphan,),
+        )
+
+        self.assertEqual(prior.standing, CurrentStanding.CURRENT)
 
     def test_validity_and_downgrade_contract_is_explicit(self) -> None:
         with self.assertRaises(CurrentViewError):
