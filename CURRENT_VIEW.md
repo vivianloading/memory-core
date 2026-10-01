@@ -52,8 +52,17 @@ Current View v0.1 has two semantic namespaces:
 They are intentionally separate.
 
 A Room current-state record requires concrete Episode and PerspectiveInstance
-provenance. That preserves who actually authored the first-person source event.
-It does not claim that two Episodes are the same metaphysical subject.
+provenance. The synthetic-unattributed Perspective sentinel is rejected here,
+just as it is in the Living Layer. That preserves who actually authored the
+first-person source event.
+
+These ids are semantic provenance in this slice, not proof that the referenced
+Episode/Room objects exist in canonical storage and not an authentication
+credential. Future persistence/admission must bind them to the Living and Room
+authority layers before accepting a real write.
+
+Concrete attribution still does not claim that two Episodes are the same
+metaphysical subject.
 
 A Shared record cannot claim Room first-person provenance.
 
