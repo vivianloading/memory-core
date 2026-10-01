@@ -1,0 +1,519 @@
+import dataclasses
+import os
+from pathlib import Path
+import tempfile
+import unittest
+
+from _trusted_test_support import trusted_test_room_continuation_policy
+from home_memory_core.host_runtime import acquire_home_single_instance
+from home_memory_core.living_authority import (
+    AutomaticContinuationApproval,
+    RoomLaunchEvidenceError,
+    RoomParticipationAuthorizationError,
+    RoomParticipationGrant,
+    RoomParticipationScope,
+    RoomParticipationStaleError,
+    TrustedLaunchEvidence,
+    TrustedRoomContinuationPolicy,
+    open_room_participation_authority,
+)
+from home_memory_core.living_continuity import (
+    ContinuityEdge,
+    ContinuityStatus,
+    EpisodeRecord,
+    RoomAttachmentEvent,
+    RoomRecord,
+    RoomRouteKind,
+    TransferMode,
+)
+from home_memory_core.living_store import LivingStore
+from home_memory_core.storage import MemoryStore
+
+
+class RoomParticipationAuthorityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.db_path = self.root / "data" / "home.db"
+        MemoryStore(self.db_path).initialize()
+        self.living = LivingStore(self.db_path)
+        self.living.initialize()
+        self.lease = acquire_home_single_instance(
+            runtime_root=self.root,
+            db_path=self.db_path,
+        )
+        self.authority = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+        self.policy = trusted_test_room_continuation_policy(
+            policy_id="policy-room-r-v1",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+                RoomParticipationScope.APPEND_FIRST_PERSON,
+            },
+        )
+        self._seed_linear_pair()
+
+    def tearDown(self) -> None:
+        if not self.lease.released:
+            self.lease.release()
+        self._tmp.cleanup()
+
+    def _seed_linear_pair(
+        self,
+        *,
+        transfer_mode: TransferMode = TransferMode.TEXT_CONTEXT_HANDOFF,
+    ) -> None:
+        self.living.add_room(RoomRecord(room_id="room-r"))
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-a",
+                perspective_instance_id="perspective-a",
+                runtime_instance_id="runtime-a",
+                model_ref="model-a",
+            )
+        )
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                runtime_instance_id="runtime-b",
+                model_ref="model-b",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-b",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-b",
+                transfer_mode=transfer_mode,
+                continuity_status=ContinuityStatus.UNKNOWN,
+                support_refs=("opaque-handoff-receipt",),
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-a",
+                episode_id="episode-a",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="existing_living_line",
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-b",
+                episode_id="episode-b",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="ordinary_handoff",
+                support_refs=("edge-a-b",),
+            )
+        )
+
+    def _launch(self):
+        return self.authority.begin_trusted_continuation(
+            previous_episode_id="episode-a",
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            room_id="room-r",
+        )
+
+    def _grant(self, scopes=None):
+        scopes = scopes or frozenset(
+            {RoomParticipationScope.APPEND_FIRST_PERSON}
+        )
+        evidence = self._launch()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(scopes),
+        )
+        approval = self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=self.policy,
+        )
+        grant = self.authority.issue_grant(
+            proposal=proposal,
+            approval=approval,
+        )
+        return evidence, proposal, approval, grant
+
+    def test_ordinary_unknown_continuation_receives_fresh_bound_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+
+        self.assertEqual(evidence.continuity_status, ContinuityStatus.UNKNOWN)
+        self.assertEqual(evidence.room_id, "room-r")
+        self.assertEqual(grant.episode_id, "episode-b")
+        self.assertEqual(grant.perspective_instance_id, "perspective-b")
+        self.assertNotEqual(grant.grant_id, evidence.evidence_id)
+
+        self.authority.require_grant(
+            grant=grant,
+            session_id=evidence.session_id,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            room_id="room-r",
+            required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+        )
+
+    def test_model_and_runtime_change_do_not_force_identity_or_room_change(self) -> None:
+        evidence = self._launch()
+        self.assertEqual(evidence.continuity_status, ContinuityStatus.UNKNOWN)
+        self.assertFalse(hasattr(evidence, "same_self"))
+        self.assertFalse(hasattr(evidence, "different_self"))
+
+    def test_room_attachment_alone_is_not_launch_authority(self) -> None:
+        with self.assertRaises(RoomLaunchEvidenceError):
+            TrustedLaunchEvidence(
+                evidence_id="forged",
+                session_id="forged-session",
+                home_process_instance_id="forged-process",
+                host_process_instance_id="forged-host",
+                previous_episode_id="episode-a",
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                continuity_edge_id="edge-a-b",
+                attachment_event_id="route-b",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+                _marker=object(),
+            )
+
+    def test_perspective_binding_mismatch_blocks_launch(self) -> None:
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.begin_trusted_continuation(
+                previous_episode_id="episode-a",
+                episode_id="episode-b",
+                perspective_instance_id="perspective-a",
+                room_id="room-r",
+            )
+
+    def test_history_reconstruction_does_not_auto_grant_participation(self) -> None:
+        self.lease.release()
+        self._tmp.cleanup()
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.db_path = self.root / "data" / "home.db"
+        MemoryStore(self.db_path).initialize()
+        self.living = LivingStore(self.db_path)
+        self.living.initialize()
+        self.lease = acquire_home_single_instance(
+            runtime_root=self.root,
+            db_path=self.db_path,
+        )
+        self.authority = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+        self._seed_linear_pair(
+            transfer_mode=TransferMode.HISTORY_RECONSTRUCTION
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self._launch()
+
+    def test_fork_does_not_inherit_continuation_policy_by_default(self) -> None:
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c",
+                perspective_instance_id="perspective-c",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-c",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-c",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self._launch()
+
+    def test_new_room_route_requires_explicit_entry_instead_of_auto_policy(self) -> None:
+        self.living.add_room(RoomRecord(room_id="room-new"))
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-b-new",
+                episode_id="episode-b",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-new",
+                basis="late_branch_correction",
+                supersedes_attachment_event_id="route-b",
+            )
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self._launch()
+
+    def test_read_history_does_not_imply_first_person_write(self) -> None:
+        evidence, _, _, grant = self._grant(
+            scopes=frozenset({RoomParticipationScope.READ_HISTORY})
+        )
+
+        self.authority.require_grant(
+            grant=grant,
+            session_id=evidence.session_id,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            room_id="room-r",
+            required_scope=RoomParticipationScope.READ_HISTORY,
+        )
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_policy_scope_cannot_be_widened_during_grant_issue(self) -> None:
+        evidence = self._launch()
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=self.policy,
+                requested_scopes=frozenset(
+                    {
+                        RoomParticipationScope.READ_HISTORY,
+                        RoomParticipationScope.READ_PRIVATE,
+                    }
+                ),
+            )
+
+    def test_approval_is_bound_to_exact_proposal_not_lookalike_scope(self) -> None:
+        evidence = self._launch()
+        proposal_read = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        proposal_write = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.APPEND_FIRST_PERSON}
+            ),
+        )
+        approval_read = self.authority.approve_automatic_continuation(
+            proposal=proposal_read,
+            policy=self.policy,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.issue_grant(
+                proposal=proposal_write,
+                approval=approval_read,
+            )
+
+    def test_grant_target_binding_rejects_episode_perspective_room_or_session_swap(self) -> None:
+        evidence, _, _, grant = self._grant()
+
+        mismatches = (
+            dict(session_id="other-session"),
+            dict(episode_id="episode-a"),
+            dict(perspective_instance_id="perspective-a"),
+            dict(room_id="other-room"),
+        )
+        base = {
+            "session_id": evidence.session_id,
+            "episode_id": "episode-b",
+            "perspective_instance_id": "perspective-b",
+            "room_id": "room-r",
+        }
+        for mismatch in mismatches:
+            supplied = dict(base)
+            supplied.update(mismatch)
+            with self.assertRaises(RoomParticipationAuthorizationError):
+                self.authority.require_grant(
+                    grant=grant,
+                    required_scope=(
+                        RoomParticipationScope.APPEND_FIRST_PERSON
+                    ),
+                    **supplied,
+                )
+
+    def test_forged_policy_cannot_mint_grant(self) -> None:
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            TrustedRoomContinuationPolicy(
+                policy_id="forged",
+                room_id="room-r",
+                allowed_scopes=frozenset(
+                    {RoomParticipationScope.APPEND_FIRST_PERSON}
+                ),
+                source_event_ref="user-says-so",
+                _marker=object(),
+            )
+
+    def test_grant_from_another_authority_instance_is_rejected(self) -> None:
+        evidence, _, _, grant = self._grant()
+        other = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            other.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_successor_launch_revokes_predecessor_episode_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c",
+                perspective_instance_id="perspective-c",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-b-c",
+                previous_episode_id="episode-b",
+                next_episode_id="episode-c",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-c",
+                episode_id="episode-c",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="ordinary_handoff",
+            )
+        )
+
+        self.authority.begin_trusted_continuation(
+            previous_episode_id="episode-b",
+            episode_id="episode-c",
+            perspective_instance_id="perspective-c",
+            room_id="room-r",
+        )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_route_correction_after_issue_invalidates_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+        self.living.add_room(RoomRecord(room_id="room-corrected"))
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-b-corrected",
+                episode_id="episode-b",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-corrected",
+                basis="late_route_correction",
+                supersedes_attachment_event_id="route-b",
+            )
+        )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_late_fork_discovery_invalidates_existing_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-fork",
+                perspective_instance_id="perspective-fork",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-fork",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-fork",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_released_host_lease_invalidates_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+        self.lease.release()
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_grant_schema_has_no_identity_verdict_or_adoption_field(self) -> None:
+        fields = {field.name for field in dataclasses.fields(RoomParticipationGrant)}
+        self.assertNotIn("same_self", fields)
+        self.assertNotIn("different_self", fields)
+        self.assertNotIn("adopted", fields)
+        self.assertNotIn("adoption_event_id", fields)
+
+    @unittest.skipUnless(hasattr(os, "fork"), "fork isolation is POSIX-only")
+    def test_forked_child_cannot_reuse_parent_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child assertion
+            try:
+                self.authority.require_grant(
+                    grant=grant,
+                    session_id=evidence.session_id,
+                    episode_id="episode-b",
+                    perspective_instance_id="perspective-b",
+                    room_id="room-r",
+                    required_scope=(
+                        RoomParticipationScope.APPEND_FIRST_PERSON
+                    ),
+                )
+            except Exception:
+                os._exit(0)
+            os._exit(2)
+
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
