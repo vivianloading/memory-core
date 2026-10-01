@@ -191,6 +191,11 @@ Read authority does not imply first-person write authority.
 
 First-person append does not automatically imply current-stance mutation.
 
+Current-stance mutation is narrower. A policy or grant that includes
+room.change_current_stance must also include room.append_first_person, so HOME
+cannot change current first-person state without the authority to record the
+corresponding attributed first-person event.
+
 A continuation policy supplies an upper bound. Grant issuance may request a
 subset but cannot widen it.
 
