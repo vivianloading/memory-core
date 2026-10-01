@@ -148,9 +148,15 @@ resurrect. Historical supersession remains history.
 
 CurrentResolution separates:
 
-- current_state_ids — states eligible to participate now;
+- current_state_ids — states eligible to participate now, or exact states implicated in a conflict;
 - historical_state_ids — known effective history that no longer participates;
 - future_state_ids — known records whose valid_from is still in the future.
+
+Each CurrentCandidate retains the exact immutable CurrentStateRecord it was
+derived from, plus only the derived standing and reason codes. This keeps
+validity rule, downgrade rule, semantic ownership, Episode/Perspective
+attribution and source references inspectable without reconstructing them from
+display text.
 
 A record whose recorded_at is later than as_of is not known in that historical
 view at all. Even its key must not appear in a derived historical view before
@@ -258,7 +264,10 @@ that gate.
 
 This first slice is deliberately semantic and synthetic-only.
 
-It provides immutable typed records plus deterministic derivation.
+It provides frozen typed records plus deterministic derivation. Python-level
+frozen dataclasses are an application invariant, not cryptographic tamper
+evidence against arbitrary code in the same process. Durable append-only
+enforcement belongs to the future persistence layer.
 
 It does not yet persist Current View records into the canonical HOME database.
 That persistence layer should be added only after the semantic contract survives
