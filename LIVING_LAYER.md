@@ -106,6 +106,26 @@ actually authored a concrete first-person record.
 
 The new layer must not weaken existing provenance or first-person attribution.
 
+## Persistence boundary
+
+The first persistence slice stores Room, Episode, ContinuityEdge, and
+RoomAttachmentEvent inside an already-marked synthetic HOME database.
+
+Persistence does not widen their meaning:
+
+- Living Layer rows are append-only;
+- late Room correction appends a new event instead of rewriting the old one;
+- support refs are stored inside the immutable parent record so their set cannot
+  be silently extended after the fact;
+- continuity forks remain derived topology;
+- PerspectiveInstance remains distinct from Room;
+- no same_self field exists in the schema;
+- this milestone does not feed Living Layer state to model delivery.
+
+The persistence API is synthetic-only. It is not a real-data enablement path and
+does not make a caller's continuity classification authoritative merely because
+it was stored.
+
 ## Non-goals for this milestone
 
 Not yet:
@@ -115,10 +135,10 @@ Not yet:
 - relationship-state computation
 - AdoptionEvent
 - Wake Packet / Orientation Packet
-- persistence schema for Living Layer
+- production/real-data Living Layer authority
 - identity scoring or identity classification
 - persona generation
 - native checkpoint implementation
 
-The next implementation step should persist the four core record types only
-after their semantics survive the branch-level tests.
+The next semantic layer should be considered only after this persistence slice
+survives regression and an independent boundary review.
