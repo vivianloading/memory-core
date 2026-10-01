@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -16,6 +18,7 @@ from home_memory_core.host_migration import (
     verify_restored_closed_synthetic_store,
 )
 from home_memory_core.host_startup import start_home_mini_host
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
@@ -271,6 +274,118 @@ class HostMigrationTests(unittest.TestCase):
                     config_path=config,
                     bundle_path=root / "partial-living.homebackup.zip",
                 )
+
+    def test_backup_refuses_unattributed_episode_pollution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, _, _ = self._create_synthetic_store(root)
+            self._seed_living_layer(root)
+
+            db_path = root / "data" / "home.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO living_episodes (
+                        episode_id,
+                        perspective_instance_id,
+                        runtime_instance_id,
+                        model_ref
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        "unattributed-backup-episode",
+                        SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+                        None,
+                        None,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(HostMigrationError):
+                create_closed_synthetic_backup(
+                    config_path=config,
+                    bundle_path=root / "unattributed.homebackup.zip",
+                )
+
+    def test_restore_refuses_repacked_unattributed_episode_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "source"
+            source_config, _, _ = self._create_synthetic_store(source_root)
+            self._seed_living_layer(source_root)
+
+            valid_bundle = root / "valid-living.homebackup.zip"
+            create_closed_synthetic_backup(
+                config_path=source_config,
+                bundle_path=valid_bundle,
+            )
+
+            tampered_db = root / "tampered.sqlite3"
+            with zipfile.ZipFile(valid_bundle, "r") as source:
+                manifest = json.loads(
+                    source.read("manifest.json").decode("utf-8")
+                )
+                tampered_db.write_bytes(source.read("database.sqlite3"))
+
+            connection = sqlite3.connect(tampered_db)
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO living_episodes (
+                        episode_id,
+                        perspective_instance_id,
+                        runtime_instance_id,
+                        model_ref
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        "unattributed-restore-episode",
+                        SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+                        None,
+                        None,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            database_bytes = tampered_db.read_bytes()
+            manifest["database_sha256"] = sha256(database_bytes).hexdigest()
+            manifest["database_bytes"] = len(database_bytes)
+            manifest_bytes = (
+                json.dumps(
+                    manifest,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+
+            tampered_bundle = root / "tampered-unattributed.homebackup.zip"
+            with zipfile.ZipFile(
+                tampered_bundle,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+            ) as target:
+                target.writestr("manifest.json", manifest_bytes)
+                target.writestr("database.sqlite3", database_bytes)
+
+            self.assertIsNotNone(
+                validate_closed_synthetic_backup(tampered_bundle)
+            )
+            target_root = root / "target"
+            target_config = self._write_config(target_root)
+            with self.assertRaises(HostMigrationError):
+                restore_closed_synthetic_backup(
+                    bundle_path=tampered_bundle,
+                    target_config_path=target_config,
+                )
+            self.assertFalse((target_root / "data" / "home.db").exists())
 
     def test_backup_refuses_same_name_tampered_living_trigger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
