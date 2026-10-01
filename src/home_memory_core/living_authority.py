@@ -112,6 +112,9 @@ class TrustedRoomContinuationPolicy:
 class _TrustedPolicyIssuanceState:
     policy: TrustedRoomContinuationPolicy
     fingerprint: str
+    home_process_instance_id: str
+    host_process_instance_id: str
+    db_path: str
 
 
 _POLICY_ISSUANCE_REGISTRY: dict[
@@ -122,6 +125,8 @@ _POLICY_ISSUANCE_REGISTRY: dict[
 
 def _issue_trusted_room_continuation_policy_for_test(
     *,
+    lease: HomeSingleInstanceLease,
+    store: LivingStore,
     policy_id: str,
     room_id: str,
     established_episode_id: str,
@@ -136,6 +141,26 @@ def _issue_trusted_room_continuation_policy_for_test(
         raise RoomParticipationAuthorizationError(
             "Room continuation policy issuer is not trusted"
         )
+    if not isinstance(lease, HomeSingleInstanceLease):
+        raise RoomParticipationAuthorizationError(
+            "Room continuation policy issuance requires a HOME host lease"
+        )
+    if not isinstance(store, LivingStore):
+        raise RoomParticipationAuthorizationError(
+            "Room continuation policy issuance requires LivingStore"
+        )
+    require_home_process()
+    if lease.released:
+        raise RoomParticipationStaleError(
+            "HOME host lease was released"
+        )
+    identity = lease.identity
+    db_path = str(Path(store.db_path).resolve())
+    if db_path != str(identity.db_path):
+        raise RoomParticipationAuthorizationError(
+            "policy issuer store does not belong to the HOME host lease"
+        )
+
     policy = TrustedRoomContinuationPolicy(
         policy_id=policy_id,
         issuance_id=f"room-policy-issuance-{secrets.token_hex(16)}",
@@ -149,6 +174,9 @@ def _issue_trusted_room_continuation_policy_for_test(
     state = _TrustedPolicyIssuanceState(
         policy=policy,
         fingerprint=_policy_fingerprint(policy),
+        home_process_instance_id=current_home_process_instance_id(),
+        host_process_instance_id=identity.process_instance_id,
+        db_path=db_path,
     )
     with _POLICY_ISSUANCE_REGISTRY_GUARD:
         _POLICY_ISSUANCE_REGISTRY[policy.issuance_id] = state
@@ -989,7 +1017,11 @@ class RoomParticipationAuthority:
         self,
         policy: TrustedRoomContinuationPolicy,
     ) -> None:
-        _require_trusted_policy(policy)
+        _require_trusted_policy(
+            policy,
+            lease=self._lease,
+            store=self._store,
+        )
         fingerprint = _policy_fingerprint(policy)
         for existing_issuance_id, existing_policy in self._policies.items():
             if (
@@ -1446,7 +1478,12 @@ def open_room_participation_authority(
         return authority
 
 
-def _require_trusted_policy(policy: TrustedRoomContinuationPolicy) -> None:
+def _require_trusted_policy(
+    policy: TrustedRoomContinuationPolicy,
+    *,
+    lease: HomeSingleInstanceLease,
+    store: LivingStore,
+) -> None:
     if (
         not isinstance(policy, TrustedRoomContinuationPolicy)
         or policy._marker is not _CONTINUATION_POLICY_MARKER
@@ -1454,15 +1491,27 @@ def _require_trusted_policy(policy: TrustedRoomContinuationPolicy) -> None:
         raise RoomParticipationAuthorizationError(
             "Room continuation policy is not trusted"
         )
+    require_home_process()
+    if lease.released:
+        raise RoomParticipationStaleError(
+            "HOME host lease was released"
+        )
+    identity = lease.identity
+    db_path = str(Path(store.db_path).resolve())
     with _POLICY_ISSUANCE_REGISTRY_GUARD:
         state = _POLICY_ISSUANCE_REGISTRY.get(policy.issuance_id)
         if (
             state is None
             or state.policy is not policy
             or state.fingerprint != _policy_fingerprint(policy)
+            or state.home_process_instance_id
+            != current_home_process_instance_id()
+            or state.host_process_instance_id
+            != identity.process_instance_id
+            or state.db_path != db_path
         ):
             raise RoomParticipationAuthorizationError(
-                "Room continuation policy payload was not issued by trusted authority"
+                "Room continuation policy payload was not issued for this host/store"
             )
 
 
