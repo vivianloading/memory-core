@@ -163,8 +163,15 @@ A future first-person authority layer must establish it from an inhabitant-
 authorized event. Host/admin preference must not silently author the inhabitant's
 continuation choice.
 
-The current implementation therefore uses trusted synthetic policy fixtures only
-to exercise the launch/grant machinery.
+The current implementation therefore uses a trusted synthetic issuer only in
+test support. Each issued policy receives an opaque issuance id and is registered
+against the exact originally issued object and payload fingerprint. A copied,
+renamed, widened, or otherwise mutated policy is not a new authority event and
+is rejected, even if it carries the dataclass's private marker. Operational
+suspension follows the trusted issuance rather than a caller-renamable label.
+
+This closes an important distinction: `policy_id` is a human/audit label;
+trusted issuance provenance is the authority root.
 
 ## Fresh grants, never transferred grants
 
@@ -222,6 +229,7 @@ This layer therefore creates an exact grant proposal and computes a binding
 digest over:
 
 - launch-evidence id
+- exact trusted policy issuance id
 - exact continuation-policy fingerprint, including its branch anchor
 - session
 - Episode
@@ -290,10 +298,19 @@ None of the following may mint launch evidence or Room participation authority:
 A fork is a new authority decision point.
 
 v0.1 does not automatically inherit a continuation policy across a predecessor
-that has multiple outgoing Living continuity edges.
+that has multiple outgoing Living continuity edges. Policy inheritance also
+validates the entire path from the establishment Episode to the current
+predecessor: every inherited edge must use an auto-continuation transfer mode,
+and every Episode on that path must remain unambiguously attached to the same
+Room.
 
-This avoids turning "life may fork" into "private authority silently duplicates
-to every descendant."
+Therefore history_reconstruction, no_known_transfer, an unattached or ambiguous
+intermediate Episode, an intermediate route to another Room, or a later
+correction that breaks the Room path all stop automatic inheritance. A supported
+handoff farther downstream cannot silently "heal" that authority break.
+
+This avoids turning either "life may fork" or "a later handoff succeeded" into
+"private authority silently reappears."
 
 ## Current boundary
 
