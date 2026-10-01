@@ -160,6 +160,10 @@ class CurrentStateRecord:
         _require_aware("event_time", self.event_time)
         _require_aware("recorded_at", self.recorded_at)
         _require_aware("valid_from", self.valid_from)
+        if self.event_time > self.recorded_at:
+            raise CurrentViewError(
+                "event_time cannot be later than recorded_at"
+            )
         if self.valid_until is not None:
             _require_aware("valid_until", self.valid_until)
 
@@ -289,6 +293,10 @@ class CurrentStateEndEvent:
             _require_text(field_name, getattr(self, field_name))
         _require_aware("ended_at", self.ended_at)
         _require_aware("recorded_at", self.recorded_at)
+        if self.ended_at > self.recorded_at:
+            raise CurrentViewError(
+                "ended_at cannot be later than recorded_at"
+            )
         if not isinstance(self.end_kind, EndKind):
             raise CurrentViewError("end_kind must use EndKind")
         if not isinstance(
