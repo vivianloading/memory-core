@@ -77,6 +77,34 @@ _EXPECTED_DOWNGRADE = {
     ValidityRule.OPEN_UNTIL_RESOLVED: DowngradeRule.NONE,
 }
 
+_ALLOWED_VALIDITY_BY_KIND = {
+    CurrentStateKind.PROJECT_STATUS: frozenset(
+        {ValidityRule.DURABLE_UNTIL_CHANGED}
+    ),
+    CurrentStateKind.PREFERENCE: frozenset(
+        {
+            ValidityRule.DURABLE_UNTIL_CHANGED,
+            ValidityRule.STALE_TO_LAST_KNOWN,
+        }
+    ),
+    CurrentStateKind.COMMITMENT: frozenset(
+        {ValidityRule.OPEN_UNTIL_RESOLVED}
+    ),
+    CurrentStateKind.SELF_INTERPRETATION: frozenset(
+        {ValidityRule.DURABLE_UNTIL_CHANGED}
+    ),
+    CurrentStateKind.SHARED_STATE: frozenset(
+        {
+            ValidityRule.DURABLE_UNTIL_CHANGED,
+            ValidityRule.EXPLICIT_INTERVAL,
+            ValidityRule.OPEN_UNTIL_RESOLVED,
+        }
+    ),
+    CurrentStateKind.UNFINISHED_WORK: frozenset(
+        {ValidityRule.OPEN_UNTIL_RESOLVED}
+    ),
+}
+
 
 @dataclass(frozen=True)
 class CurrentStateRecord:
@@ -180,6 +208,13 @@ class CurrentStateRecord:
         if not self.source_refs:
             raise CurrentViewError(
                 "current state requires at least one source reference"
+            )
+
+        if self.validity_rule not in _ALLOWED_VALIDITY_BY_KIND[
+            self.state_kind
+        ]:
+            raise CurrentViewError(
+                "validity_rule is not allowed for this state_kind"
             )
 
         expected_downgrade = _EXPECTED_DOWNGRADE[self.validity_rule]
@@ -525,6 +560,21 @@ def derive_current_view(
     _require_text("owner_id", owner_id)
     if not isinstance(namespace, CurrentNamespace):
         raise CurrentViewError("namespace must use CurrentNamespace")
+
+    known_global = tuple(
+        record
+        for record in records
+        if record.recorded_at <= as_of
+    )
+    known_end_global = tuple(
+        event
+        for event in end_events
+        if event.recorded_at <= as_of
+    )
+    _validate_global_ids(
+        records=known_global,
+        end_events=known_end_global,
+    )
 
     matching = tuple(
         record
