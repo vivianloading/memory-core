@@ -26,6 +26,7 @@ from home_memory_core.living_store import (
     ROOM_TABLE,
     LivingStore,
     LivingStoreIntegrityError,
+    assert_living_schema,
 )
 from home_memory_core.storage import MemoryStore
 from home_memory_core.store_domain import StoreDomainError
@@ -130,6 +131,34 @@ class LivingStoreTest(unittest.TestCase):
         )
         self.assertEqual(resolution.decision, "attached")
         self.assertEqual(resolution.room_id, room.room_id)
+
+    def test_persistence_refuses_certainty_without_typed_verifier(self) -> None:
+        first = self._episode("episode-certainty-a")
+        second = self._episode("episode-certainty-b")
+        self.store.add_episode(first)
+        self.store.add_episode(second)
+
+        for status in (
+            ContinuityStatus.PARTIAL,
+            ContinuityStatus.VERIFIED,
+        ):
+            support = (
+                ("synthetic-support",)
+                if status is ContinuityStatus.VERIFIED
+                else ()
+            )
+            edge = ContinuityEdge(
+                edge_id=f"edge-{status.value}",
+                previous_episode_id=first.episode_id,
+                next_episode_id=second.episode_id,
+                transfer_mode=TransferMode.NATIVE_CHECKPOINT_RESUME,
+                continuity_status=status,
+                support_refs=support,
+            )
+            with self.assertRaises(LivingStoreIntegrityError):
+                self.store.add_continuity_edge(edge)
+
+        self.assertEqual(self.store.list_continuity_edges(), ())
 
     def test_late_room_correction_preserves_original_attachment(self) -> None:
         first_room = RoomRecord(room_id="room-r")
@@ -310,6 +339,161 @@ class LivingStoreTest(unittest.TestCase):
                 with self.assertRaises(sqlite3.DatabaseError):
                     connection.execute(statement)
                 connection.rollback()
+        finally:
+            connection.close()
+
+    def test_raw_sql_cannot_create_implicit_merge_or_cycle(self) -> None:
+        for episode_id in ("raw-a", "raw-b", "raw-c"):
+            self.store.add_episode(self._episode(episode_id))
+
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            connection.execute(
+                f"""
+                INSERT INTO {CONTINUITY_EDGE_TABLE} (
+                    edge_id,
+                    previous_episode_id,
+                    next_episode_id,
+                    transfer_mode,
+                    continuity_status,
+                    support_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-edge-a-c",
+                    "raw-a",
+                    "raw-c",
+                    "text_context_handoff",
+                    "unknown",
+                    "[]",
+                ),
+            )
+            connection.commit()
+
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CONTINUITY_EDGE_TABLE} (
+                        edge_id,
+                        previous_episode_id,
+                        next_episode_id,
+                        transfer_mode,
+                        continuity_status,
+                        support_refs_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "raw-edge-b-c",
+                        "raw-b",
+                        "raw-c",
+                        "text_context_handoff",
+                        "unknown",
+                        "[]",
+                    ),
+                )
+            connection.rollback()
+
+            connection.execute(
+                f"""
+                INSERT INTO {CONTINUITY_EDGE_TABLE} (
+                    edge_id,
+                    previous_episode_id,
+                    next_episode_id,
+                    transfer_mode,
+                    continuity_status,
+                    support_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-edge-c-b",
+                    "raw-c",
+                    "raw-b",
+                    "text_context_handoff",
+                    "unknown",
+                    "[]",
+                ),
+            )
+            connection.commit()
+
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CONTINUITY_EDGE_TABLE} (
+                        edge_id,
+                        previous_episode_id,
+                        next_episode_id,
+                        transfer_mode,
+                        continuity_status,
+                        support_refs_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "raw-edge-b-a",
+                        "raw-b",
+                        "raw-a",
+                        "text_context_handoff",
+                        "unknown",
+                        "[]",
+                    ),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+    def test_raw_sql_attachment_correction_cannot_cross_episode(self) -> None:
+        self.store.add_room(RoomRecord(room_id="raw-room"))
+        self.store.add_episode(self._episode("raw-episode-a"))
+        self.store.add_episode(self._episode("raw-episode-b"))
+
+        first = RoomAttachmentEvent(
+            attachment_event_id="raw-route-a",
+            episode_id="raw-episode-a",
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id="raw-room",
+            basis="initial_route",
+        )
+        self.store.add_room_attachment(first)
+
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {ATTACHMENT_TABLE} (
+                        attachment_event_id,
+                        episode_id,
+                        route_kind,
+                        room_id,
+                        basis,
+                        supersedes_attachment_event_id,
+                        support_refs_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "raw-route-b",
+                        "raw-episode-b",
+                        "attached",
+                        "raw-room",
+                        "invalid_cross_episode_correction",
+                        first.attachment_event_id,
+                        "[]",
+                    ),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+    def test_schema_drift_with_extra_identity_column_fails_closed(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                f"ALTER TABLE {EPISODE_TABLE} ADD COLUMN same_self TEXT"
+            )
+            connection.commit()
+            with self.assertRaises(LivingStoreIntegrityError):
+                assert_living_schema(connection)
         finally:
             connection.close()
 
