@@ -367,6 +367,10 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             lease=self.lease,
             store=self.living,
         )
+        self.launcher = trusted_test_runtime_launch_issuer(
+            lease=self.lease,
+            store=self.living,
+        )
         self._seed_linear_pair(
             transfer_mode=TransferMode.HISTORY_RECONSTRUCTION
         )
