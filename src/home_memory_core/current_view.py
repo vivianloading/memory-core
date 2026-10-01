@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+from home_memory_core.interpretation import (
+    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+)
+
 
 class CurrentViewError(ValueError):
     """Current View input or topology violates the semantic contract."""
@@ -201,6 +205,13 @@ class CurrentStateRecord:
                 "perspective_instance_id",
                 self.perspective_instance_id,
             )
+            if (
+                self.perspective_instance_id
+                == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+            ):
+                raise CurrentViewError(
+                    "Room current state requires a concrete PerspectiveInstance"
+                )
         elif (
             self.episode_id is not None
             or self.perspective_instance_id is not None
@@ -319,6 +330,13 @@ class CurrentStateEndEvent:
                 "perspective_instance_id",
                 self.perspective_instance_id,
             )
+            if (
+                self.perspective_instance_id
+                == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+            ):
+                raise CurrentViewError(
+                    "Room end event requires a concrete PerspectiveInstance"
+                )
         elif (
             self.episode_id is not None
             or self.perspective_instance_id is not None
