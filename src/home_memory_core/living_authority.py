@@ -94,17 +94,7 @@ class TrustedRoomContinuationPolicy:
         _require_text("policy_id", self.policy_id)
         _require_text("room_id", self.room_id)
         _require_text("source_event_ref", self.source_event_ref)
-        if not self.allowed_scopes:
-            raise RoomParticipationAuthorizationError(
-                "Room continuation policy requires at least one scope"
-            )
-        if any(
-            not isinstance(scope, RoomParticipationScope)
-            for scope in self.allowed_scopes
-        ):
-            raise RoomParticipationAuthorizationError(
-                "policy scopes must use RoomParticipationScope"
-            )
+        _validate_scope_set(self.allowed_scopes)
 
 
 @dataclass(frozen=True)
@@ -1244,6 +1234,13 @@ def _validate_scope_set(scopes: frozenset[RoomParticipationScope]) -> None:
     if any(not isinstance(scope, RoomParticipationScope) for scope in scopes):
         raise RoomParticipationAuthorizationError(
             "Room grant scopes must use RoomParticipationScope"
+        )
+    if (
+        RoomParticipationScope.CHANGE_CURRENT_STANCE in scopes
+        and RoomParticipationScope.APPEND_FIRST_PERSON not in scopes
+    ):
+        raise RoomParticipationAuthorizationError(
+            "change_current_stance requires append_first_person authority"
         )
 
 
