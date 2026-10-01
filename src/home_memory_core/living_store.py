@@ -464,6 +464,7 @@ class LivingContinuationPathSnapshot:
     current_route: RoomAttachmentResolution
     edges: tuple[ContinuityEdge, ...]
     topology: ContinuityTopology
+    routes: tuple[RoomAttachmentResolution, ...]
     anchor_episode: EpisodeRecord | None = None
     anchor_route: RoomAttachmentResolution | None = None
 
@@ -539,39 +540,28 @@ class LivingStore:
             except KeyError as error:
                 raise KeyError(error.args[0]) from error
 
-            previous_events = self._read_room_attachment_events(
-                connection,
-                episode_id=previous_episode_id,
-            )
-            current_events = self._read_room_attachment_events(
-                connection,
-                episode_id=episode_id,
-            )
-            anchor_events = (
-                ()
-                if anchor_episode_id is None
-                else self._read_room_attachment_events(
-                    connection,
-                    episode_id=anchor_episode_id,
-                )
-            )
             edges = self._read_all_continuity_edges(connection)
             try:
-                previous_route = resolve_room_attachment(
-                    episode_id=previous_episode_id,
-                    events=previous_events,
+                routes = tuple(
+                    resolve_room_attachment(
+                        episode_id=item.episode_id,
+                        events=self._read_room_attachment_events(
+                            connection,
+                            episode_id=item.episode_id,
+                        ),
+                    )
+                    for item in episodes
                 )
-                current_route = resolve_room_attachment(
-                    episode_id=episode_id,
-                    events=current_events,
-                )
+                route_by_episode = {
+                    route.episode_id: route
+                    for route in routes
+                }
+                previous_route = route_by_episode[previous_episode_id]
+                current_route = route_by_episode[episode_id]
                 anchor_route = (
                     None
                     if anchor_episode_id is None
-                    else resolve_room_attachment(
-                        episode_id=anchor_episode_id,
-                        events=anchor_events,
-                    )
+                    else route_by_episode[anchor_episode_id]
                 )
                 topology = resolve_continuity_topology(
                     episodes=episodes,
@@ -587,6 +577,7 @@ class LivingStore:
                 current_route=current_route,
                 edges=edges,
                 topology=topology,
+                routes=routes,
                 anchor_episode=anchor,
                 anchor_route=anchor_route,
             )
