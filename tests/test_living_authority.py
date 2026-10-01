@@ -729,6 +729,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             EpisodeRecord(
                 episode_id="episode-c",
                 perspective_instance_id="perspective-c",
+                runtime_instance_id="runtime-c",
             )
         )
         self.living.add_continuity_edge(
