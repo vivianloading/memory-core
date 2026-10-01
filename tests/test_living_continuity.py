@@ -66,7 +66,7 @@ class LivingContinuityTest(unittest.TestCase):
             next_episode_id=second.episode_id,
             transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
             continuity_status=ContinuityStatus.UNKNOWN,
-            evidence_refs=("handoff-receipt-1",),
+            support_refs=("handoff-receipt-1",),
         )
         attachment = RoomAttachmentEvent(
             attachment_event_id="attachment-32",
@@ -74,7 +74,7 @@ class LivingContinuityTest(unittest.TestCase):
             route_kind=RoomRouteKind.ATTACHED,
             room_id=room.room_id,
             basis="ordinary_handoff",
-            evidence_refs=(edge.edge_id,),
+            support_refs=(edge.edge_id,),
         )
 
         resolution = resolve_room_attachment(
@@ -207,7 +207,7 @@ class LivingContinuityTest(unittest.TestCase):
             route_kind=RoomRouteKind.ATTACHED,
             room_id=room.room_id,
             basis="ordinary_handoff_with_carrier_change",
-            evidence_refs=(edge.edge_id,),
+            support_refs=(edge.edge_id,),
         )
 
         resolution = resolve_room_attachment(
@@ -234,7 +234,7 @@ class LivingContinuityTest(unittest.TestCase):
             room_id="room-r2",
             basis="late_fork_correction",
             supersedes_attachment_event_id=original.attachment_event_id,
-            evidence_refs=("fork-evidence-1",),
+            support_refs=("fork-evidence-1",),
         )
 
         resolution = resolve_room_attachment(
