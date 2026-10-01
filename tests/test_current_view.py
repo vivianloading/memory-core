@@ -10,6 +10,9 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 
+from home_memory_core.interpretation import (
+    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+)
 from home_memory_core.current_view import (
     CurrentNamespace,
     CurrentStanding,
@@ -862,6 +865,34 @@ class CurrentViewTests(unittest.TestCase):
                     SemanticChangeAuthority.ROOM_FIRST_PERSON
                 ),
                 source_refs=("source-bad",),
+            )
+
+    def test_room_state_rejects_unattributed_perspective_sentinel(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "unattributed-state",
+                perspective_instance_id=(
+                    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+                ),
+            )
+
+    def test_room_end_event_rejects_unattributed_perspective_sentinel(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="unattributed-end",
+                state_id="state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="must stay concretely attributed",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id=(
+                    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+                ),
+                source_refs=("source-unattributed-end",),
             )
 
     def test_shared_record_cannot_claim_room_first_person_provenance(self) -> None:
