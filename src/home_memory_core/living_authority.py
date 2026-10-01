@@ -28,6 +28,7 @@ _RUNTIME_LAUNCH_ISSUER_MARKER = object()
 _RUNTIME_LAUNCH_RECEIPT_MARKER = object()
 _LAUNCH_EVIDENCE_MARKER = object()
 _CONTINUATION_POLICY_MARKER = object()
+_CONTINUATION_POLICY_ISSUER_MARKER = object()
 _GRANT_PROPOSAL_MARKER = object()
 _GRANT_APPROVAL_MARKER = object()
 _PARTICIPATION_GRANT_MARKER = object()
@@ -36,6 +37,7 @@ _AUTHORITY_REGISTRY: dict[
     tuple[str, str, str],
     "RoomParticipationAuthority",
 ] = {}
+_POLICY_ISSUANCE_REGISTRY_GUARD = Lock()
 
 _AUTO_CONTINUATION_TRANSFER_MODES = frozenset(
     {
@@ -81,6 +83,7 @@ class TrustedRoomContinuationPolicy:
     """
 
     policy_id: str
+    issuance_id: str
     room_id: str
     established_episode_id: str
     established_attachment_event_id: str
@@ -94,6 +97,7 @@ class TrustedRoomContinuationPolicy:
                 "Room continuation policy must come from trusted policy authority"
             )
         _require_text("policy_id", self.policy_id)
+        _require_text("issuance_id", self.issuance_id)
         _require_text("room_id", self.room_id)
         _require_text("established_episode_id", self.established_episode_id)
         _require_text(
@@ -102,6 +106,53 @@ class TrustedRoomContinuationPolicy:
         )
         _require_text("source_event_ref", self.source_event_ref)
         _validate_scope_set(self.allowed_scopes)
+
+
+@dataclass
+class _TrustedPolicyIssuanceState:
+    policy: TrustedRoomContinuationPolicy
+    fingerprint: str
+
+
+_POLICY_ISSUANCE_REGISTRY: dict[
+    str,
+    _TrustedPolicyIssuanceState,
+] = {}
+
+
+def _issue_trusted_room_continuation_policy_for_test(
+    *,
+    policy_id: str,
+    room_id: str,
+    established_episode_id: str,
+    established_attachment_event_id: str,
+    allowed_scopes: frozenset[RoomParticipationScope],
+    source_event_ref: str,
+    _issuer_marker: object,
+) -> TrustedRoomContinuationPolicy:
+    """Synthetic-only issuer seam; no production policy issuer exists in v0.1."""
+
+    if _issuer_marker is not _CONTINUATION_POLICY_ISSUER_MARKER:
+        raise RoomParticipationAuthorizationError(
+            "Room continuation policy issuer is not trusted"
+        )
+    policy = TrustedRoomContinuationPolicy(
+        policy_id=policy_id,
+        issuance_id=f"room-policy-issuance-{secrets.token_hex(16)}",
+        room_id=room_id,
+        established_episode_id=established_episode_id,
+        established_attachment_event_id=established_attachment_event_id,
+        allowed_scopes=allowed_scopes,
+        source_event_ref=source_event_ref,
+        _marker=_CONTINUATION_POLICY_MARKER,
+    )
+    state = _TrustedPolicyIssuanceState(
+        policy=policy,
+        fingerprint=_policy_fingerprint(policy),
+    )
+    with _POLICY_ISSUANCE_REGISTRY_GUARD:
+        _POLICY_ISSUANCE_REGISTRY[policy.issuance_id] = state
+    return policy
 
 
 @dataclass(frozen=True)
@@ -201,6 +252,7 @@ class RoomParticipationGrantProposal:
     perspective_instance_id: str
     room_id: str
     policy_id: str
+    policy_issuance_id: str
     scopes: frozenset[RoomParticipationScope]
     binding_digest: str
     _marker: object = field(repr=False, compare=False)
@@ -221,6 +273,7 @@ class RoomParticipationGrantProposal:
             perspective_instance_id=self.perspective_instance_id,
             room_id=self.room_id,
             policy_id=self.policy_id,
+            policy_issuance_id=self.policy_issuance_id,
             scopes=self.scopes,
             binding_digest=self.binding_digest,
         )
@@ -231,6 +284,7 @@ class AutomaticContinuationApproval:
     approval_id: str
     proposal_id: str
     policy_id: str
+    policy_issuance_id: str
     binding_digest: str
     _marker: object = field(repr=False, compare=False)
 
@@ -239,7 +293,13 @@ class AutomaticContinuationApproval:
             raise RoomParticipationAuthorizationError(
                 "grant approval must come from trusted authority path"
             )
-        for field_name in ("approval_id", "proposal_id", "policy_id", "binding_digest"):
+        for field_name in (
+            "approval_id",
+            "proposal_id",
+            "policy_id",
+            "policy_issuance_id",
+            "binding_digest",
+        ):
             _require_text(field_name, getattr(self, field_name))
 
 
@@ -253,6 +313,7 @@ class RoomParticipationGrant:
     perspective_instance_id: str
     room_id: str
     policy_id: str
+    policy_issuance_id: str
     policy_fingerprint: str
     scopes: frozenset[RoomParticipationScope]
     launch_evidence_id: str
@@ -274,6 +335,7 @@ class RoomParticipationGrant:
             perspective_instance_id=self.perspective_instance_id,
             room_id=self.room_id,
             policy_id=self.policy_id,
+            policy_issuance_id=self.policy_issuance_id,
             scopes=self.scopes,
             binding_digest=self.binding_digest,
         )
@@ -487,7 +549,7 @@ class RoomParticipationAuthority:
         self._grants: dict[str, _GrantState] = {}
         self._policies: dict[str, TrustedRoomContinuationPolicy] = {}
         self._policy_fingerprints: dict[str, str] = {}
-        self._suspended_policy_ids: set[str] = set()
+        self._suspended_policy_issuance_ids: set[str] = set()
         self._assert_live_host()
 
     @_guarded
@@ -635,6 +697,7 @@ class RoomParticipationAuthority:
             perspective_instance_id=launch_evidence.perspective_instance_id,
             room_id=launch_evidence.room_id,
             policy_id=policy.policy_id,
+            policy_issuance_id=policy.issuance_id,
             scopes=requested_scopes,
         )
         proposal = RoomParticipationGrantProposal(
@@ -646,6 +709,7 @@ class RoomParticipationAuthority:
             perspective_instance_id=launch_evidence.perspective_instance_id,
             room_id=launch_evidence.room_id,
             policy_id=policy.policy_id,
+            policy_issuance_id=policy.issuance_id,
             scopes=requested_scopes,
             binding_digest=digest,
             _marker=_GRANT_PROPOSAL_MARKER,
@@ -676,7 +740,10 @@ class RoomParticipationAuthority:
                 "grant proposal was already approved"
             )
         self._assert_policy_active(policy)
-        if proposal.policy_id != policy.policy_id:
+        if (
+            proposal.policy_id != policy.policy_id
+            or proposal.policy_issuance_id != policy.issuance_id
+        ):
             raise RoomParticipationAuthorizationError(
                 "proposal and continuation policy do not match"
             )
@@ -706,6 +773,7 @@ class RoomParticipationAuthority:
             approval_id=f"grant-approval-{secrets.token_hex(16)}",
             proposal_id=proposal.proposal_id,
             policy_id=policy.policy_id,
+            policy_issuance_id=policy.issuance_id,
             binding_digest=proposal.binding_digest,
             _marker=_GRANT_APPROVAL_MARKER,
         )
@@ -729,7 +797,10 @@ class RoomParticipationAuthority:
             raise RoomParticipationAuthorizationError(
                 "approval belongs to another grant proposal"
             )
-        if approval.policy_id != proposal.policy_id:
+        if (
+            approval.policy_id != proposal.policy_id
+            or approval.policy_issuance_id != proposal.policy_issuance_id
+        ):
             raise RoomParticipationAuthorizationError(
                 "approval policy does not match proposal"
             )
@@ -738,8 +809,10 @@ class RoomParticipationAuthority:
                 "approved binding differs from grant proposal"
             )
 
-        self._assert_registered_policy_integrity(proposal.policy_id)
-        policy = self._policies[proposal.policy_id]
+        self._assert_registered_policy_integrity(
+            proposal.policy_issuance_id
+        )
+        policy = self._policies[proposal.policy_issuance_id]
 
         evidence_state = self._sessions.get(proposal.session_id)
         if (
@@ -763,6 +836,7 @@ class RoomParticipationAuthority:
             perspective_instance_id=proposal.perspective_instance_id,
             room_id=proposal.room_id,
             policy_id=proposal.policy_id,
+            policy_issuance_id=proposal.policy_issuance_id,
             policy_fingerprint=proposal.policy_fingerprint,
             scopes=proposal.scopes,
             launch_evidence_id=proposal.launch_evidence_id,
@@ -848,16 +922,19 @@ class RoomParticipationAuthority:
             perspective_instance_id=grant.perspective_instance_id,
             room_id=grant.room_id,
             policy_id=grant.policy_id,
+            policy_issuance_id=grant.policy_issuance_id,
             scopes=grant.scopes,
         ):
             raise RoomParticipationAuthorizationError(
                 "Room participation grant binding was altered"
             )
 
-        self._assert_registered_policy_integrity(grant.policy_id)
-        policy = self._policies[grant.policy_id]
+        self._assert_registered_policy_integrity(
+            grant.policy_issuance_id
+        )
+        policy = self._policies[grant.policy_issuance_id]
         if (
-            self._policy_fingerprints.get(grant.policy_id)
+            self._policy_fingerprints.get(grant.policy_issuance_id)
             != grant.policy_fingerprint
         ):
             raise RoomParticipationStaleError(
@@ -884,11 +961,17 @@ class RoomParticipationAuthority:
 
         self._assert_live_host()
         _require_text("policy_id", policy_id)
-        if policy_id not in self._policies:
+        matches = [
+            issuance_id
+            for issuance_id, policy in self._policies.items()
+            if policy.policy_id == policy_id
+        ]
+        if len(matches) != 1:
             raise KeyError(policy_id)
-        self._suspended_policy_ids.add(policy_id)
+        issuance_id = matches[0]
+        self._suspended_policy_issuance_ids.add(issuance_id)
         for state in self._grants.values():
-            if state.grant.policy_id == policy_id:
+            if state.grant.policy_issuance_id == issuance_id:
                 state.active = False
 
     @_guarded
@@ -908,20 +991,25 @@ class RoomParticipationAuthority:
     ) -> None:
         _require_trusted_policy(policy)
         fingerprint = _policy_fingerprint(policy)
-        existing_fingerprint = self._policy_fingerprints.get(policy.policy_id)
+        existing_fingerprint = self._policy_fingerprints.get(
+            policy.issuance_id
+        )
         if (
             existing_fingerprint is not None
             and existing_fingerprint != fingerprint
         ):
             raise RoomParticipationAuthorizationError(
-                "policy id is already bound to a different Room/scope payload"
+                "policy issuance is bound to a different payload"
             )
-        if policy.policy_id in self._suspended_policy_ids:
+        if (
+            policy.issuance_id
+            in self._suspended_policy_issuance_ids
+        ):
             raise RoomParticipationStaleError(
                 "continuation policy is operationally suspended"
             )
-        self._policies[policy.policy_id] = policy
-        self._policy_fingerprints[policy.policy_id] = fingerprint
+        self._policies[policy.issuance_id] = policy
+        self._policy_fingerprints[policy.issuance_id] = fingerprint
 
     def _assert_policy_active(
         self,
@@ -929,7 +1017,7 @@ class RoomParticipationAuthority:
     ) -> None:
         self._register_policy(policy)
         if (
-            self._policy_fingerprints.get(policy.policy_id)
+            self._policy_fingerprints.get(policy.issuance_id)
             != _policy_fingerprint(policy)
         ):
             raise RoomParticipationAuthorizationError(
@@ -938,10 +1026,10 @@ class RoomParticipationAuthority:
 
     def _assert_registered_policy_integrity(
         self,
-        policy_id: str,
+        policy_issuance_id: str,
     ) -> None:
-        policy = self._policies.get(policy_id)
-        expected = self._policy_fingerprints.get(policy_id)
+        policy = self._policies.get(policy_issuance_id)
+        expected = self._policy_fingerprints.get(policy_issuance_id)
         if policy is None or expected is None:
             raise RoomParticipationStaleError(
                 "continuation policy is unavailable"
@@ -950,7 +1038,10 @@ class RoomParticipationAuthority:
             raise RoomParticipationAuthorizationError(
                 "registered continuation policy was altered"
             )
-        if policy_id in self._suspended_policy_ids:
+        if (
+            policy_issuance_id
+            in self._suspended_policy_issuance_ids
+        ):
             raise RoomParticipationStaleError(
                 "continuation policy is operationally suspended"
             )
@@ -1324,6 +1415,16 @@ def _require_trusted_policy(policy: TrustedRoomContinuationPolicy) -> None:
         raise RoomParticipationAuthorizationError(
             "Room continuation policy is not trusted"
         )
+    with _POLICY_ISSUANCE_REGISTRY_GUARD:
+        state = _POLICY_ISSUANCE_REGISTRY.get(policy.issuance_id)
+        if (
+            state is None
+            or state.policy is not policy
+            or state.fingerprint != _policy_fingerprint(policy)
+        ):
+            raise RoomParticipationAuthorizationError(
+                "Room continuation policy payload was not issued by trusted authority"
+            )
 
 
 def _validate_scope_set(scopes: frozenset[RoomParticipationScope]) -> None:
@@ -1353,6 +1454,7 @@ def _validate_grant_binding(
     perspective_instance_id: str,
     room_id: str,
     policy_id: str,
+    policy_issuance_id: str,
     scopes: frozenset[RoomParticipationScope],
     binding_digest: str,
 ) -> None:
@@ -1364,6 +1466,7 @@ def _validate_grant_binding(
         "perspective_instance_id": perspective_instance_id,
         "room_id": room_id,
         "policy_id": policy_id,
+        "policy_issuance_id": policy_issuance_id,
         "binding_digest": binding_digest,
     }.items():
         _require_text(field_name, value)
@@ -1376,6 +1479,7 @@ def _validate_grant_binding(
         perspective_instance_id=perspective_instance_id,
         room_id=room_id,
         policy_id=policy_id,
+        policy_issuance_id=policy_issuance_id,
         scopes=scopes,
     )
     if binding_digest != expected:
@@ -1389,6 +1493,7 @@ def _policy_fingerprint(policy: TrustedRoomContinuationPolicy) -> str:
         "room-continuation-policy",
         {
             "policy_id": policy.policy_id,
+            "issuance_id": policy.issuance_id,
             "room_id": policy.room_id,
             "established_episode_id": policy.established_episode_id,
             "established_attachment_event_id": (
@@ -1458,6 +1563,7 @@ def _proposal_fingerprint(
             "perspective_instance_id": proposal.perspective_instance_id,
             "room_id": proposal.room_id,
             "policy_id": proposal.policy_id,
+            "policy_issuance_id": proposal.policy_issuance_id,
             "scopes": sorted(scope.value for scope in proposal.scopes),
             "binding_digest": proposal.binding_digest,
         },
@@ -1473,6 +1579,7 @@ def _approval_fingerprint(
             "approval_id": approval.approval_id,
             "proposal_id": approval.proposal_id,
             "policy_id": approval.policy_id,
+            "policy_issuance_id": approval.policy_issuance_id,
             "binding_digest": approval.binding_digest,
         },
     )
@@ -1488,6 +1595,7 @@ def _grant_fingerprint(grant: RoomParticipationGrant) -> str:
             "perspective_instance_id": grant.perspective_instance_id,
             "room_id": grant.room_id,
             "policy_id": grant.policy_id,
+            "policy_issuance_id": grant.policy_issuance_id,
             "policy_fingerprint": grant.policy_fingerprint,
             "scopes": sorted(scope.value for scope in grant.scopes),
             "launch_evidence_id": grant.launch_evidence_id,
@@ -1516,6 +1624,7 @@ def _grant_binding_digest(
     perspective_instance_id: str,
     room_id: str,
     policy_id: str,
+    policy_issuance_id: str,
     scopes: frozenset[RoomParticipationScope],
 ) -> str:
     payload = {
@@ -1526,6 +1635,7 @@ def _grant_binding_digest(
         "perspective_instance_id": perspective_instance_id,
         "room_id": room_id,
         "policy_id": policy_id,
+        "policy_issuance_id": policy_issuance_id,
         "scopes": sorted(scope.value for scope in scopes),
     }
     raw = json.dumps(
