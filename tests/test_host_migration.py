@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 import warnings
@@ -249,6 +250,27 @@ class HostMigrationTests(unittest.TestCase):
             moved_again = MemoryStore(root / "target-two" / "data" / "home.db")
             self.assertEqual(moved_again.get_source(active.source_id), active)
             self.assertFalse(moved_again.is_source_usable(suppressed.source_id))
+
+    def test_backup_refuses_partial_living_layer_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, _, _ = self._create_synthetic_store(root)
+            db_path = root / "data" / "home.db"
+
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    "CREATE TABLE living_rooms (room_id TEXT PRIMARY KEY)"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(HostMigrationError):
+                create_closed_synthetic_backup(
+                    config_path=config,
+                    bundle_path=root / "partial-living.homebackup.zip",
+                )
 
     def test_backup_refuses_real_domain_store_even_when_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
