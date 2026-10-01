@@ -242,7 +242,9 @@ must never be treated as an authentication credential by itself.
 
 ## Revalidation
 
-Possession of a grant object is not enough.
+Possession of a grant object is not enough. Grant, proposal, approval, launch
+evidence, and policy objects are host-private control state; they are not model
+memory or prompt payloads.
 
 Every authorization check revalidates:
 
@@ -258,9 +260,13 @@ Every authorization check revalidates:
 
 The current milestone has no Room content/write consumer. Therefore
 `require_grant` is a capability validation boundary, not a promise that a
-separate later database mutation is atomic with that check. When Room reads or
-first-person writes are connected, final authorization + effect must occur under
-one ordering/transaction boundary and receive a new independent review.
+separate later database mutation is atomic with that check. A future consumer
+must derive session/Episode/Perspective/Room from trusted runtime context; it
+must not satisfy the check by merely copying those values out of the grant.
+
+When Room reads or first-person writes are connected, final authorization +
+effect must occur under one ordering/transaction boundary and receive a new
+independent review.
 
 Process-local policy, launch, proposal, approval, and grant objects are also
 stored with independent integrity fingerprints. Mutating a frozen object through
