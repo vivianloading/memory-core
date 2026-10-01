@@ -276,6 +276,8 @@ def trusted_test_synchronous_handoff_sink(
 
 def trusted_test_room_continuation_policy(
     *,
+    lease,
+    store,
     policy_id: str,
     room_id: str,
     allowed_scopes,
@@ -284,6 +286,8 @@ def trusted_test_room_continuation_policy(
     source_event_ref: str = "synthetic-inhabitant-policy-event",
 ) -> living_authority.TrustedRoomContinuationPolicy:
     return living_authority._issue_trusted_room_continuation_policy_for_test(
+        lease=lease,
+        store=store,
         policy_id=policy_id,
         room_id=room_id,
         established_episode_id=established_episode_id,
