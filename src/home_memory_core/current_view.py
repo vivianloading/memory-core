@@ -832,12 +832,12 @@ def _validate_source_refs(
         raise CurrentViewError(
             f"{field_name} must be a non-empty tuple"
         )
+    for source_ref in source_refs:
+        _require_text("source_ref", source_ref)
     if len(set(source_refs)) != len(source_refs):
         raise CurrentViewError(
             f"{field_name} cannot contain duplicates"
         )
-    for source_ref in source_refs:
-        _require_text("source_ref", source_ref)
 
 
 def _require_aware(field_name: str, value: datetime) -> None:
