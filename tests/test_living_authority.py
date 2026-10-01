@@ -624,6 +624,26 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 approval=approval,
             )
 
+    def test_grant_proposal_cannot_receive_multiple_approvals(self) -> None:
+        evidence = self._launch()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=self.policy,
+            requested_scopes=frozenset(
+                {RoomParticipationScope.READ_HISTORY}
+            ),
+        )
+        self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=self.policy,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.approve_automatic_continuation(
+                proposal=proposal,
+                policy=self.policy,
+            )
+
     def test_automatic_approval_is_one_shot(self) -> None:
         evidence = self._launch()
         proposal = self.authority.prepare_grant(
