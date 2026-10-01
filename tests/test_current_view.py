@@ -1002,6 +1002,29 @@ class CurrentViewTests(unittest.TestCase):
 
         self.assertEqual(prior.standing, CurrentStanding.CURRENT)
 
+    def test_source_refs_must_be_immutable_and_unique(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("state-list-refs"),
+                source_refs=["source-a"],  # type: ignore[arg-type]
+            )
+
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("state-duplicate-refs"),
+                source_refs=("source-a", "source-a"),
+            )
+
+    def test_stale_after_must_be_positive_timedelta(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "bad-stale-type",
+                state_kind=CurrentStateKind.PREFERENCE,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=7,  # type: ignore[arg-type]
+            )
+
     def test_validity_and_downgrade_contract_is_explicit(self) -> None:
         with self.assertRaises(CurrentViewError):
             self._room_record(
