@@ -649,11 +649,7 @@ class RoomParticipationAuthority:
                 "approved binding differs from grant proposal"
             )
 
-        policy = self._policies.get(proposal.policy_id)
-        if policy is None or proposal.policy_id in self._suspended_policy_ids:
-            raise RoomParticipationStaleError(
-                "continuation policy is no longer operationally active"
-            )
+        self._assert_registered_policy_integrity(proposal.policy_id)
 
         evidence_state = self._sessions.get(proposal.session_id)
         if (
@@ -762,14 +758,7 @@ class RoomParticipationAuthority:
                 "Room participation grant binding was altered"
             )
 
-        if grant.policy_id in self._suspended_policy_ids:
-            raise RoomParticipationStaleError(
-                "continuation policy is operationally suspended"
-            )
-        if grant.policy_id not in self._policies:
-            raise RoomParticipationStaleError(
-                "continuation policy is unavailable"
-            )
+        self._assert_registered_policy_integrity(grant.policy_id)
 
         session = self._sessions.get(grant.session_id)
         if (
@@ -838,6 +827,25 @@ class RoomParticipationAuthority:
         ):
             raise RoomParticipationAuthorizationError(
                 "continuation policy payload changed"
+            )
+
+    def _assert_registered_policy_integrity(
+        self,
+        policy_id: str,
+    ) -> None:
+        policy = self._policies.get(policy_id)
+        expected = self._policy_fingerprints.get(policy_id)
+        if policy is None or expected is None:
+            raise RoomParticipationStaleError(
+                "continuation policy is unavailable"
+            )
+        if _policy_fingerprint(policy) != expected:
+            raise RoomParticipationAuthorizationError(
+                "registered continuation policy was altered"
+            )
+        if policy_id in self._suspended_policy_ids:
+            raise RoomParticipationStaleError(
+                "continuation policy is operationally suspended"
             )
 
     def _assert_live_host(self) -> None:
