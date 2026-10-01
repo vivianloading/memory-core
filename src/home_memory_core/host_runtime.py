@@ -62,6 +62,7 @@ class HomeSingleInstanceLease:
             raise HostRuntimeLeaseError(
                 "HOME host lease must be acquired through the supported runtime boundary"
             )
+        self._trust_marker = _HOME_SINGLE_INSTANCE_LEASE_MARKER
         self._identity = identity
         self._handle = handle
         self._released = False
@@ -94,6 +95,13 @@ class HomeSingleInstanceLease:
         self.release()
 
     def _assert_owner_process(self) -> None:
+        if (
+            getattr(self, "_trust_marker", None)
+            is not _HOME_SINGLE_INSTANCE_LEASE_MARKER
+        ):
+            raise HostRuntimeLeaseError(
+                "HOME host lease was not acquired through the supported runtime boundary"
+            )
         try:
             require_home_process()
         except HomeProcessIsolationError as exc:
