@@ -654,6 +654,62 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 required_scope=RoomParticipationScope.READ_PRIVATE,
             )
 
+    def test_current_stance_scope_cannot_exist_without_first_person_append(self) -> None:
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            trusted_test_room_continuation_policy(
+                policy_id="policy-invalid-stance-only",
+                room_id="room-r",
+                allowed_scopes={
+                    RoomParticipationScope.CHANGE_CURRENT_STANCE,
+                },
+            )
+
+    def test_current_stance_grant_requires_and_preserves_first_person_scope(self) -> None:
+        policy = trusted_test_room_continuation_policy(
+            policy_id="policy-room-r-stance",
+            room_id="room-r",
+            allowed_scopes={
+                RoomParticipationScope.APPEND_FIRST_PERSON,
+                RoomParticipationScope.CHANGE_CURRENT_STANCE,
+            },
+        )
+        evidence = self._launch()
+        proposal = self.authority.prepare_grant(
+            launch_evidence=evidence,
+            policy=policy,
+            requested_scopes=frozenset(
+                {
+                    RoomParticipationScope.APPEND_FIRST_PERSON,
+                    RoomParticipationScope.CHANGE_CURRENT_STANCE,
+                }
+            ),
+        )
+        approval = self.authority.approve_automatic_continuation(
+            proposal=proposal,
+            policy=policy,
+        )
+        grant = self.authority.issue_grant(
+            proposal=proposal,
+            approval=approval,
+        )
+
+        self.authority.require_grant(
+            grant=grant,
+            session_id=evidence.session_id,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            room_id="room-r",
+            required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
+        )
+        self.authority.require_grant(
+            grant=grant,
+            session_id=evidence.session_id,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            room_id="room-r",
+            required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+        )
+
     def test_append_first_person_does_not_imply_change_current_stance(self) -> None:
         evidence, _, _, grant = self._grant(
             scopes=frozenset(
