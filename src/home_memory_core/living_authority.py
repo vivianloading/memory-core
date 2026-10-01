@@ -549,11 +549,14 @@ class RoomParticipationAuthority:
             not isinstance(grant, RoomParticipationGrant)
             or grant._marker is not _PARTICIPATION_GRANT_MARKER
             or state is None
-            or not state.active
             or state.grant is not grant
         ):
             raise RoomParticipationAuthorizationError(
                 "Room participation grant was not issued by this authority"
+            )
+        if not state.active:
+            raise RoomParticipationStaleError(
+                "Room participation grant is no longer active"
             )
         if not isinstance(required_scope, RoomParticipationScope):
             raise RoomParticipationAuthorizationError(
