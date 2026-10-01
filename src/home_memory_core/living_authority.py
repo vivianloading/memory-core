@@ -82,6 +82,8 @@ class TrustedRoomContinuationPolicy:
 
     policy_id: str
     room_id: str
+    established_episode_id: str
+    established_attachment_event_id: str
     allowed_scopes: frozenset[RoomParticipationScope]
     source_event_ref: str
     _marker: object = field(repr=False, compare=False)
@@ -93,6 +95,11 @@ class TrustedRoomContinuationPolicy:
             )
         _require_text("policy_id", self.policy_id)
         _require_text("room_id", self.room_id)
+        _require_text("established_episode_id", self.established_episode_id)
+        _require_text(
+            "established_attachment_event_id",
+            self.established_attachment_event_id,
+        )
         _require_text("source_event_ref", self.source_event_ref)
         _validate_scope_set(self.allowed_scopes)
 
@@ -617,6 +624,7 @@ class RoomParticipationAuthority:
             raise RoomParticipationAuthorizationError(
                 "requested Room scope exceeds continuation policy"
             )
+        self._revalidate_evidence(launch_evidence, policy=policy)
 
         policy_fingerprint = _policy_fingerprint(policy)
         digest = _grant_binding_digest(
@@ -684,6 +692,15 @@ class RoomParticipationAuthority:
             raise RoomParticipationAuthorizationError(
                 "proposal scope exceeds continuation policy"
             )
+        proposal_session = self._sessions.get(proposal.session_id)
+        if proposal_session is None or not proposal_session.active:
+            raise RoomParticipationStaleError(
+                "proposal session is no longer active"
+            )
+        self._revalidate_evidence(
+            proposal_session.evidence,
+            policy=policy,
+        )
 
         approval = AutomaticContinuationApproval(
             approval_id=f"grant-approval-{secrets.token_hex(16)}",
@@ -722,6 +739,7 @@ class RoomParticipationAuthority:
             )
 
         self._assert_registered_policy_integrity(proposal.policy_id)
+        policy = self._policies[proposal.policy_id]
 
         evidence_state = self._sessions.get(proposal.session_id)
         if (
@@ -733,7 +751,10 @@ class RoomParticipationAuthority:
             raise RoomParticipationStaleError(
                 "grant proposal no longer has an active launch session"
             )
-        self._revalidate_evidence(evidence_state.evidence)
+        self._revalidate_evidence(
+            evidence_state.evidence,
+            policy=policy,
+        )
 
         grant = RoomParticipationGrant(
             grant_id=f"room-grant-{secrets.token_hex(16)}",
@@ -834,6 +855,7 @@ class RoomParticipationAuthority:
             )
 
         self._assert_registered_policy_integrity(grant.policy_id)
+        policy = self._policies[grant.policy_id]
         if (
             self._policy_fingerprints.get(grant.policy_id)
             != grant.policy_fingerprint
@@ -851,7 +873,10 @@ class RoomParticipationAuthority:
             raise RoomParticipationStaleError(
                 "Room participation session is no longer active"
             )
-        self._revalidate_evidence(session.evidence)
+        self._revalidate_evidence(
+            session.evidence,
+            policy=policy,
+        )
 
     @_guarded
     def suspend_policy(self, *, policy_id: str) -> None:
@@ -1074,7 +1099,12 @@ class RoomParticipationAuthority:
                 "grant approval was not issued by this authority"
             )
 
-    def _revalidate_evidence(self, evidence: TrustedLaunchEvidence) -> None:
+    def _revalidate_evidence(
+        self,
+        evidence: TrustedLaunchEvidence,
+        *,
+        policy: TrustedRoomContinuationPolicy | None = None,
+    ) -> None:
         session_state = self._sessions.get(evidence.session_id)
         if (
             session_state is None
@@ -1121,6 +1151,11 @@ class RoomParticipationAuthority:
         snapshot = self._store.read_continuation_path_snapshot(
             previous_episode_id=evidence.previous_episode_id,
             episode_id=evidence.episode_id,
+            anchor_episode_id=(
+                None
+                if policy is None
+                else policy.established_episode_id
+            ),
         )
         episode = snapshot.episode
         if episode.perspective_instance_id != evidence.perspective_instance_id:
@@ -1168,6 +1203,64 @@ class RoomParticipationAuthority:
         if evidence.previous_episode_id in topology.fork_episode_ids:
             raise RoomParticipationStaleError(
                 "continuation path became a fork"
+            )
+        if policy is not None:
+            self._assert_policy_lineage(
+                policy=policy,
+                evidence=evidence,
+                snapshot=snapshot,
+            )
+
+    def _assert_policy_lineage(
+        self,
+        *,
+        policy: TrustedRoomContinuationPolicy,
+        evidence: TrustedLaunchEvidence,
+        snapshot,
+    ) -> None:
+        if policy.room_id != evidence.room_id:
+            raise RoomParticipationAuthorizationError(
+                "continuation policy belongs to another Room"
+            )
+        anchor = snapshot.anchor_episode
+        anchor_route = snapshot.anchor_route
+        if (
+            anchor is None
+            or anchor.episode_id != policy.established_episode_id
+            or anchor_route is None
+            or anchor_route.decision != "attached"
+            or anchor_route.room_id != policy.room_id
+            or anchor_route.active_attachment_event_id
+            != policy.established_attachment_event_id
+        ):
+            raise RoomParticipationStaleError(
+                "continuation policy establishment route is no longer exact"
+            )
+
+        parent_by_child = {
+            edge.next_episode_id: edge.previous_episode_id
+            for edge in snapshot.edges
+        }
+        current = evidence.previous_episode_id
+        branch_path: list[str] = []
+        while True:
+            branch_path.append(current)
+            if current == policy.established_episode_id:
+                break
+            parent = parent_by_child.get(current)
+            if parent is None:
+                raise RoomParticipationAuthorizationError(
+                    "continuation policy was not established on this branch"
+                )
+            current = parent
+
+        crossed_forks = set(branch_path).intersection(
+            snapshot.topology.fork_episode_ids
+        )
+        if crossed_forks:
+            raise RoomParticipationAuthorizationError(
+                "continuation policy cannot auto-cross a fork; "
+                "the branch must establish a new policy"
             )
 
     def _revoke_episode_session(self, episode_id: str) -> None:
@@ -1297,6 +1390,10 @@ def _policy_fingerprint(policy: TrustedRoomContinuationPolicy) -> str:
         {
             "policy_id": policy.policy_id,
             "room_id": policy.room_id,
+            "established_episode_id": policy.established_episode_id,
+            "established_attachment_event_id": (
+                policy.established_attachment_event_id
+            ),
             "allowed_scopes": sorted(
                 scope.value for scope in policy.allowed_scopes
             ),
