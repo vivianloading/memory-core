@@ -583,6 +583,40 @@ class CurrentViewTests(unittest.TestCase):
         self.assertEqual(before.standing, CurrentStanding.UNKNOWN)
         self.assertEqual(after.standing, CurrentStanding.CURRENT)
 
+    def test_derive_view_does_not_leak_future_recorded_key(self) -> None:
+        visible = self._room_record(
+            "visible",
+            key="visible.key",
+        )
+        future_recorded = self._room_record(
+            "future-recorded",
+            key="secret.future.key",
+            recorded_offset=timedelta(days=5),
+            valid_from_offset=timedelta(days=5),
+        )
+
+        before = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(visible, future_recorded),
+            as_of=self.t0,
+        )
+        after = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(visible, future_recorded),
+            as_of=self.t0 + timedelta(days=5),
+        )
+
+        self.assertEqual(
+            tuple(item.key for item in before.items),
+            ("visible.key",),
+        )
+        self.assertEqual(
+            tuple(item.key for item in after.items),
+            ("secret.future.key", "visible.key"),
+        )
+
     def test_derive_view_returns_independent_keys_without_ranking(self) -> None:
         project = self._room_record(
             "project",
@@ -659,6 +693,20 @@ class CurrentViewTests(unittest.TestCase):
                 episode_id="episode-a",
                 perspective_instance_id="perspective-a",
                 source_refs=("source-bad",),
+            )
+
+    def test_shared_namespace_cannot_hold_self_interpretation_kind(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._shared_record("bad-shared-self"),
+                state_kind=CurrentStateKind.SELF_INTERPRETATION,
+            )
+
+    def test_room_namespace_cannot_hold_shared_state_kind(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("bad-room-shared-kind"),
+                state_kind=CurrentStateKind.SHARED_STATE,
             )
 
     def test_semantic_change_authority_is_not_cross_namespace(self) -> None:
