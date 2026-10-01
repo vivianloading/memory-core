@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import sqlite3
@@ -453,6 +454,18 @@ def _living_schema_script() -> str:
                 """
 
 
+@dataclass(frozen=True)
+class LivingContinuationPathSnapshot:
+    """One transaction-consistent view used by operational launch authority."""
+
+    previous_episode: EpisodeRecord
+    episode: EpisodeRecord
+    previous_route: RoomAttachmentResolution
+    current_route: RoomAttachmentResolution
+    edges: tuple[ContinuityEdge, ...]
+    topology: ContinuityTopology
+
+
 class LivingStore:
     """Synthetic-only persistence for the first HOME Living Layer slice.
 
@@ -494,6 +507,63 @@ class LivingStore:
             if connection.in_transaction:
                 connection.rollback()
             raise
+        finally:
+            connection.close()
+
+    def read_continuation_path_snapshot(
+        self,
+        *,
+        previous_episode_id: str,
+        episode_id: str,
+    ) -> LivingContinuationPathSnapshot:
+        """Read both Episodes, routing, edges and topology in one snapshot."""
+
+        connection = self._read_connection()
+        try:
+            episodes = self._read_all_episodes(connection)
+            episode_by_id = {
+                item.episode_id: item
+                for item in episodes
+            }
+            try:
+                previous = episode_by_id[previous_episode_id]
+                current = episode_by_id[episode_id]
+            except KeyError as error:
+                raise KeyError(error.args[0]) from error
+
+            previous_events = self._read_room_attachment_events(
+                connection,
+                episode_id=previous_episode_id,
+            )
+            current_events = self._read_room_attachment_events(
+                connection,
+                episode_id=episode_id,
+            )
+            edges = self._read_all_continuity_edges(connection)
+            try:
+                previous_route = resolve_room_attachment(
+                    episode_id=previous_episode_id,
+                    events=previous_events,
+                )
+                current_route = resolve_room_attachment(
+                    episode_id=episode_id,
+                    events=current_events,
+                )
+                topology = resolve_continuity_topology(
+                    episodes=episodes,
+                    edges=edges,
+                )
+            except LivingContinuityError as error:
+                raise LivingStoreIntegrityError(str(error)) from error
+
+            return LivingContinuationPathSnapshot(
+                previous_episode=previous,
+                episode=current,
+                previous_route=previous_route,
+                current_route=current_route,
+                edges=edges,
+                topology=topology,
+            )
         finally:
             connection.close()
 
