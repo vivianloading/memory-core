@@ -18,6 +18,16 @@ from home_memory_core.host_migration import (  # noqa: E402
     verify_restored_closed_synthetic_store,
 )
 from home_memory_core.host_verifier import HostVerificationError, verify_closed_mini_host  # noqa: E402
+from home_memory_core.living_continuity import (  # noqa: E402
+    ContinuityEdge,
+    ContinuityStatus,
+    EpisodeRecord,
+    RoomAttachmentEvent,
+    RoomRecord,
+    RoomRouteKind,
+    TransferMode,
+)
+from home_memory_core.living_store import LivingStore  # noqa: E402
 from home_memory_core.source import create_source_record  # noqa: E402
 from home_memory_core.storage import MemoryStore  # noqa: E402
 from home_memory_core.suppression import (  # noqa: E402
@@ -103,6 +113,42 @@ def _seed_rehearsal_store(config_path: Path) -> tuple[object, object]:
             reason="prove that migration does not resurrect a suppressed source",
         )
     )
+
+    living = LivingStore(db_path)
+    living.initialize()
+    room = RoomRecord(room_id="mini-rehearsal-room")
+    first = EpisodeRecord(
+        episode_id="mini-rehearsal-episode-a",
+        perspective_instance_id="mini-rehearsal-perspective-a",
+        runtime_instance_id="mini-rehearsal-runtime-a",
+    )
+    second = EpisodeRecord(
+        episode_id="mini-rehearsal-episode-b",
+        perspective_instance_id="mini-rehearsal-perspective-b",
+        runtime_instance_id="mini-rehearsal-runtime-b",
+    )
+    edge = ContinuityEdge(
+        edge_id="mini-rehearsal-edge",
+        previous_episode_id=first.episode_id,
+        next_episode_id=second.episode_id,
+        transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        continuity_status=ContinuityStatus.UNKNOWN,
+        support_refs=("mini-rehearsal-handoff-receipt",),
+    )
+    route = RoomAttachmentEvent(
+        attachment_event_id="mini-rehearsal-route",
+        episode_id=second.episode_id,
+        route_kind=RoomRouteKind.ATTACHED,
+        room_id=room.room_id,
+        basis="ordinary_handoff",
+        support_refs=(edge.edge_id,),
+    )
+    living.add_room(room)
+    living.add_episode(first)
+    living.add_episode(second)
+    living.add_continuity_edge(edge)
+    living.add_room_attachment(route)
+
     return active, suppressed
 
 
@@ -121,6 +167,24 @@ def _assert_rehearsal_state(config_path: Path, active: object, suppressed: objec
         raise HostMigrationError("rehearsal suppressed source became normally readable")
     if store.get_source_for_audit(suppressed.source_id) != suppressed:
         raise HostMigrationError("rehearsal suppressed history did not survive migration")
+
+    living = LivingStore(db_path)
+    route = living.resolve_room_attachment(
+        episode_id="mini-rehearsal-episode-b"
+    )
+    if route.decision != "attached" or route.room_id != "mini-rehearsal-room":
+        raise HostMigrationError(
+            "rehearsal Living Layer room route did not survive migration"
+        )
+    edges = living.list_continuity_edges()
+    if len(edges) != 1:
+        raise HostMigrationError(
+            "rehearsal Living Layer continuity edge did not survive migration"
+        )
+    if edges[0].continuity_status is not ContinuityStatus.UNKNOWN:
+        raise HostMigrationError(
+            "rehearsal migration rewrote unknown continuity semantics"
+        )
 
 
 def _run_rehearsal() -> None:
