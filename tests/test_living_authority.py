@@ -185,10 +185,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
 
         if middle_route == "other-room" or ambiguous_middle:
-            try:
-                self.living.add_room(RoomRecord(room_id="room-other"))
-            except Exception:
-                pass
+            self.living.add_room(RoomRecord(room_id="room-other"))
 
         self.living.add_continuity_edge(
             ContinuityEdge(
