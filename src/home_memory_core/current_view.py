@@ -446,6 +446,39 @@ def resolve_current_state(
         )
     )
 
+    conflict_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.standing is CurrentStanding.CONFLICTING
+    )
+    if conflict_candidates:
+        implicated = tuple(
+            candidate.state_id
+            for candidate in candidates
+            if (
+                candidate.standing in _ELIGIBLE_STANDINGS
+                or candidate.standing is CurrentStanding.CONFLICTING
+            )
+        )
+        historical = tuple(
+            sorted(
+                record.state_id
+                for record in effective
+                if record.state_id not in set(implicated)
+            )
+        )
+        return CurrentResolution(
+            namespace=namespace,
+            owner_id=owner_id,
+            key=key,
+            standing=CurrentStanding.CONFLICTING,
+            current_state_ids=implicated,
+            historical_state_ids=historical,
+            future_state_ids=future_ids,
+            candidates=candidates,
+            reason_codes=("CONFLICTING_HEAD_SEMANTICS",),
+        )
+
     eligible = tuple(
         candidate
         for candidate in candidates
