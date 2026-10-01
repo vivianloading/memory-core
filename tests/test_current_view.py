@@ -640,6 +640,60 @@ class CurrentViewTests(unittest.TestCase):
             ("secret.future.key", "visible.key"),
         )
 
+    def test_input_order_does_not_change_conflict_resolution(self) -> None:
+        root = self._room_record("order-root")
+        left = self._room_record(
+            "order-left",
+            value="left",
+            supersedes_state_id=root.state_id,
+        )
+        right = self._room_record(
+            "order-right",
+            value="right",
+            supersedes_state_id=root.state_id,
+        )
+
+        first = self._resolve_room((root, left, right))
+        second = self._resolve_room((right, root, left))
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.standing, CurrentStanding.CONFLICTING)
+
+    def test_other_owner_end_event_does_not_break_this_owner_view(self) -> None:
+        this_room = self._room_record(
+            "room-r-state",
+            key="status",
+            room_id="room-r",
+        )
+        other_room = self._room_record(
+            "room-other-state",
+            key="status",
+            room_id="room-other",
+        )
+        other_end = CurrentStateEndEvent(
+            end_event_id="other-end",
+            state_id=other_room.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="other room only",
+            source_refs=("source-other-end",),
+        )
+
+        view = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(this_room, other_room),
+            end_events=(other_end,),
+            as_of=self.t0,
+        )
+
+        self.assertEqual(len(view.items), 1)
+        self.assertEqual(
+            view.items[0].current_state_ids,
+            ("room-r-state",),
+        )
+
     def test_derive_view_returns_independent_keys_without_ranking(self) -> None:
         project = self._room_record(
             "project",
