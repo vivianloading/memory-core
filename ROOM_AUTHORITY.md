@@ -98,6 +98,11 @@ A trusted automatic continuation requires:
 history_reconstruction and no_known_transfer require an explicit future Room
 entry path rather than automatic participation.
 
+Launch binding and later grant revalidation read both Episodes, both Room routes,
+the continuity edges, and derived topology from one LivingStore read transaction.
+HOME therefore does not assemble launch authority from a sequence of unrelated
+database snapshots.
+
 A later route correction or newly discovered fork invalidates the process-local
 grant when it is next checked.
 
@@ -203,6 +208,16 @@ Every authorization check revalidates:
 - predecessor has not become a fork;
 - requested action target exactly matches session/Episode/Perspective/Room;
 - requested scope is present in the grant.
+
+The current milestone has no Room content/write consumer. Therefore
+`require_grant` is a capability validation boundary, not a promise that a
+separate later database mutation is atomic with that check. When Room reads or
+first-person writes are connected, final authorization + effect must occur under
+one ordering/transaction boundary and receive a new independent review.
+
+Process-local policy, launch, proposal, approval, and grant objects are also
+stored with independent integrity fingerprints. Mutating a frozen object through
+low-level Python mechanisms does not mutate the authority's expected binding.
 
 ## Non-authority inputs
 
