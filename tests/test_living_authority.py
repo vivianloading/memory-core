@@ -1001,6 +1001,62 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
             )
 
+    def test_old_launch_receipt_does_not_cross_host_incarnation(self) -> None:
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+
+        self.lease.release()
+        self.lease = acquire_home_single_instance(
+            runtime_root=self.root,
+            db_path=self.db_path,
+        )
+        self.authority = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+        self.launcher = trusted_test_runtime_launch_issuer(
+            lease=self.lease,
+            store=self.living,
+        )
+
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.begin_trusted_continuation(
+                launch_receipt=receipt,
+                previous_episode_id="episode-a",
+                room_id="room-r",
+            )
+
+    def test_old_grant_does_not_cross_host_incarnation(self) -> None:
+        evidence, _, _, grant = self._grant()
+
+        self.lease.release()
+        self.lease = acquire_home_single_instance(
+            runtime_root=self.root,
+            db_path=self.db_path,
+        )
+        self.authority = open_room_participation_authority(
+            lease=self.lease,
+            store=self.living,
+        )
+        self.launcher = trusted_test_runtime_launch_issuer(
+            lease=self.lease,
+            store=self.living,
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
     def test_released_host_lease_invalidates_grant(self) -> None:
         evidence, _, _, grant = self._grant()
         self.lease.release()
