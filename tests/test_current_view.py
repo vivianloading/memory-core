@@ -918,6 +918,85 @@ class CurrentViewTests(unittest.TestCase):
                 source_refs=("source-bad",),
             )
 
+    def test_room_end_event_requires_first_person_provenance(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="bad-room-end",
+                state_id="state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="missing Room attribution",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                source_refs=("source-bad-room-end",),
+            )
+
+    def test_end_event_semantic_authority_must_match_target(self) -> None:
+        record = self._room_record("state-a")
+        wrong = CurrentStateEndEvent(
+            end_event_id="wrong-authority-end",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="wrong semantic owner",
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            source_refs=("source-wrong-authority-end",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                end_events=(wrong,),
+            )
+
+    def test_shared_end_event_can_end_shared_state_without_room_provenance(self) -> None:
+        record = self._shared_record("shared-state-a")
+        end = CurrentStateEndEvent(
+            end_event_id="shared-end",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="shared state ended",
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            source_refs=("source-shared-end",),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            end_events=(end,),
+            as_of=self.t0,
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.ENDED)
+
+    def test_shared_end_event_cannot_claim_room_first_person_provenance(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="bad-shared-end",
+                state_id="shared-state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="bad shared provenance",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.SHARED_GOVERNANCE
+                ),
+                episode_id="episode-a",
+                perspective_instance_id="perspective-a",
+                source_refs=("source-bad-shared-end",),
+            )
+
     def test_state_and_end_event_require_provenance_refs(self) -> None:
         with self.assertRaises(CurrentViewError):
             dataclasses.replace(
