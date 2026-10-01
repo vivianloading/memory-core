@@ -308,6 +308,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             self.authority.record_supported_runtime_launch(
                 episode_id="episode-b",
                 perspective_instance_id="perspective-a",
+                observed_runtime_instance_id="runtime-b",
                 observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
             )
 
