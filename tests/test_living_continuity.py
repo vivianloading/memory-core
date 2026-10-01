@@ -9,6 +9,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
@@ -85,6 +86,13 @@ class LivingContinuityTest(unittest.TestCase):
         self.assertEqual(edge.continuity_status, ContinuityStatus.UNKNOWN)
         self.assertEqual(resolution.decision, "attached")
         self.assertEqual(resolution.room_id, room.room_id)
+
+    def test_episode_requires_concrete_perspective_instance(self) -> None:
+        with self.assertRaises(LivingContinuityError):
+            EpisodeRecord(
+                episode_id="episode-unattributed",
+                perspective_instance_id=SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+            )
 
     def test_room_route_does_not_encode_same_self_verdict(self) -> None:
         continuity_fields = {
