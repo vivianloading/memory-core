@@ -991,6 +991,14 @@ class RoomParticipationAuthority:
     ) -> None:
         _require_trusted_policy(policy)
         fingerprint = _policy_fingerprint(policy)
+        for existing_issuance_id, existing_policy in self._policies.items():
+            if (
+                existing_policy.policy_id == policy.policy_id
+                and existing_issuance_id != policy.issuance_id
+            ):
+                raise RoomParticipationAuthorizationError(
+                    "policy id is already bound to another trusted issuance"
+                )
         existing_fingerprint = self._policy_fingerprints.get(
             policy.issuance_id
         )
