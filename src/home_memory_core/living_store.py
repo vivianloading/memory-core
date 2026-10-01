@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 
@@ -25,9 +26,7 @@ LIVING_SCHEMA_MARKER_TABLE = "living_schema_marker"
 ROOM_TABLE = "living_rooms"
 EPISODE_TABLE = "living_episodes"
 CONTINUITY_EDGE_TABLE = "living_continuity_edges"
-CONTINUITY_SUPPORT_TABLE = "living_continuity_support"
 ATTACHMENT_TABLE = "living_room_attachment_events"
-ATTACHMENT_SUPPORT_TABLE = "living_room_attachment_support"
 
 _REQUIRED_TABLES = frozenset(
     {
@@ -35,9 +34,7 @@ _REQUIRED_TABLES = frozenset(
         ROOM_TABLE,
         EPISODE_TABLE,
         CONTINUITY_EDGE_TABLE,
-        CONTINUITY_SUPPORT_TABLE,
         ATTACHMENT_TABLE,
-        ATTACHMENT_SUPPORT_TABLE,
     }
 )
 
@@ -51,12 +48,8 @@ _REQUIRED_TRIGGERS = frozenset(
         "living_episodes_no_delete",
         "living_continuity_edges_no_update",
         "living_continuity_edges_no_delete",
-        "living_continuity_support_no_update",
-        "living_continuity_support_no_delete",
         "living_room_attachment_events_no_update",
         "living_room_attachment_events_no_delete",
-        "living_room_attachment_support_no_update",
-        "living_room_attachment_support_no_delete",
     }
 )
 
@@ -84,29 +77,32 @@ class LivingStore:
         self.db_path = Path(db_path)
 
     def initialize(self) -> None:
-        """Install the Living Layer schema inside an existing synthetic HOME store.
+        """Install Living Layer tables inside an existing synthetic HOME store.
 
-        The caller must initialize the ordinary synthetic HOME store first. This
-        method never creates or upgrades the HOME store-domain marker itself.
+        The ordinary synthetic MemoryStore must already be initialized. This
+        method never creates, converts, or relaxes the HOME store-domain marker.
         """
 
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
-
             existing = self._existing_living_tables(connection)
+
             if existing:
                 if existing != _REQUIRED_TABLES:
                     raise LivingStoreIntegrityError(
                         "partial Living Layer schema exists"
                     )
                 assert_living_schema(connection)
-                connection.commit()
                 return
 
+            # sqlite3.Connection.executescript() commits a pending transaction
+            # before running. Put BEGIN inside the script so schema installation
+            # itself remains atomic.
             connection.executescript(
                 f"""
+                BEGIN IMMEDIATE;
+
                 CREATE TABLE {LIVING_SCHEMA_MARKER_TABLE} (
                     marker_key TEXT PRIMARY KEY
                         CHECK (marker_key = 'living_layer_schema'),
@@ -168,6 +164,8 @@ class LivingStore:
                                 'unknown'
                             )
                         ),
+                    support_refs_json TEXT NOT NULL
+                        CHECK (length(trim(support_refs_json)) > 0),
 
                     UNIQUE (
                         previous_episode_id,
@@ -189,22 +187,6 @@ class LivingStore:
                         ON DELETE RESTRICT
                 );
 
-                CREATE TABLE {CONTINUITY_SUPPORT_TABLE} (
-                    edge_id TEXT NOT NULL,
-                    position INTEGER NOT NULL
-                        CHECK (position >= 0),
-                    support_ref TEXT NOT NULL
-                        CHECK (length(trim(support_ref)) > 0),
-
-                    PRIMARY KEY (edge_id, position),
-                    UNIQUE (edge_id, support_ref),
-
-                    FOREIGN KEY (edge_id)
-                        REFERENCES {CONTINUITY_EDGE_TABLE}(edge_id)
-                        ON UPDATE RESTRICT
-                        ON DELETE RESTRICT
-                );
-
                 CREATE TABLE {ATTACHMENT_TABLE} (
                     attachment_event_id TEXT PRIMARY KEY
                         CHECK (length(trim(attachment_event_id)) > 0),
@@ -215,6 +197,8 @@ class LivingStore:
                     basis TEXT NOT NULL
                         CHECK (length(trim(basis)) > 0),
                     supersedes_attachment_event_id TEXT,
+                    support_refs_json TEXT NOT NULL
+                        CHECK (length(trim(support_refs_json)) > 0),
 
                     CHECK (
                         (
@@ -245,28 +229,6 @@ class LivingStore:
                         ON DELETE RESTRICT,
 
                     FOREIGN KEY (supersedes_attachment_event_id)
-                        REFERENCES {ATTACHMENT_TABLE}(attachment_event_id)
-                        ON UPDATE RESTRICT
-                        ON DELETE RESTRICT
-                );
-
-                CREATE TABLE {ATTACHMENT_SUPPORT_TABLE} (
-                    attachment_event_id TEXT NOT NULL,
-                    position INTEGER NOT NULL
-                        CHECK (position >= 0),
-                    support_ref TEXT NOT NULL
-                        CHECK (length(trim(support_ref)) > 0),
-
-                    PRIMARY KEY (
-                        attachment_event_id,
-                        position
-                    ),
-                    UNIQUE (
-                        attachment_event_id,
-                        support_ref
-                    ),
-
-                    FOREIGN KEY (attachment_event_id)
                         REFERENCES {ATTACHMENT_TABLE}(attachment_event_id)
                         ON UPDATE RESTRICT
                         ON DELETE RESTRICT
@@ -344,24 +306,6 @@ class LivingStore:
                     );
                 END;
 
-                CREATE TRIGGER living_continuity_support_no_update
-                BEFORE UPDATE ON {CONTINUITY_SUPPORT_TABLE}
-                BEGIN
-                    SELECT RAISE(
-                        ABORT,
-                        'Living Layer continuity support is append-only'
-                    );
-                END;
-
-                CREATE TRIGGER living_continuity_support_no_delete
-                BEFORE DELETE ON {CONTINUITY_SUPPORT_TABLE}
-                BEGIN
-                    SELECT RAISE(
-                        ABORT,
-                        'Living Layer continuity support is append-only'
-                    );
-                END;
-
                 CREATE TRIGGER living_room_attachment_events_no_update
                 BEFORE UPDATE ON {ATTACHMENT_TABLE}
                 BEGIN
@@ -377,24 +321,6 @@ class LivingStore:
                     SELECT RAISE(
                         ABORT,
                         'Living Layer room attachments are append-only'
-                    );
-                END;
-
-                CREATE TRIGGER living_room_attachment_support_no_update
-                BEFORE UPDATE ON {ATTACHMENT_SUPPORT_TABLE}
-                BEGIN
-                    SELECT RAISE(
-                        ABORT,
-                        'Living Layer room attachment support is append-only'
-                    );
-                END;
-
-                CREATE TRIGGER living_room_attachment_support_no_delete
-                BEFORE DELETE ON {ATTACHMENT_SUPPORT_TABLE}
-                BEGIN
-                    SELECT RAISE(
-                        ABORT,
-                        'Living Layer room attachment support is append-only'
                     );
                 END;
                 """
@@ -518,8 +444,9 @@ class LivingStore:
                     previous_episode_id,
                     next_episode_id,
                     transfer_mode,
-                    continuity_status
-                ) VALUES (?, ?, ?, ?, ?)
+                    continuity_status,
+                    support_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     edge.edge_id,
@@ -527,14 +454,8 @@ class LivingStore:
                     edge.next_episode_id,
                     edge.transfer_mode.value,
                     edge.continuity_status.value,
+                    _encode_support_refs(edge.support_refs),
                 ),
-            )
-            self._insert_support_refs(
-                connection=connection,
-                table=CONTINUITY_SUPPORT_TABLE,
-                owner_column="edge_id",
-                owner_id=edge.edge_id,
-                support_refs=edge.support_refs,
             )
             connection.commit()
         except (sqlite3.IntegrityError, LivingStoreIntegrityError) as error:
@@ -615,8 +536,9 @@ class LivingStore:
                     route_kind,
                     room_id,
                     basis,
-                    supersedes_attachment_event_id
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    supersedes_attachment_event_id,
+                    support_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.attachment_event_id,
@@ -625,14 +547,8 @@ class LivingStore:
                     event.room_id,
                     event.basis,
                     event.supersedes_attachment_event_id,
+                    _encode_support_refs(event.support_refs),
                 ),
-            )
-            self._insert_support_refs(
-                connection=connection,
-                table=ATTACHMENT_SUPPORT_TABLE,
-                owner_column="attachment_event_id",
-                owner_id=event.attachment_event_id,
-                support_refs=event.support_refs,
             )
             connection.commit()
         except (sqlite3.IntegrityError, LivingStoreIntegrityError) as error:
@@ -760,7 +676,8 @@ class LivingStore:
                 previous_episode_id,
                 next_episode_id,
                 transfer_mode,
-                continuity_status
+                continuity_status,
+                support_refs_json
             FROM {CONTINUITY_EDGE_TABLE}
             ORDER BY rowid
             """
@@ -768,12 +685,6 @@ class LivingStore:
 
         result: list[ContinuityEdge] = []
         for row in rows:
-            support_refs = self._read_support_refs(
-                connection=connection,
-                table=CONTINUITY_SUPPORT_TABLE,
-                owner_column="edge_id",
-                owner_id=row["edge_id"],
-            )
             try:
                 result.append(
                     ContinuityEdge(
@@ -784,7 +695,9 @@ class LivingStore:
                         continuity_status=ContinuityStatus(
                             row["continuity_status"]
                         ),
-                        support_refs=support_refs,
+                        support_refs=_decode_support_refs(
+                            row["support_refs_json"]
+                        ),
                     )
                 )
             except (ValueError, LivingContinuityError) as error:
@@ -807,7 +720,8 @@ class LivingStore:
                 route_kind,
                 room_id,
                 basis,
-                supersedes_attachment_event_id
+                supersedes_attachment_event_id,
+                support_refs_json
             FROM {ATTACHMENT_TABLE}
             WHERE episode_id = ?
             ORDER BY rowid
@@ -817,12 +731,6 @@ class LivingStore:
 
         result: list[RoomAttachmentEvent] = []
         for row in rows:
-            support_refs = self._read_support_refs(
-                connection=connection,
-                table=ATTACHMENT_SUPPORT_TABLE,
-                owner_column="attachment_event_id",
-                owner_id=row["attachment_event_id"],
-            )
             try:
                 result.append(
                     RoomAttachmentEvent(
@@ -834,7 +742,9 @@ class LivingStore:
                         supersedes_attachment_event_id=(
                             row["supersedes_attachment_event_id"]
                         ),
-                        support_refs=support_refs,
+                        support_refs=_decode_support_refs(
+                            row["support_refs_json"]
+                        ),
                     )
                 )
             except (ValueError, LivingContinuityError) as error:
@@ -842,64 +752,6 @@ class LivingStore:
                     "persisted room attachment is invalid"
                 ) from error
         return tuple(result)
-
-    def _insert_support_refs(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        table: str,
-        owner_column: str,
-        owner_id: str,
-        support_refs: tuple[str, ...],
-    ) -> None:
-        if table not in {
-            CONTINUITY_SUPPORT_TABLE,
-            ATTACHMENT_SUPPORT_TABLE,
-        }:
-            raise ValueError("unsupported Living Layer support table")
-        if owner_column not in {
-            "edge_id",
-            "attachment_event_id",
-        }:
-            raise ValueError("unsupported Living Layer support owner")
-
-        for position, support_ref in enumerate(support_refs):
-            connection.execute(
-                f"""
-                INSERT INTO {table} (
-                    {owner_column},
-                    position,
-                    support_ref
-                ) VALUES (?, ?, ?)
-                """,
-                (owner_id, position, support_ref),
-            )
-
-    def _read_support_refs(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        table: str,
-        owner_column: str,
-        owner_id: str,
-    ) -> tuple[str, ...]:
-        rows = connection.execute(
-            f"""
-            SELECT position, support_ref
-            FROM {table}
-            WHERE {owner_column} = ?
-            ORDER BY position
-            """,
-            (owner_id,),
-        ).fetchall()
-
-        expected = list(range(len(rows)))
-        actual = [row["position"] for row in rows]
-        if actual != expected:
-            raise LivingStoreIntegrityError(
-                "persisted Living Layer support positions are incomplete"
-            )
-        return tuple(row["support_ref"] for row in rows)
 
 
 def assert_living_schema(connection: sqlite3.Connection) -> None:
@@ -937,3 +789,39 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
         raise LivingStoreIntegrityError(
             "Living Layer append-only triggers are incomplete"
         )
+
+
+def _encode_support_refs(support_refs: tuple[str, ...]) -> str:
+    return json.dumps(
+        list(support_refs),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _decode_support_refs(raw: str) -> tuple[str, ...]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer support refs are invalid JSON"
+        ) from error
+
+    if not isinstance(value, list):
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer support refs must be a list"
+        )
+
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise LivingStoreIntegrityError(
+                "persisted Living Layer support ref is invalid"
+            )
+        result.append(item)
+
+    if len(set(result)) != len(result):
+        raise LivingStoreIntegrityError(
+            "persisted Living Layer support refs contain duplicates"
+        )
+    return tuple(result)
