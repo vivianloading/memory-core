@@ -67,6 +67,19 @@ state without altering the historical assertion itself.
 
 Every state declares one validity rule and a compatible downgrade rule.
 
+State kinds also constrain which time behavior is legal:
+
+- project_status: durable_until_changed;
+- preference: durable_until_changed or stale_to_last_known;
+- commitment: open_until_resolved;
+- self_interpretation: durable_until_changed;
+- shared_state: durable_until_changed, explicit_interval, or open_until_resolved;
+- unfinished_work: open_until_resolved.
+
+These constraints are deliberate. In particular, a commitment or unfinished
+matter must not quietly decay because HOME has been silent for a while, and a
+first-person self-interpretation must not turn into a TTL cache entry.
+
 ### durable_until_changed
 
 The state remains current until explicit supersession or an explicit end event.
@@ -120,6 +133,9 @@ Unknown is legitimate.
 
 Conflicting is legitimate.
 
+Competing explicit end events are also represented as conflict rather than
+silently choosing one outcome.
+
 No generic last-write-wins rule exists.
 
 If multiple effective unsuperseded heads still have present standing, Current
@@ -137,7 +153,8 @@ CurrentResolution separates:
 - future_state_ids — known records whose valid_from is still in the future.
 
 A record whose recorded_at is later than as_of is not known in that historical
-view at all.
+view at all. Even its key must not appear in a derived historical view before
+the record time.
 
 This lets HOME answer historical as-of questions without importing knowledge
 from the future.
