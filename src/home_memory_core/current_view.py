@@ -394,7 +394,7 @@ def resolve_current_state(
     historical_ids = tuple(
         sorted(
             record.state_id
-            for record in known
+            for record in effective
             if record.state_id not in eligible_ids
         )
     )
