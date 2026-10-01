@@ -168,6 +168,7 @@ class LivingStoreTest(unittest.TestCase):
         snapshot = self.store.read_continuation_path_snapshot(
             previous_episode_id=first.episode_id,
             episode_id=second.episode_id,
+            anchor_episode_id=first.episode_id,
         )
 
         self.assertEqual(snapshot.previous_episode, first)
@@ -175,6 +176,8 @@ class LivingStoreTest(unittest.TestCase):
         self.assertEqual(snapshot.previous_route.room_id, room.room_id)
         self.assertEqual(snapshot.current_route.room_id, room.room_id)
         self.assertEqual(snapshot.edges, (edge,))
+        self.assertEqual(snapshot.anchor_episode, first)
+        self.assertEqual(snapshot.anchor_route.room_id, room.room_id)
         self.assertEqual(
             snapshot.topology.head_episode_ids,
             frozenset({second.episode_id}),
