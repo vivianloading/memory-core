@@ -144,6 +144,20 @@ class CurrentStateRecord:
             raise CurrentViewError(
                 "semantic change authority does not match Current namespace"
             )
+        if (
+            self.namespace is CurrentNamespace.SHARED
+            and self.state_kind is CurrentStateKind.SELF_INTERPRETATION
+        ):
+            raise CurrentViewError(
+                "Shared current state cannot be first-person self interpretation"
+            )
+        if (
+            self.namespace is CurrentNamespace.ROOM
+            and self.state_kind is CurrentStateKind.SHARED_STATE
+        ):
+            raise CurrentViewError(
+                "Room current state cannot claim shared-state kind"
+            )
 
         if self.namespace is CurrentNamespace.ROOM:
             if self.episode_id is None or self.perspective_instance_id is None:
@@ -303,12 +317,20 @@ def resolve_current_state(
             and record.key == key
         )
     )
-    _validate_current_graph(records=relevant, end_events=end_events)
 
     known = tuple(
         record
         for record in relevant
         if record.recorded_at <= as_of
+    )
+    known_end_events = tuple(
+        event
+        for event in end_events
+        if event.recorded_at <= as_of
+    )
+    _validate_current_graph(
+        records=known,
+        end_events=known_end_events,
     )
     if not known:
         return CurrentResolution(
@@ -366,8 +388,8 @@ def resolve_current_state(
     )
 
     end_by_state = _effective_end_events(
-        records=relevant,
-        end_events=end_events,
+        records=known,
+        end_events=known_end_events,
         as_of=as_of,
     )
     candidates = tuple(
@@ -499,7 +521,15 @@ def derive_current_view(
             and record.owner_id == owner_id
         )
     )
-    keys = tuple(sorted({record.key for record in matching}))
+    keys = tuple(
+        sorted(
+            {
+                record.key
+                for record in matching
+                if record.recorded_at <= as_of
+            }
+        )
+    )
     items = tuple(
         resolve_current_state(
             namespace=namespace,
