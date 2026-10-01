@@ -103,6 +103,8 @@ class CurrentStateRecord:
     validity_rule: ValidityRule
     downgrade_rule: DowngradeRule
     semantic_change_authority: SemanticChangeAuthority
+    episode_id: str | None = None
+    perspective_instance_id: str | None = None
     valid_until: datetime | None = None
     stale_after: timedelta | None = None
     supersedes_state_id: str | None = None
@@ -141,6 +143,29 @@ class CurrentStateRecord:
         if self.semantic_change_authority is not expected_authority:
             raise CurrentViewError(
                 "semantic change authority does not match Current namespace"
+            )
+
+        if self.namespace is CurrentNamespace.ROOM:
+            if self.episode_id is None or self.perspective_instance_id is None:
+                raise CurrentViewError(
+                    "Room current state requires Episode and PerspectiveInstance provenance"
+                )
+            _require_text("episode_id", self.episode_id)
+            _require_text(
+                "perspective_instance_id",
+                self.perspective_instance_id,
+            )
+        elif (
+            self.episode_id is not None
+            or self.perspective_instance_id is not None
+        ):
+            raise CurrentViewError(
+                "Shared current state cannot claim Room first-person provenance"
+            )
+
+        if not self.source_refs:
+            raise CurrentViewError(
+                "current state requires at least one source reference"
             )
 
         expected_downgrade = _EXPECTED_DOWNGRADE[self.validity_rule]
@@ -215,6 +240,10 @@ class CurrentStateEndEvent:
         _require_aware("recorded_at", self.recorded_at)
         if not isinstance(self.end_kind, EndKind):
             raise CurrentViewError("end_kind must use EndKind")
+        if not self.source_refs:
+            raise CurrentViewError(
+                "end event requires at least one source reference"
+            )
         for source_ref in self.source_refs:
             _require_text("source_ref", source_ref)
 
@@ -235,6 +264,7 @@ class CurrentResolution:
     standing: CurrentStanding
     current_state_ids: tuple[str, ...]
     historical_state_ids: tuple[str, ...]
+    future_state_ids: tuple[str, ...]
     candidates: tuple[CurrentCandidate, ...]
     reason_codes: tuple[str, ...]
 
@@ -288,6 +318,7 @@ def resolve_current_state(
             standing=CurrentStanding.UNKNOWN,
             current_state_ids=(),
             historical_state_ids=(),
+            future_state_ids=(),
             candidates=(),
             reason_codes=("NO_RECORD_KNOWN_AS_OF",),
         )
@@ -304,13 +335,21 @@ def resolve_current_state(
             key=key,
             standing=CurrentStanding.UNKNOWN,
             current_state_ids=(),
-            historical_state_ids=tuple(
+            historical_state_ids=(),
+            future_state_ids=tuple(
                 sorted(record.state_id for record in known)
             ),
             candidates=(),
             reason_codes=("KNOWN_ONLY_FOR_FUTURE_VALIDITY",),
         )
 
+    future_ids = tuple(
+        sorted(
+            record.state_id
+            for record in known
+            if record.valid_from > as_of
+        )
+    )
     effective_ids = {record.state_id for record in effective}
     superseded_ids = {
         record.supersedes_state_id
@@ -371,6 +410,7 @@ def resolve_current_state(
                 for candidate in eligible
             ),
             historical_state_ids=historical_ids,
+            future_state_ids=future_ids,
             candidates=candidates,
             reason_codes=("MULTIPLE_ELIGIBLE_HEADS",),
         )
@@ -384,6 +424,7 @@ def resolve_current_state(
             standing=candidate.standing,
             current_state_ids=(candidate.state_id,),
             historical_state_ids=historical_ids,
+            future_state_ids=future_ids,
             candidates=candidates,
             reason_codes=candidate.reason_codes,
         )
@@ -401,8 +442,12 @@ def resolve_current_state(
             standing=only.standing,
             current_state_ids=(),
             historical_state_ids=tuple(
-                sorted(record.state_id for record in known)
+                sorted(
+                    record.state_id
+                    for record in effective
+                )
             ),
+            future_state_ids=future_ids,
             candidates=candidates,
             reason_codes=only.reason_codes,
         )
@@ -423,8 +468,9 @@ def resolve_current_state(
         standing=CurrentStanding.NO_CURRENT,
         current_state_ids=(),
         historical_state_ids=tuple(
-            sorted(record.state_id for record in known)
+            sorted(record.state_id for record in effective)
         ),
+        future_state_ids=future_ids,
         candidates=candidates,
         reason_codes=reason_codes,
     )
