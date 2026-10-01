@@ -26,8 +26,15 @@ HOME keeps these concepts separate:
   evidence of change.
 
 A late-recorded correction must not rewrite what HOME would have known at an
-earlier as-of time. A future-valid state may be known without becoming current
-early.
+earlier as-of time.
+
+event_time and ended_at describe events that have already occurred when HOME
+records them, so neither may be later than recorded_at. Planned future state is
+represented with validity time instead: valid_from may be later than recorded_at,
+allowing HOME to know a future-effective state without pretending its underlying
+event already happened.
+
+A future-valid state may therefore be known without becoming current early.
 
 ## Namespaces
 
