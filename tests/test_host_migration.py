@@ -15,6 +15,16 @@ from home_memory_core.host_migration import (
     verify_restored_closed_synthetic_store,
 )
 from home_memory_core.host_startup import start_home_mini_host
+from home_memory_core.living_continuity import (
+    ContinuityEdge,
+    ContinuityStatus,
+    EpisodeRecord,
+    RoomAttachmentEvent,
+    RoomRecord,
+    RoomRouteKind,
+    TransferMode,
+)
+from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
 from home_memory_core.store_domain import create_empty_real_store
@@ -69,6 +79,55 @@ class HostMigrationTests(unittest.TestCase):
         store.suppress_source(stop)
         return config, active, suppressed
 
+    def _seed_living_layer(self, root: Path) -> dict[str, object]:
+        db_path = root / "data" / "home.db"
+        living = LivingStore(db_path)
+        living.initialize()
+
+        room = RoomRecord(room_id="room-portable")
+        first = EpisodeRecord(
+            episode_id="episode-before-move",
+            perspective_instance_id="perspective-before-move",
+            runtime_instance_id="runtime-source-host",
+            model_ref="model-a",
+        )
+        second = EpisodeRecord(
+            episode_id="episode-after-handoff",
+            perspective_instance_id="perspective-after-handoff",
+            runtime_instance_id="runtime-source-host-2",
+            model_ref="model-b",
+        )
+        edge = ContinuityEdge(
+            edge_id="edge-portable-handoff",
+            previous_episode_id=first.episode_id,
+            next_episode_id=second.episode_id,
+            transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+            continuity_status=ContinuityStatus.UNKNOWN,
+            support_refs=("portable-handoff-receipt",),
+        )
+        attachment = RoomAttachmentEvent(
+            attachment_event_id="route-portable-handoff",
+            episode_id=second.episode_id,
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id=room.room_id,
+            basis="ordinary_handoff",
+            support_refs=(edge.edge_id,),
+        )
+
+        living.add_room(room)
+        living.add_episode(first)
+        living.add_episode(second)
+        living.add_continuity_edge(edge)
+        living.add_room_attachment(attachment)
+
+        return {
+            "room": room,
+            "first": first,
+            "second": second,
+            "edge": edge,
+            "attachment": attachment,
+        }
+
     def test_backup_restore_round_trip_preserves_active_and_suppressed_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -110,6 +169,54 @@ class HostMigrationTests(unittest.TestCase):
             self.assertEqual(
                 verified.restored_database_sha256,
                 created.manifest.database_sha256,
+            )
+
+    def test_backup_restore_preserves_living_layer_without_rebinding_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "source-machine"
+            source_config, _, _ = self._create_synthetic_store(source_root)
+            seeded = self._seed_living_layer(source_root)
+            bundle = root / "portable.homebackup.zip"
+
+            create_closed_synthetic_backup(
+                config_path=source_config,
+                bundle_path=bundle,
+            )
+
+            target_root = root / "mac-mini-target"
+            target_config = self._write_config(target_root)
+            restore_closed_synthetic_backup(
+                bundle_path=bundle,
+                target_config_path=target_config,
+            )
+
+            moved = LivingStore(target_root / "data" / "home.db")
+            self.assertEqual(
+                moved.get_room(seeded["room"].room_id),
+                seeded["room"],
+            )
+            self.assertEqual(
+                moved.get_episode(seeded["first"].episode_id),
+                seeded["first"],
+            )
+            self.assertEqual(
+                moved.get_episode(seeded["second"].episode_id),
+                seeded["second"],
+            )
+            self.assertEqual(
+                moved.list_continuity_edges(),
+                (seeded["edge"],),
+            )
+
+            route = moved.resolve_room_attachment(
+                episode_id=seeded["second"].episode_id
+            )
+            self.assertEqual(route.decision, "attached")
+            self.assertEqual(route.room_id, seeded["room"].room_id)
+            self.assertEqual(
+                moved.list_continuity_edges()[0].continuity_status,
+                ContinuityStatus.UNKNOWN,
             )
 
     def test_second_hop_backup_restore_works_from_first_restored_home(self) -> None:
