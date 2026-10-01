@@ -279,11 +279,17 @@ def trusted_test_room_continuation_policy(
     policy_id: str,
     room_id: str,
     allowed_scopes,
+    established_episode_id: str = "episode-a",
+    established_attachment_event_id: str = "route-a",
     source_event_ref: str = "synthetic-inhabitant-policy-event",
 ) -> living_authority.TrustedRoomContinuationPolicy:
     return living_authority.TrustedRoomContinuationPolicy(
         policy_id=policy_id,
         room_id=room_id,
+        established_episode_id=established_episode_id,
+        established_attachment_event_id=(
+            established_attachment_event_id
+        ),
         allowed_scopes=frozenset(allowed_scopes),
         source_event_ref=source_event_ref,
         _marker=living_authority._CONTINUATION_POLICY_MARKER,
