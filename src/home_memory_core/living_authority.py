@@ -116,6 +116,7 @@ class SupportedRuntimeLaunchReceipt:
     host_process_instance_id: str
     episode_id: str
     perspective_instance_id: str
+    runtime_instance_id: str | None
     observed_transfer_mode: TransferMode
     _marker: object = field(repr=False, compare=False)
 
@@ -133,6 +134,16 @@ class SupportedRuntimeLaunchReceipt:
             "perspective_instance_id",
         ):
             _require_text(field_name, getattr(self, field_name))
+        if (
+            self.runtime_instance_id is not None
+            and (
+                not isinstance(self.runtime_instance_id, str)
+                or not self.runtime_instance_id.strip()
+            )
+        ):
+            raise RoomLaunchEvidenceError(
+                "runtime_instance_id must be non-empty when present"
+            )
         if not isinstance(self.observed_transfer_mode, TransferMode):
             raise RoomLaunchEvidenceError(
                 "observed_transfer_mode must use TransferMode"
@@ -360,6 +371,7 @@ class RoomParticipationAuthority:
         *,
         episode_id: str,
         perspective_instance_id: str,
+        observed_runtime_instance_id: str | None,
         observed_transfer_mode: TransferMode,
     ) -> SupportedRuntimeLaunchReceipt:
         """Record the actual supported-host launch before Room authority is derived.
@@ -382,6 +394,10 @@ class RoomParticipationAuthority:
             raise RoomLaunchEvidenceError(
                 "runtime launch perspective does not match persisted Episode"
             )
+        if episode.runtime_instance_id != observed_runtime_instance_id:
+            raise RoomLaunchEvidenceError(
+                "observed runtime instance does not match persisted Episode"
+            )
 
         old_receipt_id = self._pending_launch_by_episode.get(episode_id)
         if old_receipt_id is not None:
@@ -396,6 +412,7 @@ class RoomParticipationAuthority:
             host_process_instance_id=self._lease.identity.process_instance_id,
             episode_id=episode_id,
             perspective_instance_id=perspective_instance_id,
+            runtime_instance_id=observed_runtime_instance_id,
             observed_transfer_mode=observed_transfer_mode,
             _marker=_RUNTIME_LAUNCH_RECEIPT_MARKER,
         )
@@ -874,6 +891,10 @@ class RoomParticipationAuthority:
             raise RoomLaunchEvidenceError(
                 "runtime launch receipt no longer matches Episode attribution"
             )
+        if episode.runtime_instance_id != receipt.runtime_instance_id:
+            raise RoomLaunchEvidenceError(
+                "runtime launch receipt no longer matches runtime instance"
+            )
 
     def _assert_live_launch_evidence(
         self,
@@ -1159,6 +1180,7 @@ def _runtime_launch_fingerprint(
             "host_process_instance_id": receipt.host_process_instance_id,
             "episode_id": receipt.episode_id,
             "perspective_instance_id": receipt.perspective_instance_id,
+            "runtime_instance_id": receipt.runtime_instance_id,
             "observed_transfer_mode": receipt.observed_transfer_mode.value,
         },
     )
