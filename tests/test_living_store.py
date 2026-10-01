@@ -485,6 +485,253 @@ class LivingStoreTest(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_insert_or_replace_cannot_rewrite_immutable_history(self) -> None:
+        for room_id in ("replace-room-1", "replace-room-2"):
+            self.store.add_room(RoomRecord(room_id=room_id))
+        for episode_id in ("replace-a", "replace-b", "replace-c"):
+            self.store.add_episode(self._episode(episode_id))
+
+        edge = self._edge(
+            "replace-edge",
+            "replace-a",
+            "replace-b",
+            support_refs=("old-support",),
+        )
+        route = RoomAttachmentEvent(
+            attachment_event_id="replace-route",
+            episode_id="replace-b",
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id="replace-room-1",
+            basis="original",
+            support_refs=("old-route-support",),
+        )
+        self.store.add_continuity_edge(edge)
+        self.store.add_room_attachment(route)
+
+        for foreign_keys in (False, True):
+            connection = sqlite3.connect(self.db_path)
+            if foreign_keys:
+                connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA recursive_triggers = OFF")
+            try:
+                with self.assertRaises(sqlite3.DatabaseError):
+                    connection.execute(
+                        f"""
+                        INSERT OR REPLACE INTO {EPISODE_TABLE}
+                        VALUES ('replace-c', 'p-forged', NULL, NULL)
+                        """
+                    )
+                connection.rollback()
+            finally:
+                connection.close()
+
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA recursive_triggers = OFF")
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT OR REPLACE INTO {CONTINUITY_EDGE_TABLE}
+                    VALUES (
+                        'replace-edge',
+                        'replace-a',
+                        'replace-b',
+                        'text_context_handoff',
+                        'unknown',
+                        '["new-support"]'
+                    )
+                    """
+                )
+            connection.rollback()
+
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT OR REPLACE INTO {CONTINUITY_EDGE_TABLE}
+                    VALUES (
+                        'replace-edge-new-id',
+                        'replace-a',
+                        'replace-b',
+                        'text_context_handoff',
+                        'unknown',
+                        '["new-support"]'
+                    )
+                    """
+                )
+            connection.rollback()
+
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT OR REPLACE INTO {ATTACHMENT_TABLE}
+                    VALUES (
+                        'replace-route',
+                        'replace-b',
+                        'attached',
+                        'replace-room-2',
+                        'rewritten',
+                        NULL,
+                        '[]'
+                    )
+                    """
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+        self.assertEqual(
+            self.store.get_episode("replace-c").perspective_instance_id,
+            "perspective-replace-c",
+        )
+        self.assertEqual(self.store.list_continuity_edges(), (edge,))
+        self.assertEqual(
+            self.store.list_room_attachment_events(
+                episode_id="replace-b"
+            ),
+            (route,),
+        )
+
+    def test_polluted_reader_rejects_forged_partial_and_verified(self) -> None:
+        for episode_id in (
+            "certainty-a",
+            "certainty-b",
+            "certainty-c",
+            "certainty-d",
+        ):
+            self.store.add_episode(self._episode(episode_id))
+
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        try:
+            connection.execute(
+                f"""
+                INSERT INTO {CONTINUITY_EDGE_TABLE}
+                VALUES (
+                    'forged-verified',
+                    'certainty-a',
+                    'certainty-b',
+                    'native_checkpoint_resume',
+                    'verified',
+                    '["made-up"]'
+                )
+                """
+            )
+            connection.execute(
+                f"""
+                INSERT INTO {CONTINUITY_EDGE_TABLE}
+                VALUES (
+                    'forged-partial',
+                    'certainty-c',
+                    'certainty-d',
+                    'partial_state_resume',
+                    'partial',
+                    '[]'
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(LivingStoreIntegrityError):
+            self.store.list_continuity_edges()
+        with self.assertRaises(LivingStoreIntegrityError):
+            self.store.resolve_continuity_topology()
+
+    def test_same_name_noop_trigger_fails_schema_validation(self) -> None:
+        self.store.add_episode(self._episode("trigger-episode"))
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute("DROP TRIGGER living_episodes_no_update")
+            connection.execute(
+                f"""
+                CREATE TRIGGER living_episodes_no_update
+                BEFORE UPDATE ON {EPISODE_TABLE}
+                BEGIN
+                    SELECT 1;
+                END
+                """
+            )
+            connection.execute(
+                f"""
+                UPDATE {EPISODE_TABLE}
+                SET perspective_instance_id = 'p-stolen'
+                WHERE episode_id = 'trigger-episode'
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(LivingStoreIntegrityError):
+            self.store.get_episode("trigger-episode")
+
+    def test_generated_identity_column_fails_closed(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                f"""
+                ALTER TABLE {EPISODE_TABLE}
+                ADD COLUMN same_self INTEGER
+                GENERATED ALWAYS AS (1) VIRTUAL
+                """
+            )
+            connection.commit()
+            with self.assertRaises(LivingStoreIntegrityError):
+                assert_living_schema(connection)
+        finally:
+            connection.close()
+
+    def test_invalid_room_row_is_rejected_even_if_check_was_bypassed(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        try:
+            connection.execute(
+                f"INSERT INTO {ROOM_TABLE} (room_id) VALUES ('')"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(LivingStoreIntegrityError):
+            self.store.get_room("")
+
+    def test_phantom_routing_fails_closed_on_normal_resolver(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                f"""
+                INSERT INTO {ATTACHMENT_TABLE} (
+                    attachment_event_id,
+                    episode_id,
+                    route_kind,
+                    room_id,
+                    basis,
+                    supersedes_attachment_event_id,
+                    support_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ghost-route",
+                    "ghost-episode",
+                    "attached",
+                    "ghost-room",
+                    "ordinary_handoff",
+                    None,
+                    "[]",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(LivingStoreIntegrityError):
+            self.store.resolve_room_attachment(
+                episode_id="ghost-episode"
+            )
+
     def test_schema_drift_with_extra_identity_column_fails_closed(self) -> None:
         connection = sqlite3.connect(self.db_path)
         try:
@@ -516,7 +763,7 @@ class LivingStoreTest(unittest.TestCase):
                 columns = {
                     row[1]
                     for row in connection.execute(
-                        f"PRAGMA table_info({table})"
+                        f"PRAGMA table_xinfo({table})"
                     ).fetchall()
                 }
                 self.assertNotIn("same_self", columns)
