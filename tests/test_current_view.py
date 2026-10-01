@@ -417,6 +417,55 @@ class CurrentViewTests(unittest.TestCase):
             resolution.reason_codes,
         )
 
+    def test_conflicting_head_semantics_block_a_silent_winner(self) -> None:
+        root = self._room_record("state-root")
+        left = self._room_record(
+            "state-left",
+            value="left",
+            supersedes_state_id=root.state_id,
+        )
+        right = self._room_record(
+            "state-right",
+            value="right",
+            supersedes_state_id=root.state_id,
+        )
+        right_end_a = CurrentStateEndEvent(
+            end_event_id="right-end-a",
+            state_id=right.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.WITHDRAWN,
+            reason="one ending",
+            source_refs=("source-right-end-a",),
+        )
+        right_end_b = CurrentStateEndEvent(
+            end_event_id="right-end-b",
+            state_id=right.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.COMPLETED,
+            reason="competing ending",
+            source_refs=("source-right-end-b",),
+        )
+
+        resolution = self._resolve_room(
+            (root, left, right),
+            end_events=(right_end_a, right_end_b),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.CONFLICTING,
+        )
+        self.assertEqual(
+            set(resolution.current_state_ids),
+            {"state-left", "state-right"},
+        )
+        self.assertIn(
+            "CONFLICTING_HEAD_SEMANTICS",
+            resolution.reason_codes,
+        )
+
     def test_ended_competing_head_does_not_block_one_live_head(self) -> None:
         root = self._room_record("state-root")
         left = self._room_record(
