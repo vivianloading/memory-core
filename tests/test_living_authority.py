@@ -13,6 +13,7 @@ from home_memory_core.living_authority import (
     RoomParticipationGrant,
     RoomParticipationScope,
     RoomParticipationStaleError,
+    SupportedRuntimeLaunchReceipt,
     TrustedLaunchEvidence,
     TrustedRoomContinuationPolicy,
     open_room_participation_authority,
@@ -114,12 +115,23 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         )
 
     def _launch(self):
-        return self.authority.begin_trusted_continuation(
-            previous_episode_id="episode-a",
+        receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_transfer_mode=self._edge_transfer_mode(),
+        )
+        return self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-a",
             room_id="room-r",
         )
+
+    def _edge_transfer_mode(self) -> TransferMode:
+        edges = self.living.list_continuity_edges()
+        for edge in edges:
+            if edge.edge_id == "edge-a-b":
+                return edge.transfer_mode
+        raise AssertionError("edge-a-b missing")
 
     def _grant(self, scopes=None):
         scopes = scopes or frozenset(
@@ -177,19 +189,70 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 perspective_instance_id="perspective-b",
                 room_id="room-r",
                 continuity_edge_id="edge-a-b",
+                previous_attachment_event_id="route-a",
                 attachment_event_id="route-b",
                 transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
                 continuity_status=ContinuityStatus.UNKNOWN,
                 _marker=object(),
             )
 
-    def test_perspective_binding_mismatch_blocks_launch(self) -> None:
-        with self.assertRaises(RoomLaunchEvidenceError):
+    def test_persisted_route_and_edge_cannot_mint_authority_without_launch_receipt(self) -> None:
+        with self.assertRaises(TypeError):
             self.authority.begin_trusted_continuation(
                 previous_episode_id="episode-a",
+                room_id="room-r",
+            )
+
+    def test_forged_runtime_launch_receipt_is_rejected(self) -> None:
+        with self.assertRaises(RoomLaunchEvidenceError):
+            SupportedRuntimeLaunchReceipt(
+                receipt_id="forged-launch",
+                session_id="forged-session",
+                home_process_instance_id="forged-process",
+                host_process_instance_id="forged-host",
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                _marker=object(),
+            )
+
+    def test_runtime_launch_receipt_is_one_shot(self) -> None:
+        receipt = self.authority.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-a",
+            room_id="room-r",
+        )
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.begin_trusted_continuation(
+                launch_receipt=receipt,
+                previous_episode_id="episode-a",
+                room_id="room-r",
+            )
+
+    def test_observed_launch_mode_must_match_persisted_edge(self) -> None:
+        receipt = self.authority.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_transfer_mode=TransferMode.LIVE_RUNTIME,
+        )
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.begin_trusted_continuation(
+                launch_receipt=receipt,
+                previous_episode_id="episode-a",
+                room_id="room-r",
+            )
+
+    def test_perspective_binding_mismatch_blocks_launch(self) -> None:
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.record_supported_runtime_launch(
                 episode_id="episode-b",
                 perspective_instance_id="perspective-a",
-                room_id="room-r",
+                observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
             )
 
     def test_history_reconstruction_does_not_auto_grant_participation(self) -> None:
@@ -424,11 +487,62 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             )
         )
 
-        self.authority.begin_trusted_continuation(
-            previous_episode_id="episode-b",
+        receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-c",
             perspective_instance_id="perspective-c",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-b",
             room_id="room-r",
+        )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_relaunch_same_episode_revokes_older_session_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+
+        second_receipt = self.authority.record_supported_runtime_launch(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        self.authority.begin_trusted_continuation(
+            launch_receipt=second_receipt,
+            previous_episode_id="episode-a",
+            room_id="room-r",
+        )
+
+        with self.assertRaises(RoomParticipationStaleError):
+            self.authority.require_grant(
+                grant=grant,
+                session_id=evidence.session_id,
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                room_id="room-r",
+                required_scope=RoomParticipationScope.APPEND_FIRST_PERSON,
+            )
+
+    def test_previous_route_revision_even_same_room_invalidates_grant(self) -> None:
+        evidence, _, _, grant = self._grant()
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-a-revised",
+                episode_id="episode-a",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="same_room_provenance_revision",
+                supersedes_attachment_event_id="route-a",
+            )
         )
 
         with self.assertRaises(RoomParticipationStaleError):
