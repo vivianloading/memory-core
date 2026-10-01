@@ -272,6 +272,37 @@ class HostMigrationTests(unittest.TestCase):
                     bundle_path=root / "partial-living.homebackup.zip",
                 )
 
+    def test_backup_refuses_same_name_tampered_living_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config, _, _ = self._create_synthetic_store(root)
+            self._seed_living_layer(root)
+
+            db_path = root / "data" / "home.db"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    "DROP TRIGGER living_episodes_no_update"
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER living_episodes_no_update
+                    BEFORE UPDATE ON living_episodes
+                    BEGIN
+                        SELECT 1;
+                    END
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(HostMigrationError):
+                create_closed_synthetic_backup(
+                    config_path=config,
+                    bundle_path=root / "tampered-trigger.homebackup.zip",
+                )
+
     def test_backup_refuses_real_domain_store_even_when_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
