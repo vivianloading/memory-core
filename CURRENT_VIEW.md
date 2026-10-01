@@ -63,6 +63,12 @@ heads, not an invitation to choose the newest write.
 A CurrentStateEndEvent is also append-only evidence. It can explicitly end a
 state without altering the historical assertion itself.
 
+An end event carries the same semantic-change authority class as its target.
+For Room state, the end event also carries the concrete Episode and
+PerspectiveInstance that authored the first-person change. Shared end events
+cannot claim Room first-person attribution. This is semantic provenance only;
+operational permission must still be enforced before such an event is admitted.
+
 ## Explicit validity rules
 
 Every state declares one validity rule and a compatible downgrade rule.
