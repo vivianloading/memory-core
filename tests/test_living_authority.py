@@ -119,6 +119,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=self._edge_transfer_mode(),
         )
         return self.authority.begin_trusted_continuation(
@@ -214,6 +215,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 host_process_instance_id="forged-host",
                 episode_id="episode-b",
                 perspective_instance_id="perspective-b",
+                runtime_instance_id="runtime-b",
                 observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
                 _marker=object(),
             )
@@ -222,6 +224,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
         self.authority.begin_trusted_continuation(
@@ -240,6 +243,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.LIVE_RUNTIME,
         )
         with self.assertRaises(RoomLaunchEvidenceError):
@@ -253,11 +257,13 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         first = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
         self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
 
@@ -272,6 +278,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
         object.__setattr__(
@@ -285,6 +292,15 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 launch_receipt=receipt,
                 previous_episode_id="episode-a",
                 room_id="room-r",
+            )
+
+    def test_runtime_instance_binding_mismatch_blocks_launch(self) -> None:
+        with self.assertRaises(RoomLaunchEvidenceError):
+            self.authority.record_supported_runtime_launch(
+                episode_id="episode-b",
+                perspective_instance_id="perspective-b",
+                observed_runtime_instance_id="runtime-wrong",
+                observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
             )
 
     def test_perspective_binding_mismatch_blocks_launch(self) -> None:
@@ -699,6 +715,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-c",
             perspective_instance_id="perspective-c",
+            observed_runtime_instance_id=None,
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
         self.authority.begin_trusted_continuation(
@@ -723,6 +740,7 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         second_receipt = self.authority.record_supported_runtime_launch(
             episode_id="episode-b",
             perspective_instance_id="perspective-b",
+            observed_runtime_instance_id="runtime-b",
             observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
         )
         self.authority.begin_trusted_continuation(
