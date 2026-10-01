@@ -288,3 +288,15 @@ def trusted_test_room_continuation_policy(
         source_event_ref=source_event_ref,
         _marker=living_authority._CONTINUATION_POLICY_MARKER,
     )
+
+
+def trusted_test_runtime_launch_issuer(
+    *,
+    lease,
+    store,
+) -> living_authority.TrustedRuntimeLaunchIssuer:
+    return living_authority.TrustedRuntimeLaunchIssuer(
+        lease=lease,
+        store=store,
+        _marker=living_authority._RUNTIME_LAUNCH_ISSUER_MARKER,
+    )
