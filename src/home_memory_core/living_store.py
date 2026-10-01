@@ -28,7 +28,7 @@ EPISODE_TABLE = "living_episodes"
 CONTINUITY_EDGE_TABLE = "living_continuity_edges"
 ATTACHMENT_TABLE = "living_room_attachment_events"
 
-_REQUIRED_TABLES = frozenset(
+LIVING_SCHEMA_TABLES = frozenset(
     {
         LIVING_SCHEMA_MARKER_TABLE,
         ROOM_TABLE,
@@ -125,7 +125,7 @@ class LivingStore:
             existing = self._existing_living_tables(connection)
 
             if existing:
-                if existing != _REQUIRED_TABLES:
+                if existing != LIVING_SCHEMA_TABLES:
                     raise LivingStoreIntegrityError(
                         "partial Living Layer schema exists"
                     )
@@ -193,13 +193,7 @@ class LivingStore:
                             )
                         ),
                     continuity_status TEXT NOT NULL
-                        CHECK (
-                            continuity_status IN (
-                                'verified',
-                                'partial',
-                                'unknown'
-                            )
-                        ),
+                        CHECK (continuity_status = 'unknown'),
                     support_refs_json TEXT NOT NULL
                         CHECK (length(trim(support_refs_json)) > 0),
 
@@ -459,6 +453,11 @@ class LivingStore:
     def add_continuity_edge(self, edge: ContinuityEdge) -> None:
         if not isinstance(edge, ContinuityEdge):
             raise TypeError("edge must be ContinuityEdge")
+        if edge.continuity_status is not ContinuityStatus.UNKNOWN:
+            raise LivingStoreIntegrityError(
+                "v0.1 persistence only admits unknown continuity; "
+                "partial/verified require a future typed verifier"
+            )
 
         connection = self._write_connection()
         try:
@@ -674,7 +673,7 @@ class LivingStore:
             """
         ).fetchall()
         names = {row[0] for row in rows}
-        return frozenset(names.intersection(_REQUIRED_TABLES))
+        return frozenset(names.intersection(LIVING_SCHEMA_TABLES))
 
     def _read_all_episodes(
         self,
@@ -797,7 +796,7 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    if not _REQUIRED_TABLES.issubset(tables):
+    if not LIVING_SCHEMA_TABLES.issubset(tables):
         raise LivingStoreIntegrityError(
             "Living Layer schema is missing or incomplete"
         )
@@ -809,9 +808,9 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
                 f"PRAGMA table_info({table_name})"
             ).fetchall()
         }
-        if not required_columns.issubset(actual_columns):
+        if actual_columns != required_columns:
             raise LivingStoreIntegrityError(
-                f"Living Layer table columns are incomplete: {table_name}"
+                f"Living Layer table columns drifted: {table_name}"
             )
 
     marker_rows = connection.execute(
