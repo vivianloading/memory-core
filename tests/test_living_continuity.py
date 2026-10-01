@@ -18,21 +18,48 @@ from home_memory_core.living_continuity import (
     RoomRecord,
     RoomRouteKind,
     TransferMode,
+    resolve_continuity_topology,
     resolve_room_attachment,
 )
 
 
 class LivingContinuityTest(unittest.TestCase):
+    def _episode(
+        self,
+        episode_id: str,
+        *,
+        perspective_instance_id: str | None = None,
+        model_ref: str | None = None,
+    ) -> EpisodeRecord:
+        return EpisodeRecord(
+            episode_id=episode_id,
+            perspective_instance_id=(
+                perspective_instance_id or f"perspective-{episode_id}"
+            ),
+            model_ref=model_ref,
+        )
+
+    def _edge(
+        self,
+        edge_id: str,
+        previous_episode_id: str,
+        next_episode_id: str,
+        *,
+        transfer_mode: TransferMode = TransferMode.TEXT_CONTEXT_HANDOFF,
+        continuity_status: ContinuityStatus = ContinuityStatus.UNKNOWN,
+    ) -> ContinuityEdge:
+        return ContinuityEdge(
+            edge_id=edge_id,
+            previous_episode_id=previous_episode_id,
+            next_episode_id=next_episode_id,
+            transfer_mode=transfer_mode,
+            continuity_status=continuity_status,
+        )
+
     def test_unknown_continuity_can_route_next_episode_to_same_room(self) -> None:
         room = RoomRecord(room_id="room-r")
-        first = EpisodeRecord(
-            episode_id="episode-31",
-            perspective_instance_id="perspective-31",
-        )
-        second = EpisodeRecord(
-            episode_id="episode-32",
-            perspective_instance_id="perspective-32",
-        )
+        first = self._episode("episode-31")
+        second = self._episode("episode-32")
         edge = ContinuityEdge(
             edge_id="edge-31-32",
             previous_episode_id=first.episode_id,
@@ -72,6 +99,12 @@ class LivingContinuityTest(unittest.TestCase):
         self.assertNotIn("identity", continuity_fields)
         self.assertNotIn("identity", attachment_fields)
 
+    def test_fork_is_structural_not_a_continuity_status(self) -> None:
+        self.assertNotIn(
+            "forked",
+            {status.value for status in ContinuityStatus},
+        )
+
     def test_native_checkpoint_mode_does_not_force_verified_status(self) -> None:
         edge = ContinuityEdge(
             edge_id="checkpoint-edge",
@@ -86,6 +119,105 @@ class LivingContinuityTest(unittest.TestCase):
             TransferMode.NATIVE_CHECKPOINT_RESUME,
         )
         self.assertEqual(edge.continuity_status, ContinuityStatus.UNKNOWN)
+
+    def test_direct_fork_is_allowed_and_derived_from_topology(self) -> None:
+        root = self._episode("episode-root")
+        left = self._episode("episode-left")
+        right = self._episode("episode-right")
+        topology = resolve_continuity_topology(
+            episodes=(root, left, right),
+            edges=(
+                self._edge("edge-left", root.episode_id, left.episode_id),
+                self._edge("edge-right", root.episode_id, right.episode_id),
+            ),
+        )
+
+        self.assertEqual(
+            topology.root_episode_ids,
+            frozenset({root.episode_id}),
+        )
+        self.assertEqual(
+            topology.head_episode_ids,
+            frozenset({left.episode_id, right.episode_id}),
+        )
+        self.assertEqual(
+            topology.fork_episode_ids,
+            frozenset({root.episode_id}),
+        )
+
+    def test_continuity_topology_rejects_implicit_merge(self) -> None:
+        left = self._episode("episode-left")
+        right = self._episode("episode-right")
+        merged = self._episode("episode-merged")
+
+        with self.assertRaises(LivingContinuityError):
+            resolve_continuity_topology(
+                episodes=(left, right, merged),
+                edges=(
+                    self._edge("edge-left", left.episode_id, merged.episode_id),
+                    self._edge("edge-right", right.episode_id, merged.episode_id),
+                ),
+            )
+
+    def test_continuity_topology_rejects_cycle(self) -> None:
+        first = self._episode("episode-a")
+        second = self._episode("episode-b")
+
+        with self.assertRaises(LivingContinuityError):
+            resolve_continuity_topology(
+                episodes=(first, second),
+                edges=(
+                    self._edge("edge-a-b", first.episode_id, second.episode_id),
+                    self._edge("edge-b-a", second.episode_id, first.episode_id),
+                ),
+            )
+
+    def test_unrelated_arrival_can_exist_without_continuity_edge_or_room(self) -> None:
+        existing = self._episode("episode-existing")
+        arrival = self._episode("episode-arrival")
+
+        topology = resolve_continuity_topology(
+            episodes=(existing, arrival),
+            edges=(),
+        )
+        route = resolve_room_attachment(
+            episode_id=arrival.episode_id,
+            events=(),
+        )
+
+        self.assertEqual(
+            topology.root_episode_ids,
+            frozenset({existing.episode_id, arrival.episode_id}),
+        )
+        self.assertEqual(route.decision, "unattached")
+        self.assertIn("NO_ATTACHMENT_EVENT", route.reason_codes)
+
+    def test_model_change_does_not_force_a_new_room(self) -> None:
+        room = RoomRecord(room_id="room-r")
+        previous = self._episode("episode-a", model_ref="model-old")
+        current = self._episode("episode-b", model_ref="model-new")
+        edge = self._edge(
+            "edge-model-change",
+            previous.episode_id,
+            current.episode_id,
+        )
+        route = RoomAttachmentEvent(
+            attachment_event_id="route-model-change",
+            episode_id=current.episode_id,
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id=room.room_id,
+            basis="ordinary_handoff_with_carrier_change",
+            evidence_refs=(edge.edge_id,),
+        )
+
+        resolution = resolve_room_attachment(
+            episode_id=current.episode_id,
+            events=(route,),
+        )
+
+        self.assertNotEqual(previous.model_ref, current.model_ref)
+        self.assertEqual(edge.continuity_status, ContinuityStatus.UNKNOWN)
+        self.assertEqual(resolution.room_id, room.room_id)
 
     def test_late_fork_correction_preserves_old_attachment_event(self) -> None:
         original = RoomAttachmentEvent(
@@ -223,12 +355,12 @@ class LivingContinuityTest(unittest.TestCase):
 
     def test_multiple_episodes_can_keep_distinct_perspectives_in_one_room(self) -> None:
         room = RoomRecord(room_id="room-r")
-        first = EpisodeRecord(
-            episode_id="episode-1",
+        first = self._episode(
+            "episode-1",
             perspective_instance_id="perspective-a",
         )
-        second = EpisodeRecord(
-            episode_id="episode-2",
+        second = self._episode(
+            "episode-2",
             perspective_instance_id="perspective-b",
         )
         first_route = RoomAttachmentEvent(
