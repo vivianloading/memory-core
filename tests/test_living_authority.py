@@ -163,6 +163,142 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
         )
         return evidence, proposal, approval, grant
 
+    def _seed_policy_lineage_case(
+        self,
+        *,
+        first_mode: TransferMode = TransferMode.TEXT_CONTEXT_HANDOFF,
+        middle_route: str = "room-r",
+        ambiguous_middle: bool = False,
+    ):
+        for episode_id in (
+            "lineage-a",
+            "lineage-x",
+            "lineage-b",
+            "lineage-c",
+        ):
+            self.living.add_episode(
+                EpisodeRecord(
+                    episode_id=episode_id,
+                    perspective_instance_id=f"perspective-{episode_id}",
+                    runtime_instance_id=f"runtime-{episode_id}",
+                )
+            )
+
+        if middle_route == "other-room" or ambiguous_middle:
+            try:
+                self.living.add_room(RoomRecord(room_id="room-other"))
+            except Exception:
+                pass
+
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="lineage-edge-a-x",
+                previous_episode_id="lineage-a",
+                next_episode_id="lineage-x",
+                transfer_mode=first_mode,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="lineage-edge-x-b",
+                previous_episode_id="lineage-x",
+                next_episode_id="lineage-b",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="lineage-edge-b-c",
+                previous_episode_id="lineage-b",
+                next_episode_id="lineage-c",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="lineage-route-a",
+                episode_id="lineage-a",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="policy_anchor",
+            )
+        )
+        if middle_route == "unattached":
+            self.living.add_room_attachment(
+                RoomAttachmentEvent(
+                    attachment_event_id="lineage-route-x",
+                    episode_id="lineage-x",
+                    route_kind=RoomRouteKind.UNATTACHED,
+                    room_id=None,
+                    basis="explicit_gap",
+                )
+            )
+        else:
+            room_id = (
+                "room-other"
+                if middle_route == "other-room"
+                else "room-r"
+            )
+            self.living.add_room_attachment(
+                RoomAttachmentEvent(
+                    attachment_event_id="lineage-route-x",
+                    episode_id="lineage-x",
+                    route_kind=RoomRouteKind.ATTACHED,
+                    room_id=room_id,
+                    basis="intermediate_route",
+                )
+            )
+            if ambiguous_middle:
+                self.living.add_room_attachment(
+                    RoomAttachmentEvent(
+                        attachment_event_id="lineage-route-x-competing",
+                        episode_id="lineage-x",
+                        route_kind=RoomRouteKind.ATTACHED,
+                        room_id="room-other",
+                        basis="competing_intermediate_route",
+                    )
+                )
+
+        for episode_id, event_id in (
+            ("lineage-b", "lineage-route-b"),
+            ("lineage-c", "lineage-route-c"),
+        ):
+            self.living.add_room_attachment(
+                RoomAttachmentEvent(
+                    attachment_event_id=event_id,
+                    episode_id=episode_id,
+                    route_kind=RoomRouteKind.ATTACHED,
+                    room_id="room-r",
+                    basis="ordinary_handoff",
+                )
+            )
+
+        policy = trusted_test_room_continuation_policy(
+            policy_id="policy-lineage",
+            room_id="room-r",
+            established_episode_id="lineage-a",
+            established_attachment_event_id="lineage-route-a",
+            allowed_scopes={
+                RoomParticipationScope.APPEND_FIRST_PERSON,
+            },
+        )
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="lineage-c",
+            perspective_instance_id="perspective-lineage-c",
+            observed_runtime_instance_id="runtime-lineage-c",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        evidence = self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="lineage-b",
+            room_id="room-r",
+        )
+        return evidence, policy
+
     def test_ordinary_unknown_continuation_receives_fresh_bound_grant(self) -> None:
         evidence, _, _, grant = self._grant()
 
