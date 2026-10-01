@@ -85,9 +85,7 @@ class ContinuityEdge:
     next_episode_id: str
     transfer_mode: TransferMode
     continuity_status: ContinuityStatus
-    evidence_refs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
+    # Opaque references to receipts/records supporting this relation. These are\n    # deliberately not home_memory_core.evidence.EvidenceRef source spans.\n    support_refs: tuple[str, ...] = ()\n\n    def __post_init__(self) -> None:
         _require_nonempty("edge_id", self.edge_id)
         _require_nonempty("previous_episode_id", self.previous_episode_id)
         _require_nonempty("next_episode_id", self.next_episode_id)
@@ -101,7 +99,7 @@ class ContinuityEdge:
             raise LivingContinuityError(
                 "continuity_status must use ContinuityStatus"
             )
-        _validate_refs(self.evidence_refs)
+        _validate_refs(self.support_refs)
 
 
 @dataclass(frozen=True)
@@ -224,7 +222,7 @@ class RoomAttachmentEvent:
     room_id: str | None
     basis: str
     supersedes_attachment_event_id: str | None = None
-    evidence_refs: tuple[str, ...] = ()
+    support_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_nonempty("attachment_event_id", self.attachment_event_id)
@@ -250,7 +248,7 @@ class RoomAttachmentEvent:
             raise LivingContinuityError(
                 "room attachment event cannot supersede itself"
             )
-        _validate_refs(self.evidence_refs)
+        _validate_refs(self.support_refs)
 
 
 @dataclass(frozen=True)
@@ -402,10 +400,10 @@ def _require_optional_nonempty(field_name: str, value: str | None) -> None:
 
 def _validate_refs(refs: tuple[str, ...]) -> None:
     if not isinstance(refs, tuple):
-        raise LivingContinuityError("evidence_refs must be a tuple")
+        raise LivingContinuityError("support_refs must be a tuple")
     if any(not isinstance(item, str) or not item.strip() for item in refs):
         raise LivingContinuityError(
-            "evidence_refs cannot contain empty values"
+            "support_refs cannot contain empty values"
         )
     if len(set(refs)) != len(refs):
-        raise LivingContinuityError("evidence_refs cannot contain duplicates")
+        raise LivingContinuityError("support_refs cannot contain duplicates")
