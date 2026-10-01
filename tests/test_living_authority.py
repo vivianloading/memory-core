@@ -493,6 +493,88 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
                 ),
             )
 
+    def test_sibling_branch_policy_cannot_authorize_this_branch(self) -> None:
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-sibling",
+                perspective_instance_id="perspective-sibling",
+                runtime_instance_id="runtime-sibling",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-sibling",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-sibling",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-sibling",
+                episode_id="episode-sibling",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="fork_sibling_route",
+            )
+        )
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c-branch",
+                perspective_instance_id="perspective-c-branch",
+                runtime_instance_id="runtime-c-branch",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-b-c-branch",
+                previous_episode_id="episode-b",
+                next_episode_id="episode-c-branch",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-c-branch",
+                episode_id="episode-c-branch",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="ordinary_handoff",
+            )
+        )
+        sibling_policy = trusted_test_room_continuation_policy(
+            policy_id="policy-sibling",
+            room_id="room-r",
+            established_episode_id="episode-sibling",
+            established_attachment_event_id="route-sibling",
+            allowed_scopes={
+                RoomParticipationScope.READ_HISTORY,
+            },
+        )
+
+        receipt = self.launcher.record_supported_runtime_launch(
+            episode_id="episode-c-branch",
+            perspective_instance_id="perspective-c-branch",
+            observed_runtime_instance_id="runtime-c-branch",
+            observed_transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+        )
+        evidence = self.authority.begin_trusted_continuation(
+            launch_receipt=receipt,
+            previous_episode_id="episode-b",
+            room_id="room-r",
+        )
+
+        with self.assertRaises(RoomParticipationAuthorizationError):
+            self.authority.prepare_grant(
+                launch_evidence=evidence,
+                policy=sibling_policy,
+                requested_scopes=frozenset(
+                    {RoomParticipationScope.READ_HISTORY}
+                ),
+            )
+
     def test_policy_reestablished_after_fork_can_continue_on_that_branch(self) -> None:
         self.living.add_episode(
             EpisodeRecord(
