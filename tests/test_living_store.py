@@ -176,6 +176,10 @@ class LivingStoreTest(unittest.TestCase):
         self.assertEqual(snapshot.previous_route.room_id, room.room_id)
         self.assertEqual(snapshot.current_route.room_id, room.room_id)
         self.assertEqual(snapshot.edges, (edge,))
+        self.assertEqual(
+            {route.episode_id for route in snapshot.routes},
+            {first.episode_id, second.episode_id},
+        )
         self.assertEqual(snapshot.anchor_episode, first)
         self.assertEqual(snapshot.anchor_route.room_id, room.room_id)
         self.assertEqual(
