@@ -83,6 +83,11 @@ class HostRuntimeTests(unittest.TestCase):
             finally:
                 handle.close()
 
+    def test_uninitialized_lease_object_cannot_pass_runtime_checks(self) -> None:
+        forged = object.__new__(HomeSingleInstanceLease)
+        with self.assertRaises(HostRuntimeLeaseError):
+            _ = forged.released
+
     def test_same_runtime_cannot_be_acquired_twice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "home"
