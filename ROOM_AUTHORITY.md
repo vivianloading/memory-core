@@ -127,10 +127,10 @@ A trusted automatic continuation requires:
 history_reconstruction and no_known_transfer require an explicit future Room
 entry path rather than automatic participation.
 
-Launch binding and later grant revalidation read both Episodes, both Room routes,
-the continuity edges, and derived topology from one LivingStore read transaction.
-HOME therefore does not assemble launch authority from a sequence of unrelated
-database snapshots.
+Launch binding and later grant revalidation read the relevant Episodes,
+continuity edges, derived topology, and the Room-route resolutions for the
+continuation lineage from one LivingStore read transaction. HOME therefore does
+not assemble launch authority from a sequence of unrelated database snapshots.
 
 A later route correction or newly discovered fork invalidates the process-local
 grant when it is next checked.
@@ -165,13 +165,18 @@ continuation choice.
 
 The current implementation therefore uses a trusted synthetic issuer only in
 test support. Each issued policy receives an opaque issuance id and is registered
-against the exact originally issued object and payload fingerprint. A copied,
-renamed, widened, or otherwise mutated policy is not a new authority event and
-is rejected, even if it carries the dataclass's private marker. Operational
-suspension follows the trusted issuance rather than a caller-renamable label.
+against the exact originally issued object, original payload fingerprint, HOME
+process incarnation, host lease incarnation, and synthetic store path. A copied,
+renamed, widened, moved-to-another-host/store, or otherwise mutated policy is not
+a new authority event and is rejected, even if it carries the dataclass's private
+marker. Operational suspension follows the trusted issuance rather than a
+caller-renamable label.
 
 This closes an important distinction: `policy_id` is a human/audit label;
-trusted issuance provenance is the authority root.
+trusted issuance provenance is the authority root. The synthetic issuance
+registry is process-local scaffolding, not the future durable representation of
+an inhabitant policy. A production policy-establishment path must persist its
+own provenance without relying on an absolute path or an in-memory object.
 
 ## Fresh grants, never transferred grants
 
@@ -187,6 +192,8 @@ The grant is bound to:
 - concrete PerspectiveInstance id
 - Room id
 - policy id
+- trusted policy issuance id
+- exact policy fingerprint
 - exact scope set
 - launch-evidence id
 
@@ -262,7 +269,10 @@ Every authorization check revalidates:
 - Episode attribution still matches;
 - Room route still matches the launch evidence;
 - exact continuity edge still matches;
-- predecessor has not become a fork;
+- every inherited policy-lineage edge remains an allowed automatic transfer;
+- every Episode on the inherited policy path remains unambiguously routed to
+  the same Room;
+- predecessor/ancestor lineage has not acquired a disqualifying fork;
 - requested action target exactly matches session/Episode/Perspective/Room;
 - requested scope is present in the grant.
 
