@@ -42,8 +42,9 @@ local synthetic launch.
 
 HOME first records a one-shot SupportedRuntimeLaunchReceipt at the actual
 supported-host launch boundary. That receipt binds the fresh process-local
-session to the new Episode, concrete PerspectiveInstance, HOME process, host
-lease, and the transfer mode the launcher actually observed.
+session to the new Episode, concrete PerspectiveInstance, persisted runtime
+instance (when present), HOME process, host lease, and the transfer mode the
+launcher actually observed.
 
 Only then may HOME bind that receipt to persisted Living topology and mint
 TrustedLaunchEvidence.
