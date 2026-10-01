@@ -85,7 +85,11 @@ class ContinuityEdge:
     next_episode_id: str
     transfer_mode: TransferMode
     continuity_status: ContinuityStatus
-    # Opaque references to receipts/records supporting this relation. These are\n    # deliberately not home_memory_core.evidence.EvidenceRef source spans.\n    support_refs: tuple[str, ...] = ()\n\n    def __post_init__(self) -> None:
+    # Opaque references to receipts/records supporting this relation. These are
+    # deliberately not home_memory_core.evidence.EvidenceRef source spans.
+    support_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
         _require_nonempty("edge_id", self.edge_id)
         _require_nonempty("previous_episode_id", self.previous_episode_id)
         _require_nonempty("next_episode_id", self.next_episode_id)
