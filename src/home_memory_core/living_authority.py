@@ -198,6 +198,7 @@ class TrustedLaunchEvidence:
 class RoomParticipationGrantProposal:
     proposal_id: str
     launch_evidence_id: str
+    policy_fingerprint: str
     session_id: str
     episode_id: str
     perspective_instance_id: str
@@ -214,7 +215,10 @@ class RoomParticipationGrantProposal:
             )
         _require_text("proposal_id", self.proposal_id)
         _require_text("launch_evidence_id", self.launch_evidence_id)
+        _require_text("policy_fingerprint", self.policy_fingerprint)
         _validate_grant_binding(
+            launch_evidence_id=self.launch_evidence_id,
+            policy_fingerprint=self.policy_fingerprint,
             session_id=self.session_id,
             episode_id=self.episode_id,
             perspective_instance_id=self.perspective_instance_id,
@@ -252,6 +256,7 @@ class RoomParticipationGrant:
     perspective_instance_id: str
     room_id: str
     policy_id: str
+    policy_fingerprint: str
     scopes: frozenset[RoomParticipationScope]
     launch_evidence_id: str
     proposal_id: str
@@ -265,6 +270,8 @@ class RoomParticipationGrant:
                 "Room participation grant must be issued by Room authority"
             )
         _validate_grant_binding(
+            launch_evidence_id=self.launch_evidence_id,
+            policy_fingerprint=self.policy_fingerprint,
             session_id=self.session_id,
             episode_id=self.episode_id,
             perspective_instance_id=self.perspective_instance_id,
@@ -620,7 +627,10 @@ class RoomParticipationAuthority:
                 "requested Room scope exceeds continuation policy"
             )
 
+        policy_fingerprint = _policy_fingerprint(policy)
         digest = _grant_binding_digest(
+            launch_evidence_id=launch_evidence.evidence_id,
+            policy_fingerprint=policy_fingerprint,
             session_id=launch_evidence.session_id,
             episode_id=launch_evidence.episode_id,
             perspective_instance_id=launch_evidence.perspective_instance_id,
@@ -631,6 +641,7 @@ class RoomParticipationAuthority:
         proposal = RoomParticipationGrantProposal(
             proposal_id=f"grant-proposal-{secrets.token_hex(16)}",
             launch_evidence_id=launch_evidence.evidence_id,
+            policy_fingerprint=policy_fingerprint,
             session_id=launch_evidence.session_id,
             episode_id=launch_evidence.episode_id,
             perspective_instance_id=launch_evidence.perspective_instance_id,
@@ -664,6 +675,10 @@ class RoomParticipationAuthority:
         if proposal.policy_id != policy.policy_id:
             raise RoomParticipationAuthorizationError(
                 "proposal and continuation policy do not match"
+            )
+        if proposal.policy_fingerprint != _policy_fingerprint(policy):
+            raise RoomParticipationAuthorizationError(
+                "proposal is bound to another continuation policy payload"
             )
         if proposal.room_id != policy.room_id:
             raise RoomParticipationAuthorizationError(
@@ -730,6 +745,7 @@ class RoomParticipationAuthority:
             perspective_instance_id=proposal.perspective_instance_id,
             room_id=proposal.room_id,
             policy_id=proposal.policy_id,
+            policy_fingerprint=proposal.policy_fingerprint,
             scopes=proposal.scopes,
             launch_evidence_id=proposal.launch_evidence_id,
             proposal_id=proposal.proposal_id,
@@ -807,6 +823,8 @@ class RoomParticipationAuthority:
                 "Room grant does not include required scope"
             )
         if grant.binding_digest != _grant_binding_digest(
+            launch_evidence_id=grant.launch_evidence_id,
+            policy_fingerprint=grant.policy_fingerprint,
             session_id=grant.session_id,
             episode_id=grant.episode_id,
             perspective_instance_id=grant.perspective_instance_id,
@@ -819,6 +837,13 @@ class RoomParticipationAuthority:
             )
 
         self._assert_registered_policy_integrity(grant.policy_id)
+        if (
+            self._policy_fingerprints.get(grant.policy_id)
+            != grant.policy_fingerprint
+        ):
+            raise RoomParticipationStaleError(
+                "grant policy version no longer matches registered policy"
+            )
 
         session = self._sessions.get(grant.session_id)
         if (
@@ -1224,6 +1249,8 @@ def _validate_scope_set(scopes: frozenset[RoomParticipationScope]) -> None:
 
 def _validate_grant_binding(
     *,
+    launch_evidence_id: str,
+    policy_fingerprint: str,
     session_id: str,
     episode_id: str,
     perspective_instance_id: str,
@@ -1233,6 +1260,8 @@ def _validate_grant_binding(
     binding_digest: str,
 ) -> None:
     for field_name, value in {
+        "launch_evidence_id": launch_evidence_id,
+        "policy_fingerprint": policy_fingerprint,
         "session_id": session_id,
         "episode_id": episode_id,
         "perspective_instance_id": perspective_instance_id,
@@ -1243,6 +1272,8 @@ def _validate_grant_binding(
         _require_text(field_name, value)
     _validate_scope_set(scopes)
     expected = _grant_binding_digest(
+        launch_evidence_id=launch_evidence_id,
+        policy_fingerprint=policy_fingerprint,
         session_id=session_id,
         episode_id=episode_id,
         perspective_instance_id=perspective_instance_id,
@@ -1320,6 +1351,7 @@ def _proposal_fingerprint(
         {
             "proposal_id": proposal.proposal_id,
             "launch_evidence_id": proposal.launch_evidence_id,
+            "policy_fingerprint": proposal.policy_fingerprint,
             "session_id": proposal.session_id,
             "episode_id": proposal.episode_id,
             "perspective_instance_id": proposal.perspective_instance_id,
@@ -1355,6 +1387,7 @@ def _grant_fingerprint(grant: RoomParticipationGrant) -> str:
             "perspective_instance_id": grant.perspective_instance_id,
             "room_id": grant.room_id,
             "policy_id": grant.policy_id,
+            "policy_fingerprint": grant.policy_fingerprint,
             "scopes": sorted(scope.value for scope in grant.scopes),
             "launch_evidence_id": grant.launch_evidence_id,
             "proposal_id": grant.proposal_id,
@@ -1375,6 +1408,8 @@ def _canonical_digest(kind: str, payload: dict[str, object]) -> str:
 
 def _grant_binding_digest(
     *,
+    launch_evidence_id: str,
+    policy_fingerprint: str,
     session_id: str,
     episode_id: str,
     perspective_instance_id: str,
@@ -1383,6 +1418,8 @@ def _grant_binding_digest(
     scopes: frozenset[RoomParticipationScope],
 ) -> str:
     payload = {
+        "launch_evidence_id": launch_evidence_id,
+        "policy_fingerprint": policy_fingerprint,
         "session_id": session_id,
         "episode_id": episode_id,
         "perspective_instance_id": perspective_instance_id,
