@@ -921,7 +921,8 @@ def assert_living_schema(connection: sqlite3.Connection) -> None:
         WHERE marker_key = 'living_layer_schema'
         """
     ).fetchall()
-    if marker_rows != [(LIVING_SCHEMA_VERSION,)]:
+    marker_versions = [row[0] for row in marker_rows]
+    if marker_versions != [LIVING_SCHEMA_VERSION]:
         raise LivingStoreIntegrityError(
             "Living Layer schema marker is invalid"
         )
