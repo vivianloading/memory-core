@@ -464,6 +464,8 @@ class LivingContinuationPathSnapshot:
     current_route: RoomAttachmentResolution
     edges: tuple[ContinuityEdge, ...]
     topology: ContinuityTopology
+    anchor_episode: EpisodeRecord | None = None
+    anchor_route: RoomAttachmentResolution | None = None
 
 
 class LivingStore:
@@ -515,8 +517,9 @@ class LivingStore:
         *,
         previous_episode_id: str,
         episode_id: str,
+        anchor_episode_id: str | None = None,
     ) -> LivingContinuationPathSnapshot:
-        """Read both Episodes, routing, edges and topology in one snapshot."""
+        """Read continuation, routes and optional policy anchor in one snapshot."""
 
         connection = self._read_connection()
         try:
@@ -528,6 +531,11 @@ class LivingStore:
             try:
                 previous = episode_by_id[previous_episode_id]
                 current = episode_by_id[episode_id]
+                anchor = (
+                    None
+                    if anchor_episode_id is None
+                    else episode_by_id[anchor_episode_id]
+                )
             except KeyError as error:
                 raise KeyError(error.args[0]) from error
 
@@ -539,6 +547,14 @@ class LivingStore:
                 connection,
                 episode_id=episode_id,
             )
+            anchor_events = (
+                ()
+                if anchor_episode_id is None
+                else self._read_room_attachment_events(
+                    connection,
+                    episode_id=anchor_episode_id,
+                )
+            )
             edges = self._read_all_continuity_edges(connection)
             try:
                 previous_route = resolve_room_attachment(
@@ -548,6 +564,14 @@ class LivingStore:
                 current_route = resolve_room_attachment(
                     episode_id=episode_id,
                     events=current_events,
+                )
+                anchor_route = (
+                    None
+                    if anchor_episode_id is None
+                    else resolve_room_attachment(
+                        episode_id=anchor_episode_id,
+                        events=anchor_events,
+                    )
                 )
                 topology = resolve_continuity_topology(
                     episodes=episodes,
@@ -563,6 +587,8 @@ class LivingStore:
                 current_route=current_route,
                 edges=edges,
                 topology=topology,
+                anchor_episode=anchor,
+                anchor_route=anchor_route,
             )
         finally:
             connection.close()
