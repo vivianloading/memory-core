@@ -633,6 +633,8 @@ class RoomParticipationAuthorityTests(unittest.TestCase):
             grant,
             "binding_digest",
             authority_module._grant_binding_digest(
+                launch_evidence_id=grant.launch_evidence_id,
+                policy_fingerprint=grant.policy_fingerprint,
                 session_id=grant.session_id,
                 episode_id=grant.episode_id,
                 perspective_instance_id=grant.perspective_instance_id,
