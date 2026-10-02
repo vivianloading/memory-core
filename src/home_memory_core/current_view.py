@@ -758,8 +758,8 @@ def _candidate_for(
 
     if record.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
         assert record.stale_after is not None
-        stale_at = _instant(record.event_time) + record.stale_after
-        if _instant(as_of) >= stale_at:
+        elapsed = _instant(as_of) - _instant(record.event_time)
+        if elapsed >= record.stale_after:
             return CurrentCandidate(
                 record=record,
                 end_events=end_events,
