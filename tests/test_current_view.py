@@ -517,6 +517,66 @@ class CurrentViewTests(unittest.TestCase):
             utc_result.current_state_ids,
         )
 
+    def test_huge_stale_after_never_requires_unrepresentable_deadline(self) -> None:
+        event = datetime(2026, 11, 1, 4, 0, tzinfo=UTC)
+        zones = (
+            UTC,
+            ZoneInfo("America/New_York"),
+            timezone(timedelta(hours=8)),
+        )
+        spans = (
+            timedelta(days=3_000_000),
+            timedelta.max,
+        )
+
+        for zone in zones:
+            for span in spans:
+                with self.subTest(zone=str(zone), span=span):
+                    represented = event.astimezone(zone)
+                    preference = self._dst_room_record(
+                        f"huge-{zone}-{span.days}",
+                        key="dst.preference",
+                        state_kind=CurrentStateKind.PREFERENCE,
+                        event_time=represented,
+                        recorded_at=represented,
+                        valid_from=represented,
+                        validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                        downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                        stale_after=span,
+                    )
+
+                    resolution = resolve_current_state(
+                        namespace=CurrentNamespace.ROOM,
+                        owner_id="room-dst",
+                        key="dst.preference",
+                        records=(preference,),
+                        as_of=event,
+                    )
+                    self.assertEqual(
+                        resolution.standing,
+                        CurrentStanding.CURRENT,
+                    )
+
+                    project = self._dst_room_record(
+                        f"project-{zone}-{span.days}",
+                        key="dst.project",
+                    )
+                    view = derive_current_view(
+                        namespace=CurrentNamespace.ROOM,
+                        owner_id="room-dst",
+                        records=(project, preference),
+                        as_of=event,
+                    )
+                    by_key = {item.key: item for item in view.items}
+                    self.assertEqual(
+                        by_key["dst.preference"].standing,
+                        CurrentStanding.CURRENT,
+                    )
+                    self.assertEqual(
+                        by_key["dst.project"].standing,
+                        CurrentStanding.CURRENT,
+                    )
+
     def test_durable_state_survives_silence(self) -> None:
         record = self._room_record("state-a")
 
