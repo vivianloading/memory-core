@@ -1,0 +1,2201 @@
+import dataclasses
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
+
+
+from home_memory_core.interpretation import (
+    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+)
+from home_memory_core.current_view import (
+    CurrentNamespace,
+    CurrentStanding,
+    CurrentStateEndEvent,
+    CurrentStateKind,
+    CurrentStateRecord,
+    CurrentViewError,
+    DowngradeRule,
+    EndKind,
+    SemanticChangeAuthority,
+    ValidityRule,
+    derive_current_view,
+    resolve_current_state,
+)
+
+
+UTC = timezone.utc
+
+
+class CurrentViewTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.t0 = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+
+    def _room_record(
+        self,
+        state_id: str,
+        *,
+        key: str = "project.home.status",
+        value: str = "building",
+        state_kind: CurrentStateKind = CurrentStateKind.PROJECT_STATUS,
+        event_offset: timedelta = timedelta(0),
+        recorded_offset: timedelta = timedelta(0),
+        valid_from_offset: timedelta = timedelta(0),
+        validity_rule: ValidityRule = ValidityRule.DURABLE_UNTIL_CHANGED,
+        downgrade_rule: DowngradeRule = DowngradeRule.NONE,
+        valid_until_offset: timedelta | None = None,
+        stale_after: timedelta | None = None,
+        supersedes_state_id: str | None = None,
+        room_id: str = "room-r",
+        episode_id: str = "episode-a",
+        perspective_instance_id: str = "perspective-a",
+    ) -> CurrentStateRecord:
+        return CurrentStateRecord(
+            state_id=state_id,
+            namespace=CurrentNamespace.ROOM,
+            owner_id=room_id,
+            key=key,
+            state_kind=state_kind,
+            value=value,
+            event_time=self.t0 + event_offset,
+            recorded_at=self.t0 + recorded_offset,
+            valid_from=self.t0 + valid_from_offset,
+            validity_rule=validity_rule,
+            downgrade_rule=downgrade_rule,
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id=episode_id,
+            perspective_instance_id=perspective_instance_id,
+            valid_until=(
+                None
+                if valid_until_offset is None
+                else self.t0 + valid_until_offset
+            ),
+            stale_after=stale_after,
+            supersedes_state_id=supersedes_state_id,
+            source_refs=(f"source-{state_id}",),
+        )
+
+    def _shared_record(
+        self,
+        state_id: str,
+        *,
+        key: str = "shared.project.status",
+        value: str = "open",
+        event_offset: timedelta = timedelta(0),
+        recorded_offset: timedelta = timedelta(0),
+        valid_from_offset: timedelta = timedelta(0),
+        validity_rule: ValidityRule = ValidityRule.DURABLE_UNTIL_CHANGED,
+        downgrade_rule: DowngradeRule = DowngradeRule.NONE,
+        valid_until_offset: timedelta | None = None,
+        stale_after: timedelta | None = None,
+        supersedes_state_id: str | None = None,
+        shared_id: str = "shared-home",
+    ) -> CurrentStateRecord:
+        return CurrentStateRecord(
+            state_id=state_id,
+            namespace=CurrentNamespace.SHARED,
+            owner_id=shared_id,
+            key=key,
+            state_kind=CurrentStateKind.SHARED_STATE,
+            value=value,
+            event_time=self.t0 + event_offset,
+            recorded_at=self.t0 + recorded_offset,
+            valid_from=self.t0 + valid_from_offset,
+            validity_rule=validity_rule,
+            downgrade_rule=downgrade_rule,
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            valid_until=(
+                None
+                if valid_until_offset is None
+                else self.t0 + valid_until_offset
+            ),
+            stale_after=stale_after,
+            supersedes_state_id=supersedes_state_id,
+            source_refs=(f"source-{state_id}",),
+        )
+
+    def _resolve_room(
+        self,
+        records: tuple[CurrentStateRecord, ...],
+        *,
+        key: str = "project.home.status",
+        as_of_offset: timedelta = timedelta(0),
+        end_events: tuple[CurrentStateEndEvent, ...] = (),
+    ):
+        return resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            key=key,
+            records=records,
+            end_events=end_events,
+            as_of=self.t0 + as_of_offset,
+        )
+
+    def _ny_time(
+        self,
+        hour: int,
+        minute: int = 0,
+        *,
+        fold: int = 0,
+    ) -> datetime:
+        return datetime(
+            2026,
+            11,
+            1,
+            hour,
+            minute,
+            tzinfo=ZoneInfo("America/New_York"),
+            fold=fold,
+        )
+
+    def _dst_room_record(
+        self,
+        state_id: str,
+        *,
+        key: str = "dst.key",
+        state_kind: CurrentStateKind = CurrentStateKind.PROJECT_STATUS,
+        event_time: datetime | None = None,
+        recorded_at: datetime | None = None,
+        valid_from: datetime | None = None,
+        validity_rule: ValidityRule = ValidityRule.DURABLE_UNTIL_CHANGED,
+        downgrade_rule: DowngradeRule = DowngradeRule.NONE,
+        valid_until: datetime | None = None,
+        stale_after: timedelta | None = None,
+        supersedes_state_id: str | None = None,
+    ) -> CurrentStateRecord:
+        base = self._ny_time(0)
+        return CurrentStateRecord(
+            state_id=state_id,
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key=key,
+            state_kind=state_kind,
+            value=state_id,
+            event_time=event_time or base,
+            recorded_at=recorded_at or base,
+            valid_from=valid_from or base,
+            validity_rule=validity_rule,
+            downgrade_rule=downgrade_rule,
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id=f"episode-{state_id}",
+            perspective_instance_id=f"perspective-{state_id}",
+            valid_until=valid_until,
+            stale_after=stale_after,
+            supersedes_state_id=supersedes_state_id,
+            source_refs=(f"source-{state_id}",),
+        )
+
+    def _dst_shared_interval(
+        self,
+        *,
+        valid_from: datetime | None = None,
+        valid_until: datetime,
+    ) -> CurrentStateRecord:
+        base = self._ny_time(0)
+        return CurrentStateRecord(
+            state_id="dst-window",
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-dst",
+            key="dst.window",
+            state_kind=CurrentStateKind.SHARED_STATE,
+            value="window",
+            event_time=base,
+            recorded_at=base,
+            valid_from=valid_from or base,
+            validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+            downgrade_rule=DowngradeRule.TO_EXPIRED,
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            valid_until=valid_until,
+            source_refs=("source-dst-window",),
+        )
+
+    def test_dst_repeated_hour_does_not_leak_future_recorded_state_or_key(self) -> None:
+        as_of = self._ny_time(1, 30, fold=0)
+        future = self._dst_room_record(
+            "future-record",
+            key="future-recorded-key",
+            recorded_at=self._ny_time(1, 15, fold=1),
+        )
+
+        view = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            records=(future,),
+            as_of=as_of,
+        )
+
+        self.assertEqual(view.items, ())
+
+    def test_dst_future_valid_successor_does_not_activate_early(self) -> None:
+        as_of = self._ny_time(1, 30, fold=0)
+        parent = self._dst_room_record("parent")
+        child = self._dst_room_record(
+            "child",
+            event_time=self._ny_time(0, 10),
+            recorded_at=self._ny_time(0, 20),
+            valid_from=self._ny_time(1, 15, fold=1),
+            supersedes_state_id=parent.state_id,
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(parent, child),
+            as_of=as_of,
+        )
+
+        self.assertEqual(resolution.current_state_ids, ("parent",))
+        self.assertEqual(resolution.future_state_ids, ("child",))
+
+    def test_dst_future_recorded_end_does_not_end_earlier_view(self) -> None:
+        as_of = self._ny_time(1, 30, fold=0)
+        state = self._dst_room_record("state")
+        future_end = CurrentStateEndEvent(
+            end_event_id="future-end",
+            state_id=state.state_id,
+            ended_at=self._ny_time(1, 15, fold=1),
+            recorded_at=self._ny_time(1, 15, fold=1),
+            end_kind=EndKind.COMPLETED,
+            reason="later repeated-hour end",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-future-end",),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(state,),
+            end_events=(future_end,),
+            as_of=as_of,
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.CURRENT)
+
+    def test_dst_interval_expiry_uses_absolute_instants(self) -> None:
+        window = self._dst_shared_interval(
+            valid_until=self._ny_time(1, 45, fold=0),
+        )
+
+        expired = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-dst",
+            key="dst.window",
+            records=(window,),
+            as_of=self._ny_time(1, 5, fold=1),
+        )
+
+        self.assertEqual(expired.standing, CurrentStanding.EXPIRED)
+
+    def test_dst_interval_does_not_expire_before_later_fold_instant(self) -> None:
+        window = self._dst_shared_interval(
+            valid_until=self._ny_time(1, 15, fold=1),
+        )
+
+        current = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-dst",
+            key="dst.window",
+            records=(window,),
+            as_of=self._ny_time(1, 30, fold=0),
+        )
+
+        self.assertEqual(current.standing, CurrentStanding.CURRENT)
+
+    def test_dst_constructor_rejects_event_after_record_in_absolute_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._dst_room_record(
+                "bad-event-order",
+                event_time=self._ny_time(1, 15, fold=1),
+                recorded_at=self._ny_time(1, 30, fold=0),
+            )
+
+    def test_dst_constructor_rejects_end_after_record_in_absolute_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="bad-end-order",
+                state_id="state",
+                ended_at=self._ny_time(1, 15, fold=1),
+                recorded_at=self._ny_time(1, 30, fold=0),
+                end_kind=EndKind.EXPLICIT_END,
+                reason="absolute future end",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id="perspective-end",
+                source_refs=("source-bad-end-order",),
+            )
+
+    def test_dst_rejects_child_recorded_before_parent_in_absolute_time(self) -> None:
+        parent = self._dst_room_record(
+            "late-parent",
+            recorded_at=self._ny_time(1, 15, fold=1),
+        )
+        child = self._dst_room_record(
+            "early-child",
+            recorded_at=self._ny_time(1, 30, fold=0),
+            supersedes_state_id=parent.state_id,
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-dst",
+                key="dst.key",
+                records=(parent, child),
+                as_of=self._ny_time(2),
+            )
+
+    def test_dst_rejects_end_recorded_before_target_in_absolute_time(self) -> None:
+        target = self._dst_room_record(
+            "late-target",
+            recorded_at=self._ny_time(1, 15, fold=1),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="early-end-record",
+            state_id=target.state_id,
+            ended_at=self._ny_time(1, 30, fold=0),
+            recorded_at=self._ny_time(1, 30, fold=0),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="recorded before target in absolute time",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-early-end-record",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-dst",
+                key="dst.key",
+                records=(target,),
+                end_events=(end,),
+                as_of=self._ny_time(2),
+            )
+
+    def test_dst_rejects_end_before_validity_in_absolute_time(self) -> None:
+        target = self._dst_room_record(
+            "valid-later",
+            valid_from=self._ny_time(1, 15, fold=1),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="end-before-validity",
+            state_id=target.state_id,
+            ended_at=self._ny_time(1, 30, fold=0),
+            recorded_at=self._ny_time(2),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="absolute end before validity",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-before-validity",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-dst",
+                key="dst.key",
+                records=(target,),
+                end_events=(end,),
+                as_of=self._ny_time(2),
+            )
+
+    def test_dst_staleness_is_elapsed_duration_not_wall_clock_duration(self) -> None:
+        preference = self._dst_room_record(
+            "stale-late",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=self._ny_time(0, 30),
+            recorded_at=self._ny_time(0, 30),
+            valid_from=self._ny_time(0, 30),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(hours=2),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(preference,),
+            as_of=datetime(2026, 11, 1, 6, 45, tzinfo=UTC),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.LAST_KNOWN)
+
+    def test_dst_staleness_does_not_fire_before_elapsed_duration(self) -> None:
+        preference = self._dst_room_record(
+            "stale-early",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=self._ny_time(1, 15, fold=1),
+            recorded_at=self._ny_time(1, 15, fold=1),
+            valid_from=self._ny_time(1, 15, fold=1),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(minutes=30),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(preference,),
+            as_of=datetime(2026, 11, 1, 6, 30, tzinfo=UTC),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.CURRENT)
+
+    def test_dst_constructor_rejects_interval_inverted_in_absolute_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._dst_shared_interval(
+                valid_from=self._ny_time(1, 15, fold=1),
+                valid_until=self._ny_time(1, 30, fold=0),
+            )
+
+    def test_equivalent_timezone_representations_have_same_current_result(self) -> None:
+        preference = self._dst_room_record(
+            "timezone-equivalent",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=self._ny_time(0, 30),
+            recorded_at=self._ny_time(0, 30),
+            valid_from=self._ny_time(0, 30),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(hours=2),
+        )
+        utc_preference = dataclasses.replace(
+            preference,
+            event_time=preference.event_time.astimezone(UTC),
+            recorded_at=preference.recorded_at.astimezone(UTC),
+            valid_from=preference.valid_from.astimezone(UTC),
+        )
+        as_of = datetime(2026, 11, 1, 6, 45, tzinfo=UTC)
+
+        local_result = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(preference,),
+            as_of=as_of,
+        )
+        utc_result = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(utc_preference,),
+            as_of=as_of,
+        )
+
+        self.assertEqual(local_result.standing, utc_result.standing)
+        self.assertEqual(
+            local_result.current_state_ids,
+            utc_result.current_state_ids,
+        )
+
+    def test_huge_stale_after_never_requires_unrepresentable_deadline(self) -> None:
+        event = datetime(2026, 11, 1, 4, 0, tzinfo=UTC)
+        zones = (
+            UTC,
+            ZoneInfo("America/New_York"),
+            timezone(timedelta(hours=8)),
+        )
+        spans = (
+            timedelta(days=3_000_000),
+            timedelta.max,
+        )
+
+        for zone in zones:
+            for span in spans:
+                with self.subTest(zone=str(zone), span=span):
+                    represented = event.astimezone(zone)
+                    preference = self._dst_room_record(
+                        f"huge-{zone}-{span.days}",
+                        key="dst.preference",
+                        state_kind=CurrentStateKind.PREFERENCE,
+                        event_time=represented,
+                        recorded_at=represented,
+                        valid_from=represented,
+                        validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                        downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                        stale_after=span,
+                    )
+
+                    resolution = resolve_current_state(
+                        namespace=CurrentNamespace.ROOM,
+                        owner_id="room-dst",
+                        key="dst.preference",
+                        records=(preference,),
+                        as_of=event,
+                    )
+                    self.assertEqual(
+                        resolution.standing,
+                        CurrentStanding.CURRENT,
+                    )
+
+                    project = self._dst_room_record(
+                        f"project-{zone}-{span.days}",
+                        key="dst.project",
+                    )
+                    view = derive_current_view(
+                        namespace=CurrentNamespace.ROOM,
+                        owner_id="room-dst",
+                        records=(project, preference),
+                        as_of=event,
+                    )
+                    by_key = {item.key: item for item in view.items}
+                    self.assertEqual(
+                        by_key["dst.preference"].standing,
+                        CurrentStanding.CURRENT,
+                    )
+                    self.assertEqual(
+                        by_key["dst.project"].standing,
+                        CurrentStanding.CURRENT,
+                    )
+
+    def test_calendar_edge_offsets_do_not_overflow_current_resolution(self) -> None:
+        low = datetime(
+            1,
+            1,
+            1,
+            0,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        high = datetime(
+            9999,
+            12,
+            31,
+            23,
+            59,
+            59,
+            999999,
+            tzinfo=timezone(timedelta(hours=-8)),
+        )
+        event = datetime(2026, 11, 1, 4, 0, tzinfo=UTC)
+
+        for span in (timedelta(days=3_000_000), timedelta.max):
+            with self.subTest(boundary="low", span=span):
+                preference = CurrentStateRecord(
+                    state_id=f"edge-low-{span.days}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    key="edge.preference",
+                    state_kind=CurrentStateKind.PREFERENCE,
+                    value="tea",
+                    event_time=event,
+                    recorded_at=event,
+                    valid_from=low,
+                    validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                    downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id="episode-edge-low",
+                    perspective_instance_id="perspective-edge-low",
+                    stale_after=span,
+                    source_refs=("source-edge-low",),
+                )
+                resolution = resolve_current_state(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    key="edge.preference",
+                    records=(preference,),
+                    as_of=event,
+                )
+                self.assertEqual(
+                    resolution.standing,
+                    CurrentStanding.CURRENT,
+                )
+
+                project = CurrentStateRecord(
+                    state_id=f"edge-project-low-{span.days}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    key="edge.project",
+                    state_kind=CurrentStateKind.PROJECT_STATUS,
+                    value="building",
+                    event_time=event,
+                    recorded_at=event,
+                    valid_from=event,
+                    validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                    downgrade_rule=DowngradeRule.NONE,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id="episode-edge-project",
+                    perspective_instance_id="perspective-edge-project",
+                    source_refs=("source-edge-project",),
+                )
+                view = derive_current_view(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    records=(project, preference),
+                    as_of=event,
+                )
+                by_key = {item.key: item for item in view.items}
+                self.assertEqual(
+                    by_key["edge.preference"].standing,
+                    CurrentStanding.CURRENT,
+                )
+                self.assertEqual(
+                    by_key["edge.project"].standing,
+                    CurrentStanding.CURRENT,
+                )
+
+            with self.subTest(boundary="high", span=span):
+                future = CurrentStateRecord(
+                    state_id=f"edge-high-{span.days}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge-high",
+                    key="edge.preference",
+                    state_kind=CurrentStateKind.PREFERENCE,
+                    value="tea",
+                    event_time=event,
+                    recorded_at=event,
+                    valid_from=high,
+                    validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                    downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id="episode-edge-high",
+                    perspective_instance_id="perspective-edge-high",
+                    stale_after=span,
+                    source_refs=("source-edge-high",),
+                )
+                resolution = resolve_current_state(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge-high",
+                    key="edge.preference",
+                    records=(future,),
+                    as_of=event,
+                )
+                self.assertEqual(
+                    resolution.standing,
+                    CurrentStanding.UNKNOWN,
+                )
+                self.assertEqual(
+                    resolution.future_state_ids,
+                    (future.state_id,),
+                )
+                view = derive_current_view(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge-high",
+                    records=(future,),
+                    as_of=event,
+                )
+                self.assertEqual(
+                    view.items[0].standing,
+                    CurrentStanding.UNKNOWN,
+                )
+                self.assertEqual(
+                    view.items[0].future_state_ids,
+                    (future.state_id,),
+                )
+
+    def test_calendar_edge_instants_can_be_current_without_utc_materialization(self) -> None:
+        for label, instant in (
+            (
+                "low",
+                datetime(
+                    1,
+                    1,
+                    1,
+                    0,
+                    0,
+                    tzinfo=timezone(timedelta(hours=8)),
+                ),
+            ),
+            (
+                "high",
+                datetime(
+                    9999,
+                    12,
+                    31,
+                    23,
+                    59,
+                    59,
+                    999999,
+                    tzinfo=timezone(timedelta(hours=-8)),
+                ),
+            ),
+        ):
+            with self.subTest(boundary=label):
+                state = CurrentStateRecord(
+                    state_id=f"edge-current-{label}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id=f"room-edge-{label}",
+                    key="edge.current",
+                    state_kind=CurrentStateKind.PREFERENCE,
+                    value="tea",
+                    event_time=instant,
+                    recorded_at=instant,
+                    valid_from=instant,
+                    validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                    downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id=f"episode-edge-{label}",
+                    perspective_instance_id=f"perspective-edge-{label}",
+                    stale_after=timedelta.max,
+                    source_refs=(f"source-edge-{label}",),
+                )
+                resolution = resolve_current_state(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id=f"room-edge-{label}",
+                    key="edge.current",
+                    records=(state,),
+                    as_of=instant,
+                )
+                self.assertEqual(
+                    resolution.standing,
+                    CurrentStanding.CURRENT,
+                )
+
+    def test_calendar_edge_interval_and_end_ordering_do_not_overflow(self) -> None:
+        low = datetime(
+            1,
+            1,
+            1,
+            0,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        high = datetime(
+            9999,
+            12,
+            31,
+            23,
+            59,
+            59,
+            999999,
+            tzinfo=timezone(timedelta(hours=-8)),
+        )
+        middle = datetime(2026, 11, 1, 4, 0, tzinfo=UTC)
+
+        interval = CurrentStateRecord(
+            state_id="edge-interval",
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-edge",
+            key="edge.interval",
+            state_kind=CurrentStateKind.SHARED_STATE,
+            value="active",
+            event_time=middle,
+            recorded_at=middle,
+            valid_from=low,
+            validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+            downgrade_rule=DowngradeRule.TO_EXPIRED,
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            valid_until=high,
+            source_refs=("source-edge-interval",),
+        )
+        interval_resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-edge",
+            key="edge.interval",
+            records=(interval,),
+            as_of=middle,
+        )
+        self.assertEqual(
+            interval_resolution.standing,
+            CurrentStanding.CURRENT,
+        )
+
+        state = CurrentStateRecord(
+            state_id="edge-ended-state",
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-edge-ended",
+            key="edge.ended",
+            state_kind=CurrentStateKind.PROJECT_STATUS,
+            value="active",
+            event_time=middle,
+            recorded_at=middle,
+            valid_from=low,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-edge-ended",
+            perspective_instance_id="perspective-edge-ended",
+            source_refs=("source-edge-ended",),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="edge-end",
+            state_id=state.state_id,
+            ended_at=middle,
+            recorded_at=middle,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="ended in the middle of supported absolute range",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-edge-end",
+            perspective_instance_id="perspective-edge-end",
+            source_refs=("source-edge-end",),
+        )
+        ended = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-edge-ended",
+            key="edge.ended",
+            records=(state,),
+            end_events=(end,),
+            as_of=middle,
+        )
+        self.assertEqual(ended.standing, CurrentStanding.ENDED)
+
+    def test_durable_state_survives_silence(self) -> None:
+        record = self._room_record("state-a")
+
+        much_later = self._resolve_room(
+            (record,),
+            as_of_offset=timedelta(days=500),
+        )
+
+        self.assertEqual(much_later.standing, CurrentStanding.CURRENT)
+        self.assertEqual(much_later.current_state_ids, ("state-a",))
+        self.assertIn(
+            "DURABLE_UNTIL_CHANGED",
+            much_later.reason_codes,
+        )
+
+    def test_explicit_interval_expires_at_exact_boundary(self) -> None:
+        record = self._shared_record(
+            "state-window",
+            validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+            downgrade_rule=DowngradeRule.TO_EXPIRED,
+            valid_until_offset=timedelta(days=2),
+        )
+
+        before = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0 + timedelta(days=2) - timedelta(microseconds=1),
+        )
+        at_boundary = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0 + timedelta(days=2),
+        )
+
+        self.assertEqual(before.standing, CurrentStanding.CURRENT)
+        self.assertEqual(at_boundary.standing, CurrentStanding.EXPIRED)
+        self.assertEqual(at_boundary.current_state_ids, ())
+        self.assertEqual(
+            at_boundary.historical_state_ids,
+            ("state-window",),
+        )
+
+    def test_stale_preference_downgrades_to_last_known(self) -> None:
+        record = self._room_record(
+            "preference-a",
+            key="preference.coffee",
+            value="tea",
+            state_kind=CurrentStateKind.PREFERENCE,
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(days=7),
+        )
+
+        fresh = self._resolve_room(
+            (record,),
+            key="preference.coffee",
+            as_of_offset=timedelta(days=6),
+        )
+        stale = self._resolve_room(
+            (record,),
+            key="preference.coffee",
+            as_of_offset=timedelta(days=7),
+        )
+
+        self.assertEqual(fresh.standing, CurrentStanding.CURRENT)
+        self.assertEqual(stale.standing, CurrentStanding.LAST_KNOWN)
+        self.assertEqual(stale.current_state_ids, ("preference-a",))
+
+    def test_staleness_uses_event_time_not_record_time(self) -> None:
+        record = self._room_record(
+            "preference-late-record",
+            key="preference.music",
+            value="ambient",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_offset=timedelta(days=-10),
+            recorded_offset=timedelta(days=-2),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(days=7),
+        )
+
+        resolution = self._resolve_room(
+            (record,),
+            key="preference.music",
+            as_of_offset=timedelta(0),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.LAST_KNOWN,
+        )
+
+    def test_open_state_stays_unresolved_until_explicit_end(self) -> None:
+        record = self._room_record(
+            "unfinished-a",
+            key="unfinished.review",
+            value="review PR",
+            state_kind=CurrentStateKind.UNFINISHED_WORK,
+            validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
+            downgrade_rule=DowngradeRule.NONE,
+        )
+
+        resolution = self._resolve_room(
+            (record,),
+            key="unfinished.review",
+            as_of_offset=timedelta(days=100),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.UNRESOLVED,
+        )
+
+    def test_explicit_resolution_ends_open_state(self) -> None:
+        record = self._room_record(
+            "unfinished-a",
+            key="unfinished.review",
+            value="review PR",
+            state_kind=CurrentStateKind.UNFINISHED_WORK,
+            validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
+            downgrade_rule=DowngradeRule.NONE,
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="end-a",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(days=1),
+            recorded_at=self.t0 + timedelta(days=1),
+            end_kind=EndKind.RESOLVED,
+            reason="review completed",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-a",),
+        )
+
+        resolution = self._resolve_room(
+            (record,),
+            key="unfinished.review",
+            as_of_offset=timedelta(days=1),
+            end_events=(end,),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.ENDED)
+        self.assertEqual(resolution.current_state_ids, ())
+        self.assertIn("END_KIND_RESOLVED", resolution.reason_codes)
+        self.assertEqual(
+            resolution.candidates[0].end_events,
+            (end,),
+        )
+
+    def test_end_event_is_not_known_before_it_is_recorded(self) -> None:
+        record = self._room_record(
+            "unfinished-a",
+            key="unfinished.review",
+            value="review PR",
+            state_kind=CurrentStateKind.UNFINISHED_WORK,
+            validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
+            downgrade_rule=DowngradeRule.NONE,
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="end-late",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(days=1),
+            recorded_at=self.t0 + timedelta(days=3),
+            end_kind=EndKind.RESOLVED,
+            reason="learned later",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-late",),
+        )
+
+        before_recorded = self._resolve_room(
+            (record,),
+            key="unfinished.review",
+            as_of_offset=timedelta(days=2),
+            end_events=(end,),
+        )
+        after_recorded = self._resolve_room(
+            (record,),
+            key="unfinished.review",
+            as_of_offset=timedelta(days=3),
+            end_events=(end,),
+        )
+
+        self.assertEqual(
+            before_recorded.standing,
+            CurrentStanding.UNRESOLVED,
+        )
+        self.assertEqual(
+            after_recorded.standing,
+            CurrentStanding.ENDED,
+        )
+
+    def test_supersession_changes_current_without_rewriting_history(self) -> None:
+        old = self._room_record(
+            "state-old",
+            value="planning",
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+        )
+        new = self._room_record(
+            "state-new",
+            value="building",
+            recorded_offset=timedelta(days=1),
+            valid_from_offset=timedelta(days=1),
+            supersedes_state_id=old.state_id,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+        )
+
+        resolution = self._resolve_room(
+            (old, new),
+            as_of_offset=timedelta(days=1),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.CURRENT)
+        self.assertEqual(resolution.current_state_ids, ("state-new",))
+        self.assertEqual(
+            resolution.historical_state_ids,
+            ("state-old",),
+        )
+        self.assertEqual(old.value, "planning")
+        self.assertEqual(new.value, "building")
+
+    def test_expired_successor_does_not_resurrect_superseded_parent(self) -> None:
+        old = self._shared_record("state-old", value="old")
+        new = self._shared_record(
+            "state-new",
+            value="temporary",
+            validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+            downgrade_rule=DowngradeRule.TO_EXPIRED,
+            valid_until_offset=timedelta(days=2),
+            supersedes_state_id=old.state_id,
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(old, new),
+            as_of=self.t0 + timedelta(days=3),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.EXPIRED)
+        self.assertEqual(resolution.current_state_ids, ())
+        self.assertEqual(
+            set(resolution.historical_state_ids),
+            {"state-old", "state-new"},
+        )
+
+    def test_competing_heads_remain_conflicting_not_last_write_wins(self) -> None:
+        root = self._room_record("state-root", value="root")
+        left = self._room_record(
+            "state-left",
+            value="left",
+            recorded_offset=timedelta(days=1),
+            valid_from_offset=timedelta(days=1),
+            supersedes_state_id=root.state_id,
+        )
+        right = self._room_record(
+            "state-right",
+            value="right",
+            recorded_offset=timedelta(days=9),
+            valid_from_offset=timedelta(days=1),
+            supersedes_state_id=root.state_id,
+        )
+
+        resolution = self._resolve_room(
+            (root, left, right),
+            as_of_offset=timedelta(days=10),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.CONFLICTING,
+        )
+        self.assertEqual(
+            set(resolution.current_state_ids),
+            {"state-left", "state-right"},
+        )
+        self.assertIn(
+            "MULTIPLE_ELIGIBLE_HEADS",
+            resolution.reason_codes,
+        )
+
+    def test_conflicting_head_semantics_block_a_silent_winner(self) -> None:
+        root = self._room_record("state-root")
+        left = self._room_record(
+            "state-left",
+            value="left",
+            supersedes_state_id=root.state_id,
+        )
+        right = self._room_record(
+            "state-right",
+            value="right",
+            supersedes_state_id=root.state_id,
+        )
+        right_end_a = CurrentStateEndEvent(
+            end_event_id="right-end-a",
+            state_id=right.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.WITHDRAWN,
+            reason="one ending",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-right-end-a",),
+        )
+        right_end_b = CurrentStateEndEvent(
+            end_event_id="right-end-b",
+            state_id=right.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.COMPLETED,
+            reason="competing ending",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-right-end-b",),
+        )
+
+        resolution = self._resolve_room(
+            (root, left, right),
+            end_events=(right_end_a, right_end_b),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.CONFLICTING,
+        )
+        self.assertEqual(
+            set(resolution.current_state_ids),
+            {"state-left", "state-right"},
+        )
+        self.assertIn(
+            "CONFLICTING_HEAD_SEMANTICS",
+            resolution.reason_codes,
+        )
+
+    def test_ended_competing_head_does_not_block_one_live_head(self) -> None:
+        root = self._room_record("state-root")
+        left = self._room_record(
+            "state-left",
+            value="left",
+            supersedes_state_id=root.state_id,
+        )
+        right = self._room_record(
+            "state-right",
+            value="right",
+            supersedes_state_id=root.state_id,
+        )
+        end_right = CurrentStateEndEvent(
+            end_event_id="end-right",
+            state_id=right.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.WITHDRAWN,
+            reason="withdrawn",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-right",),
+        )
+
+        resolution = self._resolve_room(
+            (root, left, right),
+            end_events=(end_right,),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.CURRENT)
+        self.assertEqual(resolution.current_state_ids, ("state-left",))
+        self.assertIn("state-right", resolution.historical_state_ids)
+
+    def test_future_successor_does_not_supersede_current_early(self) -> None:
+        current = self._room_record("state-now", value="now")
+        future = self._room_record(
+            "state-future",
+            value="later",
+            recorded_offset=timedelta(0),
+            valid_from_offset=timedelta(days=5),
+            supersedes_state_id=current.state_id,
+        )
+
+        before = self._resolve_room(
+            (current, future),
+            as_of_offset=timedelta(days=2),
+        )
+        after = self._resolve_room(
+            (current, future),
+            as_of_offset=timedelta(days=5),
+        )
+
+        self.assertEqual(before.current_state_ids, ("state-now",))
+        self.assertEqual(
+            before.future_state_ids,
+            ("state-future",),
+        )
+        self.assertNotIn(
+            "state-future",
+            before.historical_state_ids,
+        )
+        self.assertEqual(after.current_state_ids, ("state-future",))
+        self.assertIn("state-now", after.historical_state_ids)
+
+    def test_late_recorded_revision_does_not_rewrite_prior_as_of_view(self) -> None:
+        original = self._room_record("state-original", value="old")
+        correction = self._room_record(
+            "state-correction",
+            value="corrected",
+            recorded_offset=timedelta(days=5),
+            valid_from_offset=timedelta(days=-2),
+            supersedes_state_id=original.state_id,
+        )
+
+        before_learning = self._resolve_room(
+            (original, correction),
+            as_of_offset=timedelta(days=4),
+        )
+        after_learning = self._resolve_room(
+            (original, correction),
+            as_of_offset=timedelta(days=5),
+        )
+
+        self.assertEqual(
+            before_learning.current_state_ids,
+            ("state-original",),
+        )
+        self.assertEqual(
+            after_learning.current_state_ids,
+            ("state-correction",),
+        )
+        self.assertIn(
+            "state-original",
+            after_learning.historical_state_ids,
+        )
+
+    def test_room_and_shared_current_are_isolated(self) -> None:
+        room = self._room_record(
+            "room-state",
+            key="status",
+            value="room-value",
+        )
+        shared = self._shared_record(
+            "shared-state",
+            key="status",
+            value="shared-value",
+        )
+
+        room_resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            key="status",
+            records=(room, shared),
+            as_of=self.t0,
+        )
+        shared_resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="status",
+            records=(room, shared),
+            as_of=self.t0,
+        )
+
+        self.assertEqual(
+            room_resolution.current_state_ids,
+            ("room-state",),
+        )
+        self.assertEqual(
+            shared_resolution.current_state_ids,
+            ("shared-state",),
+        )
+
+    def test_other_room_does_not_change_this_room_current(self) -> None:
+        first = self._room_record("state-r", room_id="room-r")
+        other = self._room_record(
+            "state-other",
+            room_id="room-other",
+            value="unrelated",
+        )
+
+        resolution = self._resolve_room((first, other))
+
+        self.assertEqual(resolution.current_state_ids, ("state-r",))
+
+    def test_new_episode_or_perspective_only_changes_current_via_explicit_revision(self) -> None:
+        original = self._room_record(
+            "state-a",
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+        )
+        unrelated_new_episode = self._room_record(
+            "state-other-key",
+            key="different.key",
+            value="something else",
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+        )
+
+        unchanged = self._resolve_room(
+            (original, unrelated_new_episode),
+            as_of_offset=timedelta(days=30),
+        )
+
+        self.assertEqual(unchanged.current_state_ids, ("state-a",))
+
+    def test_unknown_is_legitimate_when_no_record_is_known(self) -> None:
+        resolution = self._resolve_room(())
+
+        self.assertEqual(resolution.standing, CurrentStanding.UNKNOWN)
+        self.assertEqual(resolution.current_state_ids, ())
+
+    def test_record_time_controls_when_home_knows_a_state(self) -> None:
+        record = self._room_record(
+            "late-known",
+            event_offset=timedelta(days=-10),
+            recorded_offset=timedelta(days=2),
+            valid_from_offset=timedelta(days=-10),
+        )
+
+        before = self._resolve_room(
+            (record,),
+            as_of_offset=timedelta(days=1),
+        )
+        after = self._resolve_room(
+            (record,),
+            as_of_offset=timedelta(days=2),
+        )
+
+        self.assertEqual(before.standing, CurrentStanding.UNKNOWN)
+        self.assertEqual(after.standing, CurrentStanding.CURRENT)
+
+    def test_derive_view_does_not_leak_future_recorded_key(self) -> None:
+        visible = self._room_record(
+            "visible",
+            key="visible.key",
+        )
+        future_recorded = self._room_record(
+            "future-recorded",
+            key="secret.future.key",
+            recorded_offset=timedelta(days=5),
+            valid_from_offset=timedelta(days=5),
+        )
+
+        before = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(visible, future_recorded),
+            as_of=self.t0,
+        )
+        after = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(visible, future_recorded),
+            as_of=self.t0 + timedelta(days=5),
+        )
+
+        self.assertEqual(
+            tuple(item.key for item in before.items),
+            ("visible.key",),
+        )
+        self.assertEqual(
+            tuple(item.key for item in after.items),
+            ("secret.future.key", "visible.key"),
+        )
+
+    def test_input_order_does_not_change_conflict_resolution(self) -> None:
+        root = self._room_record("order-root")
+        left = self._room_record(
+            "order-left",
+            value="left",
+            supersedes_state_id=root.state_id,
+        )
+        right = self._room_record(
+            "order-right",
+            value="right",
+            supersedes_state_id=root.state_id,
+        )
+
+        first = self._resolve_room((root, left, right))
+        second = self._resolve_room((right, root, left))
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.standing, CurrentStanding.CONFLICTING)
+
+    def test_other_owner_end_event_does_not_break_this_owner_view(self) -> None:
+        this_room = self._room_record(
+            "room-r-state",
+            key="status",
+            room_id="room-r",
+        )
+        other_room = self._room_record(
+            "room-other-state",
+            key="status",
+            room_id="room-other",
+        )
+        other_end = CurrentStateEndEvent(
+            end_event_id="other-end",
+            state_id=other_room.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="other room only",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-other-end",),
+        )
+
+        view = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(this_room, other_room),
+            end_events=(other_end,),
+            as_of=self.t0,
+        )
+
+        self.assertEqual(len(view.items), 1)
+        self.assertEqual(
+            view.items[0].current_state_ids,
+            ("room-r-state",),
+        )
+
+    def test_derive_view_returns_independent_keys_without_ranking(self) -> None:
+        project = self._room_record(
+            "project",
+            key="project.status",
+            value="active",
+        )
+        commitment = self._room_record(
+            "commitment",
+            key="commitment.review",
+            value="review tomorrow",
+            state_kind=CurrentStateKind.COMMITMENT,
+            validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
+            downgrade_rule=DowngradeRule.NONE,
+        )
+
+        view = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            records=(commitment, project),
+            as_of=self.t0,
+        )
+
+        self.assertEqual(
+            tuple(item.key for item in view.items),
+            ("commitment.review", "project.status"),
+        )
+        self.assertEqual(
+            {item.standing for item in view.items},
+            {CurrentStanding.CURRENT, CurrentStanding.UNRESOLVED},
+        )
+
+    def test_candidate_keeps_exact_historical_record_and_contract(self) -> None:
+        record = self._room_record(
+            "state-candidate",
+            state_kind=CurrentStateKind.PREFERENCE,
+            key="preference.candidate",
+            value="tea",
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(days=7),
+        )
+
+        resolution = self._resolve_room(
+            (record,),
+            key="preference.candidate",
+            as_of_offset=timedelta(days=8),
+        )
+        candidate = resolution.candidates[0]
+
+        self.assertIs(candidate.record, record)
+        self.assertEqual(candidate.state_id, record.state_id)
+        self.assertEqual(candidate.value, record.value)
+        self.assertEqual(
+            candidate.record.semantic_change_authority,
+            SemanticChangeAuthority.ROOM_FIRST_PERSON,
+        )
+        self.assertEqual(
+            candidate.record.downgrade_rule,
+            DowngradeRule.TO_LAST_KNOWN,
+        )
+
+    def test_current_inputs_are_immutable_history_records(self) -> None:
+        record = self._room_record("state-a")
+
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            record.value = "rewritten"  # type: ignore[misc]
+
+    def test_room_record_requires_concrete_first_person_provenance(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateRecord(
+                state_id="bad-room",
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-r",
+                key="status",
+                state_kind=CurrentStateKind.SELF_INTERPRETATION,
+                value="synthetic",
+                event_time=self.t0,
+                recorded_at=self.t0,
+                valid_from=self.t0,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                source_refs=("source-bad",),
+            )
+
+    def test_room_state_rejects_unattributed_perspective_sentinel(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "unattributed-state",
+                perspective_instance_id=(
+                    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+                ),
+            )
+
+    def test_room_end_event_rejects_unattributed_perspective_sentinel(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="unattributed-end",
+                state_id="state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="must stay concretely attributed",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id=(
+                    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+                ),
+                source_refs=("source-unattributed-end",),
+            )
+
+    def test_shared_record_cannot_claim_room_first_person_provenance(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateRecord(
+                state_id="bad-shared",
+                namespace=CurrentNamespace.SHARED,
+                owner_id="shared-home",
+                key="status",
+                state_kind=CurrentStateKind.SHARED_STATE,
+                value="synthetic",
+                event_time=self.t0,
+                recorded_at=self.t0,
+                valid_from=self.t0,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.SHARED_GOVERNANCE
+                ),
+                episode_id="episode-a",
+                perspective_instance_id="perspective-a",
+                source_refs=("source-bad",),
+            )
+
+    def test_shared_namespace_cannot_hold_self_interpretation_kind(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._shared_record("bad-shared-self"),
+                state_kind=CurrentStateKind.SELF_INTERPRETATION,
+            )
+
+    def test_room_namespace_cannot_hold_shared_state_kind(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("bad-room-shared-kind"),
+                state_kind=CurrentStateKind.SHARED_STATE,
+            )
+
+    def test_semantic_change_authority_is_not_cross_namespace(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateRecord(
+                state_id="bad-authority",
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-r",
+                key="status",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                value="synthetic",
+                event_time=self.t0,
+                recorded_at=self.t0,
+                valid_from=self.t0,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.SHARED_GOVERNANCE
+                ),
+                episode_id="episode-a",
+                perspective_instance_id="perspective-a",
+                source_refs=("source-bad",),
+            )
+
+    def test_room_end_event_requires_first_person_provenance(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="bad-room-end",
+                state_id="state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="missing Room attribution",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                source_refs=("source-bad-room-end",),
+            )
+
+    def test_end_event_semantic_authority_must_match_target(self) -> None:
+        record = self._room_record("state-a")
+        wrong = CurrentStateEndEvent(
+            end_event_id="wrong-authority-end",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="wrong semantic owner",
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            source_refs=("source-wrong-authority-end",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                end_events=(wrong,),
+            )
+
+    def test_shared_end_event_can_end_shared_state_without_room_provenance(self) -> None:
+        record = self._shared_record("shared-state-a")
+        end = CurrentStateEndEvent(
+            end_event_id="shared-end",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="shared state ended",
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            source_refs=("source-shared-end",),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            end_events=(end,),
+            as_of=self.t0,
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.ENDED)
+
+    def test_shared_end_event_cannot_claim_room_first_person_provenance(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="bad-shared-end",
+                state_id="shared-state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="bad shared provenance",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.SHARED_GOVERNANCE
+                ),
+                episode_id="episode-a",
+                perspective_instance_id="perspective-a",
+                source_refs=("source-bad-shared-end",),
+            )
+
+    def test_state_and_end_event_require_provenance_refs(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("state-a"),
+                source_refs=(),
+            )
+
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="end-a",
+                state_id="state-a",
+                ended_at=self.t0,
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="synthetic",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id="perspective-end",
+                source_refs=(),
+            )
+
+    def test_supersession_cannot_cross_room_owner(self) -> None:
+        parent = self._room_record("state-a", room_id="room-a")
+        child = self._room_record(
+            "state-b",
+            room_id="room-b",
+            supersedes_state_id="state-a",
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-b",
+                key="project.home.status",
+                records=(parent, child),
+                as_of=self.t0,
+            )
+
+    def test_one_current_key_cannot_change_state_kind(self) -> None:
+        project = self._room_record(
+            "typed-root",
+            key="stable.key",
+            state_kind=CurrentStateKind.PROJECT_STATUS,
+        )
+        preference = self._room_record(
+            "typed-child",
+            key="stable.key",
+            state_kind=CurrentStateKind.PREFERENCE,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+            supersedes_state_id=project.state_id,
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (project, preference),
+                key="stable.key",
+            )
+
+    def test_superseding_state_cannot_be_recorded_before_parent(self) -> None:
+        parent = self._room_record(
+            "chronology-parent",
+            recorded_offset=timedelta(days=2),
+            valid_from_offset=timedelta(days=-5),
+        )
+        child = self._room_record(
+            "chronology-child",
+            recorded_offset=timedelta(days=1),
+            valid_from_offset=timedelta(days=-3),
+            supersedes_state_id=parent.state_id,
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (parent, child),
+                as_of_offset=timedelta(days=2),
+            )
+
+    def test_end_event_cannot_be_recorded_before_target_state(self) -> None:
+        record = self._room_record(
+            "late-recorded-state",
+            recorded_offset=timedelta(days=2),
+            valid_from_offset=timedelta(days=-5),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="early-recorded-end",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0 + timedelta(days=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="cannot reference a state HOME had not recorded yet",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-early-recorded-end",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                as_of_offset=timedelta(days=2),
+                end_events=(end,),
+            )
+
+    def test_end_event_cannot_predate_state_validity(self) -> None:
+        record = self._room_record(
+            "state-valid-later",
+            valid_from_offset=timedelta(days=2),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="end-before-validity",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(days=1),
+            recorded_at=self.t0 + timedelta(days=2),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="cannot end before the state can begin",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-before-validity",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                as_of_offset=timedelta(days=2),
+                end_events=(end,),
+            )
+
+    def test_supersession_cycle_is_rejected(self) -> None:
+        first = self._room_record(
+            "state-a",
+            supersedes_state_id="state-b",
+        )
+        second = self._room_record(
+            "state-b",
+            supersedes_state_id="state-a",
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room((first, second))
+
+    def test_multiple_effective_end_events_remain_conflicting(self) -> None:
+        record = self._room_record("state-a")
+        first = CurrentStateEndEvent(
+            end_event_id="end-a",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.WITHDRAWN,
+            reason="first",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-a",),
+        )
+        second = CurrentStateEndEvent(
+            end_event_id="end-b",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.COMPLETED,
+            reason="second",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-b",),
+        )
+
+        resolution = self._resolve_room(
+            (record,),
+            end_events=(first, second),
+        )
+
+        self.assertEqual(
+            resolution.standing,
+            CurrentStanding.CONFLICTING,
+        )
+        self.assertEqual(
+            resolution.current_state_ids,
+            ("state-a",),
+        )
+        self.assertIn(
+            "MULTIPLE_EFFECTIVE_END_EVENTS",
+            resolution.reason_codes,
+        )
+
+    def test_duplicate_state_id_is_rejected_across_keys(self) -> None:
+        first = self._room_record(
+            "duplicate-id",
+            key="first.key",
+        )
+        second = self._room_record(
+            "duplicate-id",
+            key="second.key",
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-r",
+                key="first.key",
+                records=(first, second),
+                as_of=self.t0,
+            )
+
+    def test_end_event_for_unknown_state_is_rejected_when_known(self) -> None:
+        record = self._room_record("state-a")
+        orphan = CurrentStateEndEvent(
+            end_event_id="end-orphan",
+            state_id="missing-state",
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="orphan",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-orphan",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            self._resolve_room(
+                (record,),
+                end_events=(orphan,),
+            )
+
+    def test_future_recorded_invalid_history_does_not_change_prior_as_of(self) -> None:
+        visible = self._room_record("visible")
+        future_orphan = CurrentStateEndEvent(
+            end_event_id="future-orphan",
+            state_id="missing-state",
+            ended_at=self.t0 + timedelta(days=5),
+            recorded_at=self.t0 + timedelta(days=5),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="future bad data",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-future-orphan",),
+        )
+
+        prior = self._resolve_room(
+            (visible,),
+            as_of_offset=timedelta(days=1),
+            end_events=(future_orphan,),
+        )
+
+        self.assertEqual(prior.standing, CurrentStanding.CURRENT)
+
+    def test_event_time_cannot_be_future_relative_to_record_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "future-event",
+                event_offset=timedelta(days=1),
+                recorded_offset=timedelta(0),
+                valid_from_offset=timedelta(days=1),
+            )
+
+    def test_end_time_cannot_be_future_relative_to_record_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="future-end",
+                state_id="state-a",
+                ended_at=self.t0 + timedelta(days=1),
+                recorded_at=self.t0,
+                end_kind=EndKind.EXPLICIT_END,
+                reason="future end cannot already be recorded as happened",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id="perspective-end",
+                source_refs=("source-future-end",),
+            )
+
+    def test_future_validity_is_allowed_without_future_event_time(self) -> None:
+        record = self._shared_record(
+            "scheduled-shared-state",
+            event_offset=timedelta(0),
+            recorded_offset=timedelta(0),
+            valid_from_offset=timedelta(days=3),
+        )
+
+        before = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0,
+        )
+        after = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-home",
+            key="shared.project.status",
+            records=(record,),
+            as_of=self.t0 + timedelta(days=3),
+        )
+
+        self.assertEqual(before.standing, CurrentStanding.UNKNOWN)
+        self.assertEqual(
+            before.future_state_ids,
+            ("scheduled-shared-state",),
+        )
+        self.assertEqual(after.standing, CurrentStanding.CURRENT)
+
+    def test_source_refs_must_be_immutable_and_unique(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("state-list-refs"),
+                source_refs=["source-a"],  # type: ignore[arg-type]
+            )
+
+        with self.assertRaises(CurrentViewError):
+            dataclasses.replace(
+                self._room_record("state-duplicate-refs"),
+                source_refs=("source-a", "source-a"),
+            )
+
+    def test_stale_after_must_be_positive_timedelta(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "bad-stale-type",
+                state_kind=CurrentStateKind.PREFERENCE,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=7,  # type: ignore[arg-type]
+            )
+
+    def test_validity_and_downgrade_contract_is_explicit(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "bad-contract",
+                state_kind=CurrentStateKind.PREFERENCE,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.NONE,
+                stale_after=timedelta(days=5),
+            )
+
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "bad-stale",
+                state_kind=CurrentStateKind.PREFERENCE,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=None,
+            )
+
+        with self.assertRaises(CurrentViewError):
+            self._shared_record(
+                "bad-interval",
+                validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+                downgrade_rule=DowngradeRule.TO_EXPIRED,
+                valid_until_offset=None,
+            )
+
+    def test_commitment_cannot_decay_from_silence(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "commitment-bad-decay",
+                state_kind=CurrentStateKind.COMMITMENT,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=timedelta(days=7),
+            )
+
+    def test_self_interpretation_requires_explicit_change_not_ttl(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "self-bad-ttl",
+                state_kind=CurrentStateKind.SELF_INTERPRETATION,
+                validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                stale_after=timedelta(days=7),
+            )
+
+    def test_unfinished_work_uses_open_until_resolved(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._room_record(
+                "unfinished-bad-durable",
+                state_kind=CurrentStateKind.UNFINISHED_WORK,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+            )
+
+    def test_current_records_have_no_recall_or_emotion_truth_inputs(self) -> None:
+        fields = {
+            item.name for item in dataclasses.fields(CurrentStateRecord)
+        }
+        prohibited = {
+            "recall_count",
+            "access_count",
+            "last_accessed_at",
+            "retrieval_score",
+            "similarity_score",
+            "importance_score",
+            "emotional_intensity",
+            "emotion_score",
+            "model_ref",
+            "runtime_instance_id",
+        }
+
+        self.assertTrue(fields.isdisjoint(prohibited))
+
+    def test_current_records_contain_no_identity_verdict_fields(self) -> None:
+        fields = {
+            item.name for item in dataclasses.fields(CurrentStateRecord)
+        }
+        prohibited = {
+            "same_self",
+            "different_self",
+            "identity_continuity",
+            "continuity_score",
+            "persona",
+        }
+
+        self.assertTrue(fields.isdisjoint(prohibited))
+
+
+if __name__ == "__main__":
+    unittest.main()
