@@ -231,9 +231,22 @@ treating opaque strings as authority.
 
 Current derivation always receives an explicit timezone-aware as_of timestamp.
 
+All ordering comparisons are comparisons of absolute instants. HOME normalizes
+timezone-aware timestamps to UTC before comparing event time, record time,
+validity boundaries, end time, supersession chronology, and as-of visibility.
+A repeated local wall-clock hour therefore cannot change the meaning of the
+history.
+
+Duration-based staleness is elapsed-time semantics: stale_after is added to the
+event's UTC instant, not to local civil wall time. If HOME later needs
+calendar/civil-time expiry such as "next local morning", that must be a
+different explicit validity contract rather than overloading stale_after.
+
 The resolver must not read the ambient wall clock.
 
-The same history plus the same as_of value produces the same semantic result.
+Equivalent representations of the same instants must produce the same semantic
+result, including across DST folds. The same history plus the same as_of instant
+therefore produces the same semantic result.
 
 This is required for:
 
