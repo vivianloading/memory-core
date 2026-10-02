@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 
 from home_memory_core.interpretation import (
@@ -164,7 +164,7 @@ class CurrentStateRecord:
         _require_aware("event_time", self.event_time)
         _require_aware("recorded_at", self.recorded_at)
         _require_aware("valid_from", self.valid_from)
-        if self.event_time > self.recorded_at:
+        if _instant(self.event_time) > _instant(self.recorded_at):
             raise CurrentViewError(
                 "event_time cannot be later than recorded_at"
             )
@@ -243,7 +243,7 @@ class CurrentStateRecord:
                 raise CurrentViewError(
                     "explicit interval requires valid_until"
                 )
-            if self.valid_until <= self.valid_from:
+            if _instant(self.valid_until) <= _instant(self.valid_from):
                 raise CurrentViewError(
                     "valid_until must be after valid_from"
                 )
@@ -304,7 +304,7 @@ class CurrentStateEndEvent:
             _require_text(field_name, getattr(self, field_name))
         _require_aware("ended_at", self.ended_at)
         _require_aware("recorded_at", self.recorded_at)
-        if self.ended_at > self.recorded_at:
+        if _instant(self.ended_at) > _instant(self.recorded_at):
             raise CurrentViewError(
                 "ended_at cannot be later than recorded_at"
             )
@@ -409,12 +409,12 @@ def resolve_current_state(
     known_global = tuple(
         record
         for record in records
-        if record.recorded_at <= as_of
+        if _instant(record.recorded_at) <= _instant(as_of)
     )
     known_end_global = tuple(
         event
         for event in end_events
-        if event.recorded_at <= as_of
+        if _instant(event.recorded_at) <= _instant(as_of)
     )
     _validate_global_ids(
         records=known_global,
@@ -450,7 +450,7 @@ def resolve_current_state(
     effective = tuple(
         record
         for record in known
-        if record.valid_from <= as_of
+        if _instant(record.valid_from) <= _instant(as_of)
     )
     if not effective:
         return CurrentResolution(
@@ -471,7 +471,7 @@ def resolve_current_state(
         sorted(
             record.state_id
             for record in known
-            if record.valid_from > as_of
+            if _instant(record.valid_from) > _instant(as_of)
         )
     )
     effective_ids = {record.state_id for record in effective}
@@ -659,12 +659,12 @@ def derive_current_view(
     known_global = tuple(
         record
         for record in records
-        if record.recorded_at <= as_of
+        if _instant(record.recorded_at) <= _instant(as_of)
     )
     known_end_global = tuple(
         event
         for event in end_events
-        if event.recorded_at <= as_of
+        if _instant(event.recorded_at) <= _instant(as_of)
     )
     _validate_global_ids(
         records=known_global,
@@ -684,7 +684,7 @@ def derive_current_view(
             {
                 record.key
                 for record in matching
-                if record.recorded_at <= as_of
+                if _instant(record.recorded_at) <= _instant(as_of)
             }
         )
     )
@@ -742,7 +742,7 @@ def _candidate_for(
 
     if record.validity_rule is ValidityRule.EXPLICIT_INTERVAL:
         assert record.valid_until is not None
-        if as_of >= record.valid_until:
+        if _instant(as_of) >= _instant(record.valid_until):
             return CurrentCandidate(
                 record=record,
                 end_events=end_events,
@@ -758,8 +758,8 @@ def _candidate_for(
 
     if record.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
         assert record.stale_after is not None
-        stale_at = record.event_time + record.stale_after
-        if as_of >= stale_at:
+        stale_at = _instant(record.event_time) + record.stale_after
+        if _instant(as_of) >= stale_at:
             return CurrentCandidate(
                 record=record,
                 end_events=end_events,
@@ -796,7 +796,10 @@ def _effective_end_events(
     for event in end_events:
         if event.state_id not in record_ids:
             continue
-        if event.recorded_at > as_of or event.ended_at > as_of:
+        if (
+            _instant(event.recorded_at) > _instant(as_of)
+            or _instant(event.ended_at) > _instant(as_of)
+        ):
             continue
         effective.setdefault(event.state_id, []).append(event)
 
@@ -843,11 +846,11 @@ def _validate_global_ids(
             raise CurrentViewError(
                 "end event semantic authority does not match target state"
             )
-        if event.recorded_at < target.recorded_at:
+        if _instant(event.recorded_at) < _instant(target.recorded_at):
             raise CurrentViewError(
                 "end event cannot be recorded before its target state"
             )
-        if event.ended_at < target.valid_from:
+        if _instant(event.ended_at) < _instant(target.valid_from):
             raise CurrentViewError(
                 "end event cannot end a state before its validity begins"
             )
@@ -891,7 +894,7 @@ def _validate_current_graph(
             raise CurrentViewError(
                 "supersession cannot cross namespace, owner, or key"
             )
-        if record.recorded_at < parent.recorded_at:
+        if _instant(record.recorded_at) < _instant(parent.recorded_at):
             raise CurrentViewError(
                 "superseding state cannot be recorded before its parent"
             )
@@ -929,6 +932,13 @@ def _validate_source_refs(
         raise CurrentViewError(
             f"{field_name} cannot contain duplicates"
         )
+
+
+def _instant(value: datetime) -> datetime:
+    """Return one timezone-aware timestamp as an absolute UTC instant."""
+
+    _require_aware("timestamp", value)
+    return value.astimezone(timezone.utc)
 
 
 def _require_aware(field_name: str, value: datetime) -> None:
