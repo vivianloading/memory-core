@@ -91,14 +91,30 @@
     "No model delivery integration for Living/Room authority/Current",
     "Real personal data remains CLOSED"
   ],
-  "active_followup_issues": [
+  "tracker_state_at_anchor": {
+    "open_issues": [
+      {
+        "issue": 3,
+        "title": "Persist Living Layer core records without weakening HOME boundaries",
+        "note": "Implementation was already merged via PR #2; tracker had not yet been closed at the anchor."
+      },
+      {
+        "issue": 4,
+        "title": "Define portable HOME deployment contract for laptop to Mac mini moves"
+      }
+    ]
+  },
+  "capture_process": {
+    "issue": 12,
+    "pull_request": 13,
+    "branch": "engineering-snapshot-2026-10-02",
+    "note": "Capture metadata was created after the anchor and is not part of the anchored tree."
+  },
+  "post_anchor_metadata_events": [
     {
-      "issue": 4,
-      "title": "Define portable HOME deployment contract for laptop to Mac mini moves"
-    },
-    {
-      "issue": 12,
-      "title": "Freeze pre-persistence engineering snapshot after Current View v0.1"
+      "issue": 3,
+      "event": "closed_completed",
+      "note": "Tracker hygiene during snapshot preparation; no repository tree change."
     }
   ]
 }
