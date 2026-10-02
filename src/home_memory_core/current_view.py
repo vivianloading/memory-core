@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from home_memory_core.interpretation import (
@@ -758,8 +758,8 @@ def _candidate_for(
 
     if record.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
         assert record.stale_after is not None
-        elapsed = _instant(as_of) - _instant(record.event_time)
-        if elapsed >= record.stale_after:
+        elapsed_micros = _instant(as_of) - _instant(record.event_time)
+        if elapsed_micros >= _duration_micros(record.stale_after):
             return CurrentCandidate(
                 record=record,
                 end_events=end_events,
@@ -934,11 +934,38 @@ def _validate_source_refs(
         )
 
 
-def _instant(value: datetime) -> datetime:
-    """Return one timezone-aware timestamp as an absolute UTC instant."""
+def _instant(value: datetime) -> int:
+    """Return a timezone-aware datetime as an absolute microsecond scalar.
+
+    The scalar is computed as local proleptic-Gregorian wall time minus its UTC
+    offset. Unlike astimezone(UTC), this remains defined for aware datetimes
+    whose equivalent UTC civil date would fall just outside Python's year
+    1..9999 datetime range.
+    """
 
     _require_aware("timestamp", value)
-    return value.astimezone(timezone.utc)
+    offset = value.utcoffset()
+    assert offset is not None
+    wall_micros = (
+        (
+            (
+                (value.toordinal() * 24 + value.hour) * 60
+                + value.minute
+            )
+            * 60
+            + value.second
+        )
+        * 1_000_000
+        + value.microsecond
+    )
+    return wall_micros - _duration_micros(offset)
+
+
+def _duration_micros(value: timedelta) -> int:
+    return (
+        (value.days * 86_400 + value.seconds) * 1_000_000
+        + value.microseconds
+    )
 
 
 def _require_aware(field_name: str, value: datetime) -> None:
