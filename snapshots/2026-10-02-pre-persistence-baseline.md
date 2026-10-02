@@ -299,11 +299,16 @@ Non-blocking debt worth preserving explicitly:
   boundaries and should not grow into a general authority mechanism.
 - no Current persistence schema has been frozen yet; that is deliberate.
 
-Tracker hygiene performed while preparing this snapshot:
-[#3](https://github.com/vivianloading/memory-core/issues/3) was closed as
-completed because its Living persistence scope was already merged in PR #2.
-This metadata change is after the snapshot anchor and does not modify the anchor
-tree.
+Tracker state at the anchor still showed both
+[#3](https://github.com/vivianloading/memory-core/issues/3) and
+[#4](https://github.com/vivianloading/memory-core/issues/4) open. Issue #3's
+implementation had already landed through PR #2; the tracker itself simply had
+not yet been closed.
+
+During snapshot preparation, Issue #3 was closed as completed. Snapshot capture
+Issue #12 and PR #13 were also created after the anchor. These are capture /
+tracker metadata events, not facts about the anchored tree, and they do not
+modify that tree.
 
 ## 10. Recommended next engineering sequence
 
