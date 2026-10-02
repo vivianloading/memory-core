@@ -577,6 +577,207 @@ class CurrentViewTests(unittest.TestCase):
                         CurrentStanding.CURRENT,
                     )
 
+    def test_calendar_edge_offsets_do_not_overflow_current_resolution(self) -> None:
+        low = datetime(
+            1,
+            1,
+            1,
+            0,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        high = datetime(
+            9999,
+            12,
+            31,
+            23,
+            59,
+            59,
+            999999,
+            tzinfo=timezone(timedelta(hours=-8)),
+        )
+        event = datetime(2026, 11, 1, 4, 0, tzinfo=UTC)
+
+        for span in (timedelta(days=3_000_000), timedelta.max):
+            with self.subTest(boundary="low", span=span):
+                preference = CurrentStateRecord(
+                    state_id=f"edge-low-{span.days}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    key="edge.preference",
+                    state_kind=CurrentStateKind.PREFERENCE,
+                    value="tea",
+                    event_time=event,
+                    recorded_at=event,
+                    valid_from=low,
+                    validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                    downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id="episode-edge-low",
+                    perspective_instance_id="perspective-edge-low",
+                    stale_after=span,
+                    source_refs=("source-edge-low",),
+                )
+                resolution = resolve_current_state(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    key="edge.preference",
+                    records=(preference,),
+                    as_of=event,
+                )
+                self.assertEqual(
+                    resolution.standing,
+                    CurrentStanding.CURRENT,
+                )
+
+                project = CurrentStateRecord(
+                    state_id=f"edge-project-low-{span.days}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    key="edge.project",
+                    state_kind=CurrentStateKind.PROJECT_STATUS,
+                    value="building",
+                    event_time=event,
+                    recorded_at=event,
+                    valid_from=event,
+                    validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                    downgrade_rule=DowngradeRule.NONE,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id="episode-edge-project",
+                    perspective_instance_id="perspective-edge-project",
+                    source_refs=("source-edge-project",),
+                )
+                view = derive_current_view(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge",
+                    records=(project, preference),
+                    as_of=event,
+                )
+                by_key = {item.key: item for item in view.items}
+                self.assertEqual(
+                    by_key["edge.preference"].standing,
+                    CurrentStanding.CURRENT,
+                )
+                self.assertEqual(
+                    by_key["edge.project"].standing,
+                    CurrentStanding.CURRENT,
+                )
+
+            with self.subTest(boundary="high", span=span):
+                future = CurrentStateRecord(
+                    state_id=f"edge-high-{span.days}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge-high",
+                    key="edge.preference",
+                    state_kind=CurrentStateKind.PREFERENCE,
+                    value="tea",
+                    event_time=event,
+                    recorded_at=event,
+                    valid_from=high,
+                    validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                    downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id="episode-edge-high",
+                    perspective_instance_id="perspective-edge-high",
+                    stale_after=span,
+                    source_refs=("source-edge-high",),
+                )
+                resolution = resolve_current_state(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge-high",
+                    key="edge.preference",
+                    records=(future,),
+                    as_of=event,
+                )
+                self.assertEqual(
+                    resolution.standing,
+                    CurrentStanding.UNKNOWN,
+                )
+                self.assertEqual(
+                    resolution.future_state_ids,
+                    (future.state_id,),
+                )
+                view = derive_current_view(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id="room-edge-high",
+                    records=(future,),
+                    as_of=event,
+                )
+                self.assertEqual(
+                    view.items[0].standing,
+                    CurrentStanding.UNKNOWN,
+                )
+                self.assertEqual(
+                    view.items[0].future_state_ids,
+                    (future.state_id,),
+                )
+
+    def test_calendar_edge_instants_can_be_current_without_utc_materialization(self) -> None:
+        for label, instant in (
+            (
+                "low",
+                datetime(
+                    1,
+                    1,
+                    1,
+                    0,
+                    0,
+                    tzinfo=timezone(timedelta(hours=8)),
+                ),
+            ),
+            (
+                "high",
+                datetime(
+                    9999,
+                    12,
+                    31,
+                    23,
+                    59,
+                    59,
+                    999999,
+                    tzinfo=timezone(timedelta(hours=-8)),
+                ),
+            ),
+        ):
+            with self.subTest(boundary=label):
+                state = CurrentStateRecord(
+                    state_id=f"edge-current-{label}",
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id=f"room-edge-{label}",
+                    key="edge.current",
+                    state_kind=CurrentStateKind.PREFERENCE,
+                    value="tea",
+                    event_time=instant,
+                    recorded_at=instant,
+                    valid_from=instant,
+                    validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+                    downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+                    semantic_change_authority=(
+                        SemanticChangeAuthority.ROOM_FIRST_PERSON
+                    ),
+                    episode_id=f"episode-edge-{label}",
+                    perspective_instance_id=f"perspective-edge-{label}",
+                    stale_after=timedelta.max,
+                    source_refs=(f"source-edge-{label}",),
+                )
+                resolution = resolve_current_state(
+                    namespace=CurrentNamespace.ROOM,
+                    owner_id=f"room-edge-{label}",
+                    key="edge.current",
+                    records=(state,),
+                    as_of=instant,
+                )
+                self.assertEqual(
+                    resolution.standing,
+                    CurrentStanding.CURRENT,
+                )
+
     def test_durable_state_survives_silence(self) -> None:
         record = self._room_record("state-a")
 
