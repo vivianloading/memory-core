@@ -778,6 +778,100 @@ class CurrentViewTests(unittest.TestCase):
                     CurrentStanding.CURRENT,
                 )
 
+    def test_calendar_edge_interval_and_end_ordering_do_not_overflow(self) -> None:
+        low = datetime(
+            1,
+            1,
+            1,
+            0,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        high = datetime(
+            9999,
+            12,
+            31,
+            23,
+            59,
+            59,
+            999999,
+            tzinfo=timezone(timedelta(hours=-8)),
+        )
+        middle = datetime(2026, 11, 1, 4, 0, tzinfo=UTC)
+
+        interval = CurrentStateRecord(
+            state_id="edge-interval",
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-edge",
+            key="edge.interval",
+            state_kind=CurrentStateKind.SHARED_STATE,
+            value="active",
+            event_time=middle,
+            recorded_at=middle,
+            valid_from=low,
+            validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+            downgrade_rule=DowngradeRule.TO_EXPIRED,
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            valid_until=high,
+            source_refs=("source-edge-interval",),
+        )
+        interval_resolution = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-edge",
+            key="edge.interval",
+            records=(interval,),
+            as_of=middle,
+        )
+        self.assertEqual(
+            interval_resolution.standing,
+            CurrentStanding.CURRENT,
+        )
+
+        state = CurrentStateRecord(
+            state_id="edge-ended-state",
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-edge-ended",
+            key="edge.ended",
+            state_kind=CurrentStateKind.PROJECT_STATUS,
+            value="active",
+            event_time=middle,
+            recorded_at=middle,
+            valid_from=low,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-edge-ended",
+            perspective_instance_id="perspective-edge-ended",
+            source_refs=("source-edge-ended",),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="edge-end",
+            state_id=state.state_id,
+            ended_at=middle,
+            recorded_at=middle,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="ended in the middle of supported absolute range",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-edge-end",
+            perspective_instance_id="perspective-edge-end",
+            source_refs=("source-edge-end",),
+        )
+        ended = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-edge-ended",
+            key="edge.ended",
+            records=(state,),
+            end_events=(end,),
+            as_of=middle,
+        )
+        self.assertEqual(ended.standing, CurrentStanding.ENDED)
+
     def test_durable_state_survives_silence(self) -> None:
         record = self._room_record("state-a")
 
