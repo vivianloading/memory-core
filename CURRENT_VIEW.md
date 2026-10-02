@@ -131,11 +131,14 @@ At valid_until it becomes expired.
 
 The state is current while fresh.
 
-At:
+When the elapsed absolute duration satisfies:
 
-    event_time + stale_after
+    as_of - event_time >= stale_after
 
 it becomes last_known rather than false, deleted or silently replaced.
+
+The implementation compares elapsed duration directly; it does not need to
+construct an absolute future deadline.
 
 This is useful for things like preferences where old evidence may become less
 certain without becoming evidence of the opposite.
@@ -231,17 +234,24 @@ treating opaque strings as authority.
 
 Current derivation always receives an explicit timezone-aware as_of timestamp.
 
-All ordering comparisons are comparisons of absolute instants. HOME normalizes
-timezone-aware timestamps to UTC before comparing event time, record time,
-validity boundaries, end time, supersession chronology, and as-of visibility.
-A repeated local wall-clock hour therefore cannot change the meaning of the
-history.
+All ordering comparisons are comparisons of absolute instants. HOME converts
+each timezone-aware timestamp to an offset-adjusted absolute microsecond scalar
+before comparing event time, record time, validity boundaries, end time,
+supersession chronology, and as-of visibility.
 
-Duration-based staleness is elapsed-time semantics. HOME compares the elapsed
-UTC duration since the event directly with stale_after; it does not materialize
-an absolute future deadline. This keeps every positive finite Python timedelta,
-including values larger than the datetime calendar range, semantically usable
-without overflow.
+This intentionally does **not** require materializing an equivalent UTC
+`datetime`. An aware local datetime near year 1 or year 9999 can denote an
+absolute instant whose UTC civil representation falls just outside Python's
+`datetime` calendar range; Current View still orders that instant
+mathematically instead of accepting the input and later raising OverflowError.
+A repeated local wall-clock hour therefore cannot change the meaning of the
+history, and calendar-edge offsets do not create a second support domain.
+
+Duration-based staleness is elapsed-time semantics. HOME subtracts the two
+absolute microsecond scalars and compares that elapsed duration directly with
+`stale_after`; it does not materialize an absolute future deadline. This keeps
+every positive finite Python timedelta, including values larger than the
+datetime calendar range, semantically usable without overflow.
 
 If HOME later needs calendar/civil-time expiry such as "next local morning",
 that must be a different explicit validity contract rather than overloading
