@@ -3,6 +3,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +139,382 @@ class CurrentViewTests(unittest.TestCase):
             records=records,
             end_events=end_events,
             as_of=self.t0 + as_of_offset,
+        )
+
+    def _ny_time(
+        self,
+        hour: int,
+        minute: int = 0,
+        *,
+        fold: int = 0,
+    ) -> datetime:
+        return datetime(
+            2026,
+            11,
+            1,
+            hour,
+            minute,
+            tzinfo=ZoneInfo("America/New_York"),
+            fold=fold,
+        )
+
+    def _dst_room_record(
+        self,
+        state_id: str,
+        *,
+        key: str = "dst.key",
+        state_kind: CurrentStateKind = CurrentStateKind.PROJECT_STATUS,
+        event_time: datetime | None = None,
+        recorded_at: datetime | None = None,
+        valid_from: datetime | None = None,
+        validity_rule: ValidityRule = ValidityRule.DURABLE_UNTIL_CHANGED,
+        downgrade_rule: DowngradeRule = DowngradeRule.NONE,
+        valid_until: datetime | None = None,
+        stale_after: timedelta | None = None,
+        supersedes_state_id: str | None = None,
+    ) -> CurrentStateRecord:
+        base = self._ny_time(0)
+        return CurrentStateRecord(
+            state_id=state_id,
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key=key,
+            state_kind=state_kind,
+            value=state_id,
+            event_time=event_time or base,
+            recorded_at=recorded_at or base,
+            valid_from=valid_from or base,
+            validity_rule=validity_rule,
+            downgrade_rule=downgrade_rule,
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id=f"episode-{state_id}",
+            perspective_instance_id=f"perspective-{state_id}",
+            valid_until=valid_until,
+            stale_after=stale_after,
+            supersedes_state_id=supersedes_state_id,
+            source_refs=(f"source-{state_id}",),
+        )
+
+    def _dst_shared_interval(
+        self,
+        *,
+        valid_from: datetime | None = None,
+        valid_until: datetime,
+    ) -> CurrentStateRecord:
+        base = self._ny_time(0)
+        return CurrentStateRecord(
+            state_id="dst-window",
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-dst",
+            key="dst.window",
+            state_kind=CurrentStateKind.SHARED_STATE,
+            value="window",
+            event_time=base,
+            recorded_at=base,
+            valid_from=valid_from or base,
+            validity_rule=ValidityRule.EXPLICIT_INTERVAL,
+            downgrade_rule=DowngradeRule.TO_EXPIRED,
+            semantic_change_authority=(
+                SemanticChangeAuthority.SHARED_GOVERNANCE
+            ),
+            valid_until=valid_until,
+            source_refs=("source-dst-window",),
+        )
+
+    def test_dst_repeated_hour_does_not_leak_future_recorded_state_or_key(self) -> None:
+        as_of = self._ny_time(1, 30, fold=0)
+        future = self._dst_room_record(
+            "future-record",
+            key="future-recorded-key",
+            recorded_at=self._ny_time(1, 15, fold=1),
+        )
+
+        view = derive_current_view(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            records=(future,),
+            as_of=as_of,
+        )
+
+        self.assertEqual(view.items, ())
+
+    def test_dst_future_valid_successor_does_not_activate_early(self) -> None:
+        as_of = self._ny_time(1, 30, fold=0)
+        parent = self._dst_room_record("parent")
+        child = self._dst_room_record(
+            "child",
+            event_time=self._ny_time(0, 10),
+            recorded_at=self._ny_time(0, 20),
+            valid_from=self._ny_time(1, 15, fold=1),
+            supersedes_state_id=parent.state_id,
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(parent, child),
+            as_of=as_of,
+        )
+
+        self.assertEqual(resolution.current_state_ids, ("parent",))
+        self.assertEqual(resolution.future_state_ids, ("child",))
+
+    def test_dst_future_recorded_end_does_not_end_earlier_view(self) -> None:
+        as_of = self._ny_time(1, 30, fold=0)
+        state = self._dst_room_record("state")
+        future_end = CurrentStateEndEvent(
+            end_event_id="future-end",
+            state_id=state.state_id,
+            ended_at=self._ny_time(1, 15, fold=1),
+            recorded_at=self._ny_time(1, 15, fold=1),
+            end_kind=EndKind.COMPLETED,
+            reason="later repeated-hour end",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-future-end",),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(state,),
+            end_events=(future_end,),
+            as_of=as_of,
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.CURRENT)
+
+    def test_dst_interval_expiry_uses_absolute_instants(self) -> None:
+        window = self._dst_shared_interval(
+            valid_until=self._ny_time(1, 45, fold=0),
+        )
+
+        expired = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-dst",
+            key="dst.window",
+            records=(window,),
+            as_of=self._ny_time(1, 5, fold=1),
+        )
+
+        self.assertEqual(expired.standing, CurrentStanding.EXPIRED)
+
+    def test_dst_interval_does_not_expire_before_later_fold_instant(self) -> None:
+        window = self._dst_shared_interval(
+            valid_until=self._ny_time(1, 15, fold=1),
+        )
+
+        current = resolve_current_state(
+            namespace=CurrentNamespace.SHARED,
+            owner_id="shared-dst",
+            key="dst.window",
+            records=(window,),
+            as_of=self._ny_time(1, 30, fold=0),
+        )
+
+        self.assertEqual(current.standing, CurrentStanding.CURRENT)
+
+    def test_dst_constructor_rejects_event_after_record_in_absolute_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._dst_room_record(
+                "bad-event-order",
+                event_time=self._ny_time(1, 15, fold=1),
+                recorded_at=self._ny_time(1, 30, fold=0),
+            )
+
+    def test_dst_constructor_rejects_end_after_record_in_absolute_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            CurrentStateEndEvent(
+                end_event_id="bad-end-order",
+                state_id="state",
+                ended_at=self._ny_time(1, 15, fold=1),
+                recorded_at=self._ny_time(1, 30, fold=0),
+                end_kind=EndKind.EXPLICIT_END,
+                reason="absolute future end",
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id="episode-end",
+                perspective_instance_id="perspective-end",
+                source_refs=("source-bad-end-order",),
+            )
+
+    def test_dst_rejects_child_recorded_before_parent_in_absolute_time(self) -> None:
+        parent = self._dst_room_record(
+            "late-parent",
+            recorded_at=self._ny_time(1, 15, fold=1),
+        )
+        child = self._dst_room_record(
+            "early-child",
+            recorded_at=self._ny_time(1, 30, fold=0),
+            supersedes_state_id=parent.state_id,
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-dst",
+                key="dst.key",
+                records=(parent, child),
+                as_of=self._ny_time(2),
+            )
+
+    def test_dst_rejects_end_recorded_before_target_in_absolute_time(self) -> None:
+        target = self._dst_room_record(
+            "late-target",
+            recorded_at=self._ny_time(1, 15, fold=1),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="early-end-record",
+            state_id=target.state_id,
+            ended_at=self._ny_time(1, 30, fold=0),
+            recorded_at=self._ny_time(1, 30, fold=0),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="recorded before target in absolute time",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-early-end-record",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-dst",
+                key="dst.key",
+                records=(target,),
+                end_events=(end,),
+                as_of=self._ny_time(2),
+            )
+
+    def test_dst_rejects_end_before_validity_in_absolute_time(self) -> None:
+        target = self._dst_room_record(
+            "valid-later",
+            valid_from=self._ny_time(1, 15, fold=1),
+        )
+        end = CurrentStateEndEvent(
+            end_event_id="end-before-validity",
+            state_id=target.state_id,
+            ended_at=self._ny_time(1, 30, fold=0),
+            recorded_at=self._ny_time(2),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="absolute end before validity",
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-end",
+            perspective_instance_id="perspective-end",
+            source_refs=("source-end-before-validity",),
+        )
+
+        with self.assertRaises(CurrentViewError):
+            resolve_current_state(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-dst",
+                key="dst.key",
+                records=(target,),
+                end_events=(end,),
+                as_of=self._ny_time(2),
+            )
+
+    def test_dst_staleness_is_elapsed_duration_not_wall_clock_duration(self) -> None:
+        preference = self._dst_room_record(
+            "stale-late",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=self._ny_time(0, 30),
+            recorded_at=self._ny_time(0, 30),
+            valid_from=self._ny_time(0, 30),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(hours=2),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(preference,),
+            as_of=datetime(2026, 11, 1, 6, 45, tzinfo=UTC),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.LAST_KNOWN)
+
+    def test_dst_staleness_does_not_fire_before_elapsed_duration(self) -> None:
+        preference = self._dst_room_record(
+            "stale-early",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=self._ny_time(1, 15, fold=1),
+            recorded_at=self._ny_time(1, 15, fold=1),
+            valid_from=self._ny_time(1, 15, fold=1),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(minutes=30),
+        )
+
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(preference,),
+            as_of=datetime(2026, 11, 1, 6, 30, tzinfo=UTC),
+        )
+
+        self.assertEqual(resolution.standing, CurrentStanding.CURRENT)
+
+    def test_dst_constructor_rejects_interval_inverted_in_absolute_time(self) -> None:
+        with self.assertRaises(CurrentViewError):
+            self._dst_shared_interval(
+                valid_from=self._ny_time(1, 15, fold=1),
+                valid_until=self._ny_time(1, 30, fold=0),
+            )
+
+    def test_equivalent_timezone_representations_have_same_current_result(self) -> None:
+        preference = self._dst_room_record(
+            "timezone-equivalent",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=self._ny_time(0, 30),
+            recorded_at=self._ny_time(0, 30),
+            valid_from=self._ny_time(0, 30),
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(hours=2),
+        )
+        utc_preference = dataclasses.replace(
+            preference,
+            event_time=preference.event_time.astimezone(UTC),
+            recorded_at=preference.recorded_at.astimezone(UTC),
+            valid_from=preference.valid_from.astimezone(UTC),
+        )
+        as_of = datetime(2026, 11, 1, 6, 45, tzinfo=UTC)
+
+        local_result = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(preference,),
+            as_of=as_of,
+        )
+        utc_result = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-dst",
+            key="dst.key",
+            records=(utc_preference,),
+            as_of=as_of,
+        )
+
+        self.assertEqual(local_result.standing, utc_result.standing)
+        self.assertEqual(
+            local_result.current_state_ids,
+            utc_result.current_state_ids,
         )
 
     def test_durable_state_survives_silence(self) -> None:
