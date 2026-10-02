@@ -1,0 +1,104 @@
+{
+  "snapshot_schema": "home-engineering-snapshot-v0.1",
+  "snapshot_id": "2026-10-02-pre-persistence-baseline",
+  "date": "2026-10-02",
+  "repository": "vivianloading/memory-core",
+  "purpose": "Pre-Current-persistence and pre-Wake semantic engineering baseline",
+  "anchor": {
+    "branch": "main",
+    "commit": "661590f6f71525023fbf2f9d96d3332acfdf774c",
+    "tree": "fc27da08482a3f70b56e37a29ff55ce0de093d1f"
+  },
+  "milestones": [
+    {
+      "name": "Living Layer continuity foundation",
+      "pr": 2,
+      "reviewed_head": "ad53f517d3a79b09bd4f0b1ec92327df5ce09308",
+      "reviewed_tree": "684d622e26fdf47e5f9c38a2d60fc2a895abfd58",
+      "merge_commit": "b2ad6b5859221ca442996b6e5aa6691b63bd3a5d",
+      "merge_tree": "684d622e26fdf47e5f9c38a2d60fc2a895abfd58",
+      "independent_gate_issue": 5,
+      "independent_gate_result": "PASS",
+      "scope": "synthetic v0.1 Living persistence/migration"
+    },
+    {
+      "name": "Room participation authority v0.1",
+      "pr": 7,
+      "reviewed_head": "2c7c189d0a9fba980cab3ac7800812fa3f07fb9c",
+      "reviewed_tree": "ad0d4a025075a9f4ef47e7b8b619681cab853744",
+      "merge_commit": "d46303039879ecab616af954f569127ededce5f9",
+      "merge_tree": "ad0d4a025075a9f4ef47e7b8b619681cab853744",
+      "independent_gate_issue": 8,
+      "independent_gate_result": "PASS",
+      "scope": "synthetic/local Room authority v0.1"
+    },
+    {
+      "name": "Current View v0.1 semantic core",
+      "pr": 10,
+      "reviewed_head": "91daaf1bfae4e3bcb5c490bc31daebb22a4d86b3",
+      "reviewed_tree": "fc27da08482a3f70b56e37a29ff55ce0de093d1f",
+      "merge_commit": "661590f6f71525023fbf2f9d96d3332acfdf774c",
+      "merge_tree": "fc27da08482a3f70b56e37a29ff55ce0de093d1f",
+      "independent_gate_issue": 11,
+      "independent_gate_result": "SCOPED_PASS",
+      "scope": "synthetic Current View v0.1 semantic contract"
+    }
+  ],
+  "latest_exact_head_evidence": {
+    "reviewed_head": "91daaf1bfae4e3bcb5c490bc31daebb22a4d86b3",
+    "workflow_run": 36955391388,
+    "python_3_11": "GREEN",
+    "python_3_12": "GREEN",
+    "unit_tests": 547,
+    "compile": "GREEN",
+    "two_hop_synthetic_migration": "GREEN",
+    "real_personal_data": "CLOSED",
+    "anchor_tree_equals_reviewed_head_tree": true
+  },
+  "independent_review_history": {
+    "living_layer": {
+      "fail_heads": [
+        "1a86041608b4bf74549d20b6cf9e41a1405288b0",
+        "dd405d12d172c0cc3b740bd7405e67f2737d1d2d"
+      ],
+      "pass_head": "ad53f517d3a79b09bd4f0b1ec92327df5ce09308"
+    },
+    "room_authority": {
+      "fail_heads": [
+        "f6fff7a0e9a3845395d1c30c9b1b5729977d2750"
+      ],
+      "pass_head": "2c7c189d0a9fba980cab3ac7800812fa3f07fb9c"
+    },
+    "current_view": {
+      "fail_heads": [
+        "64bbf18bb8138e6ef01ceaf713b90bf861382f53",
+        "d9f93234d522daebbff392babc681706ff049dde",
+        "ea95a9cbb362b357f75b06ba8f58cf6b54f5fb89"
+      ],
+      "pass_head": "91daaf1bfae4e3bcb5c490bc31daebb22a4d86b3"
+    }
+  },
+  "open_boundaries": [
+    "Current View is not persisted in the canonical HOME database",
+    "No production Current write/admission path",
+    "No production TrustedRuntimeLaunchIssuer factory",
+    "No production inhabitant-authorized continuation-policy establishment path",
+    "No Room content consumer and no atomic authorization-plus-effect boundary",
+    "No Wake Packet or Heartbeat/proximity integration",
+    "No Adoption implementation",
+    "No native checkpoint verifier",
+    "No relationship-state automation",
+    "No model delivery integration for Living/Room authority/Current",
+    "Real personal data remains CLOSED"
+  ],
+  "active_followup_issues": [
+    {
+      "issue": 4,
+      "title": "Define portable HOME deployment contract for laptop to Mac mini moves"
+    },
+    {
+      "issue": 12,
+      "title": "Freeze pre-persistence engineering snapshot after Current View v0.1"
+    }
+  ]
+}
