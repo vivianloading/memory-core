@@ -237,10 +237,15 @@ validity boundaries, end time, supersession chronology, and as-of visibility.
 A repeated local wall-clock hour therefore cannot change the meaning of the
 history.
 
-Duration-based staleness is elapsed-time semantics: stale_after is added to the
-event's UTC instant, not to local civil wall time. If HOME later needs
-calendar/civil-time expiry such as "next local morning", that must be a
-different explicit validity contract rather than overloading stale_after.
+Duration-based staleness is elapsed-time semantics. HOME compares the elapsed
+UTC duration since the event directly with stale_after; it does not materialize
+an absolute future deadline. This keeps every positive finite Python timedelta,
+including values larger than the datetime calendar range, semantically usable
+without overflow.
+
+If HOME later needs calendar/civil-time expiry such as "next local morning",
+that must be a different explicit validity contract rather than overloading
+stale_after.
 
 The resolver must not read the ambient wall clock.
 
