@@ -109,6 +109,10 @@ class CurrentStore:
                 assert_current_data_integrity(connection)
                 return
             connection.executescript(current_schema_script())
+            # Re-check upstream invariants inside the schema-install transaction.
+            # The first check happens before executescript() begins its IMMEDIATE
+            # transaction and must not become a time-of-check/time-of-use gap.
+            self._assert_upstream(connection)
             assert_current_schema(connection)
             assert_current_data_integrity(connection)
             connection.commit()
