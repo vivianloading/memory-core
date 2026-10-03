@@ -328,8 +328,34 @@ class CurrentStore:
 
 def assert_current_schema(connection: sqlite3.Connection) -> None:
     rows = connection.execute(
-        "SELECT type,name,sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE 'sqlite_%'"
+        """
+        SELECT type,name,tbl_name,sql
+        FROM sqlite_master
+        WHERE type IN ('table','trigger','index')
+          AND name NOT LIKE 'sqlite_%'
+        """
     ).fetchall()
+
+    unexpected_behavior = tuple(
+        (row["type"], row["name"])
+        for row in rows
+        if row["tbl_name"] in CURRENT_TABLES
+        and (
+            (
+                row["type"] == "trigger"
+                and row["name"] not in CURRENT_TRIGGERS
+            )
+            or (
+                row["type"] == "index"
+                and row["sql"] is not None
+            )
+        )
+    )
+    if unexpected_behavior:
+        raise CurrentStoreIntegrityError(
+            "Current persistence tables have unexpected trigger/index behavior"
+        )
+
     actual = {
         (row["type"], row["name"]): normalize_sql(row["sql"])
         for row in rows
