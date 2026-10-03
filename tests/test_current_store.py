@@ -279,6 +279,71 @@ class CurrentStoreTests(unittest.TestCase):
         with self.assertRaises(CurrentStoreIntegrityError):
             self.store.list_states_for_audit()
 
+    def test_schema_literal_case_change_is_detected(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TRIGGER current_state_room_exists")
+            connection.execute(
+                f"""
+                CREATE TRIGGER current_state_room_exists
+                BEFORE INSERT ON {CURRENT_STATE_TABLE}
+                WHEN NEW.namespace='ROOM'
+                 AND NOT EXISTS(
+                    SELECT 1 FROM living_rooms
+                    WHERE room_id=NEW.owner_id
+                 )
+                BEGIN
+                    SELECT RAISE(ABORT,'Room Current owner does not exist');
+                END
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.list_states_for_audit()
+
+    def test_new_binding_recomputes_stored_source_hash(self) -> None:
+        record = self.room_state("corrupt-before-write")
+        binding = self.binding(record.source_refs[0])
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                "UPDATE sources SET content=? WHERE source_id=?",
+                ("tampered", binding.evidence.source_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.add_state_record(
+                record=record,
+                source_bindings=(binding,),
+            )
+
+    def test_audit_recomputes_persisted_source_hash(self) -> None:
+        record = self.room_state("corrupt-after-write")
+        binding = self.binding(record.source_refs[0])
+        self.store.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                "UPDATE sources SET content=? WHERE source_id=?",
+                ("tampered", binding.evidence.source_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.get_state_for_audit(record.state_id)
+
     def test_shared_state_cannot_smuggle_room_provenance(self) -> None:
         shared = CurrentStateRecord(
             state_id="shared", namespace=CurrentNamespace.SHARED,
