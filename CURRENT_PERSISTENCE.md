@@ -86,6 +86,21 @@ The schema is fail-closed in two ways:
 
 Schema validation compares the actual SQLite table/trigger SQL against the exact expected definitions. A same-name empty trigger therefore does not satisfy the contract.
 
+## Raw SQL non-claim
+
+This slice makes immutable-history rewrites and semantically invalid topology
+fail closed, but it does **not** authenticate the origin of a structurally valid
+new append.
+
+A caller with arbitrary direct SQLite access can still manufacture a row set
+that satisfies the storage schema. Because Slice 1 has no operational admission
+authority and no production Current consumer, such a row has no right to become
+trusted present-tense state merely because the audit reader can reconstruct it.
+
+Slice 2 must therefore bind every usable append to an exact admission decision
+or receipt. It must not grandfather pre-existing rows, raw-SQL rows, or
+schema-valid rows into operational authority merely because they are present.
+
 ## Deliberate sequencing
 
 Slice 1: persistence substrate — this document.
