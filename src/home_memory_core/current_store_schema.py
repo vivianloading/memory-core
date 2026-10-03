@@ -246,9 +246,9 @@ def current_schema_script() -> str:
 
 
 def normalize_sql(sql: str | None) -> str:
-    """Normalize layout only; preserve quoted SQL literal content exactly."""
+    """Compare SQLite DDL text exactly apart from outer whitespace."""
 
-    return "" if sql is None else re.sub(r"\\s+", " ", sql.strip())
+    return "" if sql is None else sql.strip()
 
 
 @lru_cache(maxsize=1)
