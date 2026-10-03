@@ -593,7 +593,9 @@ def _active_room_attachment(
         f"SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id=? AND perspective_instance_id=?",
         (episode_id, perspective_instance_id),
     ).fetchone() is None:
-        raise CurrentStoreIntegrityError("Room Current Episode/Perspective is invalid")
+        raise CurrentStoreConflictError(
+            "Room Current write conflicts with persisted Episode/Perspective attribution"
+        )
 
     heads = connection.execute(
         f"""
