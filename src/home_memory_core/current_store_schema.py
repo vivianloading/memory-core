@@ -246,7 +246,9 @@ def current_schema_script() -> str:
 
 
 def normalize_sql(sql: str | None) -> str:
-    return "" if sql is None else re.sub(r"\s+", " ", sql.strip()).lower()
+    """Normalize layout only; preserve quoted SQL literal content exactly."""
+
+    return "" if sql is None else re.sub(r"\\s+", " ", sql.strip())
 
 
 @lru_cache(maxsize=1)
