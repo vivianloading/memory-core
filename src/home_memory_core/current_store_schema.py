@@ -193,19 +193,38 @@ def current_schema_script() -> str:
       BEGIN SELECT RAISE(ABORT,'Current end-event history is append-only'); END;
     CREATE TRIGGER current_end_target_binding BEFORE INSERT ON {CURRENT_END_TABLE}
       WHEN NOT EXISTS(
-        SELECT 1 FROM {CURRENT_STATE_TABLE} s WHERE s.state_id=NEW.state_id
+        SELECT 1
+        FROM {CURRENT_STATE_TABLE} AS s
+        WHERE s.state_id=NEW.state_id
           AND s.semantic_change_authority=NEW.semantic_change_authority
           AND s.recorded_instant_us<=NEW.recorded_instant_us
-          AND ((s.namespace='room' AND NEW.semantic_change_authority='room_first_person'
-                AND EXISTS(SELECT 1 FROM {EPISODE_TABLE} e WHERE e.episode_id=NEW.episode_id
-                  AND e.perspective_instance_id=NEW.perspective_instance_id))
-                AND EXISTS(SELECT 1 FROM {ATTACHMENT_TABLE} a
-                  WHERE a.attachment_event_id=NEW.room_attachment_event_id
-                    AND a.episode_id=NEW.episode_id AND a.route_kind='attached'
-                    AND a.room_id=s.owner_id))
-               OR (s.namespace='shared' AND NEW.semantic_change_authority='shared_governance'
-                   AND NEW.episode_id IS NULL AND NEW.perspective_instance_id IS NULL
-                   AND NEW.room_attachment_event_id IS NULL)))
+          AND (
+            (
+              s.namespace='room'
+              AND NEW.semantic_change_authority='room_first_person'
+              AND EXISTS(
+                SELECT 1 FROM {EPISODE_TABLE} AS e
+                WHERE e.episode_id=NEW.episode_id
+                  AND e.perspective_instance_id=NEW.perspective_instance_id
+              )
+              AND EXISTS(
+                SELECT 1 FROM {ATTACHMENT_TABLE} AS a
+                WHERE a.attachment_event_id=NEW.room_attachment_event_id
+                  AND a.episode_id=NEW.episode_id
+                  AND a.route_kind='attached'
+                  AND a.room_id=s.owner_id
+              )
+            )
+            OR
+            (
+              s.namespace='shared'
+              AND NEW.semantic_change_authority='shared_governance'
+              AND NEW.episode_id IS NULL
+              AND NEW.perspective_instance_id IS NULL
+              AND NEW.room_attachment_event_id IS NULL
+            )
+          )
+      )
       BEGIN SELECT RAISE(ABORT,'Current end-event target/provenance binding is invalid'); END;
 
     CREATE TRIGGER current_end_evidence_no_replace BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
