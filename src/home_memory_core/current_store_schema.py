@@ -5,7 +5,7 @@ import re
 import sqlite3
 
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
-from home_memory_core.living_store import EPISODE_TABLE, ROOM_TABLE
+from home_memory_core.living_store import ATTACHMENT_TABLE, EPISODE_TABLE, ROOM_TABLE
 
 
 CURRENT_SCHEMA_VERSION = "current-persistence-v0.1"
@@ -25,7 +25,7 @@ CURRENT_TRIGGERS = frozenset({
     "current_schema_marker_no_update", "current_schema_marker_no_delete",
     "current_state_no_replace", "current_state_no_update", "current_state_no_delete",
     "current_state_room_exists", "current_state_room_episode_binding",
-    "current_state_supersession_line",
+    "current_state_room_attachment_binding", "current_state_supersession_line",
     "current_state_evidence_no_replace", "current_state_evidence_no_update",
     "current_state_evidence_no_delete", "current_state_evidence_exact_source",
     "current_state_evidence_not_suppressed",
@@ -58,18 +58,23 @@ def current_schema_script() -> str:
           CHECK(semantic_change_authority IN ('room_first_person','shared_governance')),
         episode_id TEXT,
         perspective_instance_id TEXT,
+        room_attachment_event_id TEXT,
         supersedes_state_id TEXT,
         payload_json TEXT NOT NULL CHECK(length(trim(payload_json))>0),
         CHECK(
           (namespace='room' AND semantic_change_authority='room_first_person'
            AND episode_id IS NOT NULL AND perspective_instance_id IS NOT NULL
+           AND room_attachment_event_id IS NOT NULL
            AND perspective_instance_id<>'{SYNTHETIC_UNATTRIBUTED_INSTANCE_ID}')
           OR
           (namespace='shared' AND semantic_change_authority='shared_governance'
-           AND episode_id IS NULL AND perspective_instance_id IS NULL)
+           AND episode_id IS NULL AND perspective_instance_id IS NULL
+           AND room_attachment_event_id IS NULL)
         ),
         CHECK(supersedes_state_id IS NULL OR supersedes_state_id<>state_id),
         FOREIGN KEY(episode_id) REFERENCES {EPISODE_TABLE}(episode_id)
+          ON UPDATE RESTRICT ON DELETE RESTRICT,
+        FOREIGN KEY(room_attachment_event_id) REFERENCES {ATTACHMENT_TABLE}(attachment_event_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT,
         FOREIGN KEY(supersedes_state_id) REFERENCES {CURRENT_STATE_TABLE}(state_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT
@@ -96,18 +101,21 @@ def current_schema_script() -> str:
           CHECK(semantic_change_authority IN ('room_first_person','shared_governance')),
         episode_id TEXT,
         perspective_instance_id TEXT,
+        room_attachment_event_id TEXT,
         payload_json TEXT NOT NULL CHECK(length(trim(payload_json))>0),
         CHECK(
           (semantic_change_authority='room_first_person' AND episode_id IS NOT NULL
-           AND perspective_instance_id IS NOT NULL
+           AND perspective_instance_id IS NOT NULL AND room_attachment_event_id IS NOT NULL
            AND perspective_instance_id<>'{SYNTHETIC_UNATTRIBUTED_INSTANCE_ID}')
           OR
           (semantic_change_authority='shared_governance' AND episode_id IS NULL
-           AND perspective_instance_id IS NULL)
+           AND perspective_instance_id IS NULL AND room_attachment_event_id IS NULL)
         ),
         FOREIGN KEY(state_id) REFERENCES {CURRENT_STATE_TABLE}(state_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT,
         FOREIGN KEY(episode_id) REFERENCES {EPISODE_TABLE}(episode_id)
+          ON UPDATE RESTRICT ON DELETE RESTRICT,
+        FOREIGN KEY(room_attachment_event_id) REFERENCES {ATTACHMENT_TABLE}(attachment_event_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT
     );
     CREATE TABLE {CURRENT_END_EVIDENCE_TABLE} (
@@ -145,6 +153,13 @@ def current_schema_script() -> str:
         SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id=NEW.episode_id
           AND perspective_instance_id=NEW.perspective_instance_id)
       BEGIN SELECT RAISE(ABORT,'Room Current Episode/Perspective binding is invalid'); END;
+    CREATE TRIGGER current_state_room_attachment_binding BEFORE INSERT ON {CURRENT_STATE_TABLE}
+      WHEN NEW.namespace='room' AND NOT EXISTS(
+        SELECT 1 FROM {ATTACHMENT_TABLE} a
+        WHERE a.attachment_event_id=NEW.room_attachment_event_id
+          AND a.episode_id=NEW.episode_id AND a.route_kind='attached'
+          AND a.room_id=NEW.owner_id)
+      BEGIN SELECT RAISE(ABORT,'Room Current attachment provenance is invalid'); END;
     CREATE TRIGGER current_state_supersession_line BEFORE INSERT ON {CURRENT_STATE_TABLE}
       WHEN NEW.supersedes_state_id IS NOT NULL AND NOT EXISTS(
         SELECT 1 FROM {CURRENT_STATE_TABLE} p WHERE p.state_id=NEW.supersedes_state_id
@@ -184,8 +199,13 @@ def current_schema_script() -> str:
           AND ((s.namespace='room' AND NEW.semantic_change_authority='room_first_person'
                 AND EXISTS(SELECT 1 FROM {EPISODE_TABLE} e WHERE e.episode_id=NEW.episode_id
                   AND e.perspective_instance_id=NEW.perspective_instance_id))
+                AND EXISTS(SELECT 1 FROM {ATTACHMENT_TABLE} a
+                  WHERE a.attachment_event_id=NEW.room_attachment_event_id
+                    AND a.episode_id=NEW.episode_id AND a.route_kind='attached'
+                    AND a.room_id=s.owner_id))
                OR (s.namespace='shared' AND NEW.semantic_change_authority='shared_governance'
-                   AND NEW.episode_id IS NULL AND NEW.perspective_instance_id IS NULL)))
+                   AND NEW.episode_id IS NULL AND NEW.perspective_instance_id IS NULL
+                   AND NEW.room_attachment_event_id IS NULL)))
       BEGIN SELECT RAISE(ABORT,'Current end-event target/provenance binding is invalid'); END;
 
     CREATE TRIGGER current_end_evidence_no_replace BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
@@ -218,6 +238,7 @@ def expected_current_schema_sql() -> dict[tuple[str, str], str]:
         connection.executescript(f"""
           CREATE TABLE {ROOM_TABLE}(room_id TEXT PRIMARY KEY);
           CREATE TABLE {EPISODE_TABLE}(episode_id TEXT PRIMARY KEY,perspective_instance_id TEXT NOT NULL);
+          CREATE TABLE {ATTACHMENT_TABLE}(attachment_event_id TEXT PRIMARY KEY,episode_id TEXT NOT NULL,route_kind TEXT NOT NULL,room_id TEXT);
           CREATE TABLE sources(source_id TEXT PRIMARY KEY,content TEXT NOT NULL,content_sha256 TEXT NOT NULL);
           CREATE TABLE source_suppressions(source_id TEXT PRIMARY KEY);
         """)

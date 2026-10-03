@@ -70,7 +70,10 @@ For `namespace=room` the store requires:
 
 - an existing Room matching `owner_id`;
 - an existing Episode matching `episode_id`;
-- the exact concrete `PerspectiveInstance` already attributed to that Episode.
+- the exact concrete `PerspectiveInstance` already attributed to that Episode;
+- the exact active `RoomAttachmentEvent` that routed that Episode to the Room at admission time.
+
+The attachment id is retained as historical provenance. A later append-only route correction does not rewrite the older Current event's original route anchor.
 
 This is provenance only. It is **not** operational permission to change Room Current state. The next admission slice must require an appropriate live Room participation grant and bind authorization to the exact write effect.
 

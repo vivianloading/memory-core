@@ -28,7 +28,12 @@ from home_memory_core.current_view import (
     resolve_current_state,
 )
 from home_memory_core.evidence import EvidenceRef, create_evidence_ref
-from home_memory_core.living_continuity import EpisodeRecord, RoomRecord
+from home_memory_core.living_continuity import (
+    EpisodeRecord,
+    RoomAttachmentEvent,
+    RoomRecord,
+    RoomRouteKind,
+)
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
@@ -50,6 +55,13 @@ class CurrentStoreTests(unittest.TestCase):
             episode_id="episode-a",
             perspective_instance_id="perspective-a",
             runtime_instance_id="runtime-a",
+        ))
+        self.living.add_room_attachment(RoomAttachmentEvent(
+            attachment_event_id="route-a",
+            episode_id="episode-a",
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id="room-r",
+            basis="synthetic-test-route",
         ))
         self.store = CurrentStore(self.db)
         self.store.initialize()
@@ -98,6 +110,7 @@ class CurrentStoreTests(unittest.TestCase):
         persisted = self.store.get_state_for_audit(record.state_id)
         self.assertEqual(persisted.record.source_refs, record.source_refs)
         self.assertEqual(persisted.source_bindings, bindings)
+        self.assertEqual(persisted.room_attachment_event_id, "route-a")
         resolution = resolve_current_state(
             namespace=CurrentNamespace.ROOM,
             owner_id="room-r",
@@ -166,6 +179,50 @@ class CurrentStoreTests(unittest.TestCase):
             self.store.add_state_record(
                 record=child, source_bindings=(self.binding(child.source_refs[0]),)
             )
+
+    def test_room_current_requires_active_route_and_keeps_exact_route_anchor(self) -> None:
+        self.living.add_room(RoomRecord(room_id="room-other"))
+        self.living.add_episode(EpisodeRecord(
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            runtime_instance_id="runtime-b",
+        ))
+        self.living.add_room_attachment(RoomAttachmentEvent(
+            attachment_event_id="route-b",
+            episode_id="episode-b",
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id="room-other",
+            basis="other-room",
+        ))
+        cross_room = self.room_state(
+            "cross-room",
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+        )
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.add_state_record(
+                record=cross_room,
+                source_bindings=(self.binding(cross_room.source_refs[0]),),
+            )
+
+        record = self.room_state("anchored-route")
+        self.store.add_state_record(
+            record=record,
+            source_bindings=(self.binding(record.source_refs[0]),),
+        )
+        self.living.add_room(RoomRecord(room_id="room-corrected"))
+        self.living.add_room_attachment(RoomAttachmentEvent(
+            attachment_event_id="route-a-correction",
+            episode_id="episode-a",
+            route_kind=RoomRouteKind.ATTACHED,
+            room_id="room-corrected",
+            basis="late-route-correction",
+            supersedes_attachment_event_id="route-a",
+        ))
+
+        persisted = self.store.get_state_for_audit(record.state_id)
+        self.assertEqual(persisted.room_attachment_event_id, "route-a")
+        self.assertEqual(persisted.record.owner_id, "room-r")
 
     def test_end_event_is_append_only_evidence_not_a_rewrite(self) -> None:
         record = self.room_state(

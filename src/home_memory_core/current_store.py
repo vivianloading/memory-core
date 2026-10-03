@@ -32,6 +32,7 @@ from home_memory_core.current_view import (
 )
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.living_store import (
+    ATTACHMENT_TABLE,
     EPISODE_TABLE,
     ROOM_TABLE,
     assert_living_data_integrity,
@@ -70,12 +71,14 @@ class CurrentSourceBinding:
 class PersistedCurrentState:
     record: CurrentStateRecord
     source_bindings: tuple[CurrentSourceBinding, ...]
+    room_attachment_event_id: str | None
 
 
 @dataclass(frozen=True)
 class PersistedCurrentEndEvent:
     event: CurrentStateEndEvent
     source_bindings: tuple[CurrentSourceBinding, ...]
+    room_attachment_event_id: str | None
 
 
 class CurrentStore:
@@ -127,18 +130,25 @@ class CurrentStore:
         connection = self._write_connection()
         try:
             _validate_new_bindings(connection, source_bindings)
+            room_attachment_event_id = _active_room_attachment(
+                connection,
+                namespace=record.namespace,
+                owner_id=record.owner_id,
+                episode_id=record.episode_id,
+                perspective_instance_id=record.perspective_instance_id,
+            )
             connection.execute(
                 f"""INSERT INTO {CURRENT_STATE_TABLE} (
                   state_id,namespace,owner_id,key,state_kind,recorded_instant_us,
                   semantic_change_authority,episode_id,perspective_instance_id,
-                  supersedes_state_id,payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                  room_attachment_event_id,supersedes_state_id,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record.state_id, record.namespace.value, record.owner_id,
                     record.key, record.state_kind.value, _instant(record.recorded_at),
                     record.semantic_change_authority.value, record.episode_id,
-                    record.perspective_instance_id, record.supersedes_state_id,
-                    _state_payload(record),
+                    record.perspective_instance_id, room_attachment_event_id,
+                    record.supersedes_state_id, _state_payload(record),
                 ),
             )
             _insert_bindings(
@@ -170,15 +180,29 @@ class CurrentStore:
         connection = self._write_connection()
         try:
             _validate_new_bindings(connection, source_bindings)
+            target = connection.execute(
+                f"SELECT namespace,owner_id FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+                (event.state_id,),
+            ).fetchone()
+            if target is None:
+                raise CurrentStoreIntegrityError("Current end event target is missing")
+            room_attachment_event_id = _active_room_attachment(
+                connection,
+                namespace=CurrentNamespace(target["namespace"]),
+                owner_id=target["owner_id"],
+                episode_id=event.episode_id,
+                perspective_instance_id=event.perspective_instance_id,
+            )
             connection.execute(
                 f"""INSERT INTO {CURRENT_END_TABLE} (
                   end_event_id,state_id,recorded_instant_us,semantic_change_authority,
-                  episode_id,perspective_instance_id,payload_json
-                ) VALUES (?,?,?,?,?,?,?)""",
+                  episode_id,perspective_instance_id,room_attachment_event_id,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?)""",
                 (
                     event.end_event_id, event.state_id, _instant(event.recorded_at),
                     event.semantic_change_authority.value, event.episode_id,
-                    event.perspective_instance_id, _end_payload(event),
+                    event.perspective_instance_id, room_attachment_event_id,
+                    _end_payload(event),
                 ),
             )
             _insert_bindings(
@@ -209,7 +233,9 @@ class CurrentStore:
             bindings = _read_bindings(
                 connection, CURRENT_STATE_EVIDENCE_TABLE, "state_id", state_id
             )
-            return PersistedCurrentState(_state_from_row(row, bindings), bindings)
+            return PersistedCurrentState(
+                _state_from_row(row, bindings), bindings, row["room_attachment_event_id"]
+            )
         finally:
             connection.close()
 
@@ -223,7 +249,9 @@ class CurrentStore:
                 bindings = _read_bindings(
                     connection, CURRENT_STATE_EVIDENCE_TABLE, "state_id", row["state_id"]
                 )
-                result.append(PersistedCurrentState(_state_from_row(row, bindings), bindings))
+                result.append(PersistedCurrentState(
+                    _state_from_row(row, bindings), bindings, row["room_attachment_event_id"]
+                ))
             return tuple(result)
         finally:
             connection.close()
@@ -239,7 +267,9 @@ class CurrentStore:
             bindings = _read_bindings(
                 connection, CURRENT_END_EVIDENCE_TABLE, "end_event_id", end_event_id
             )
-            return PersistedCurrentEndEvent(_end_from_row(row, bindings), bindings)
+            return PersistedCurrentEndEvent(
+                _end_from_row(row, bindings), bindings, row["room_attachment_event_id"]
+            )
         finally:
             connection.close()
 
@@ -325,7 +355,9 @@ def assert_current_data_integrity(connection: sqlite3.Connection) -> None:
             _persisted_bindings(connection, bindings)
             record = _state_from_row(row, bindings)
             _state_index(row, record)
-            _room_provenance(connection, record)
+            _room_provenance(
+                connection, record, row["room_attachment_event_id"]
+            )
             states.append(record)
         _state_graph(tuple(states))
         state_by_id = {state.state_id: state for state in states}
@@ -346,7 +378,9 @@ def assert_current_data_integrity(connection: sqlite3.Connection) -> None:
             target = state_by_id.get(event.state_id)
             if target is None:
                 raise CurrentStoreIntegrityError("Current end event has no target")
-            _end_target(connection, event, target)
+            _end_target(
+                connection, event, target, row["room_attachment_event_id"]
+            )
     except CurrentStoreIntegrityError:
         raise
     except (CurrentViewError, ValueError, TypeError, json.JSONDecodeError) as error:
@@ -402,8 +436,16 @@ def _persisted_bindings(
             raise CurrentStoreIntegrityError("persisted Current evidence range is invalid")
 
 
-def _room_provenance(connection: sqlite3.Connection, record: CurrentStateRecord) -> None:
-    if record.namespace is not CurrentNamespace.ROOM:
+def _room_provenance(
+    connection: sqlite3.Connection,
+    record: CurrentStateRecord,
+    room_attachment_event_id: str | None,
+) -> None:
+    if record.namespace is CurrentNamespace.SHARED:
+        if room_attachment_event_id is not None:
+            raise CurrentStoreIntegrityError(
+                "Shared Current history cannot carry Room attachment provenance"
+            )
         return
     if connection.execute(
         f"SELECT 1 FROM {ROOM_TABLE} WHERE room_id=?", (record.owner_id,)
@@ -414,6 +456,12 @@ def _room_provenance(connection: sqlite3.Connection, record: CurrentStateRecord)
         (record.episode_id, record.perspective_instance_id),
     ).fetchone() is None:
         raise CurrentStoreIntegrityError("Room Current Episode/Perspective is invalid")
+    _assert_room_attachment_anchor(
+        connection,
+        room_attachment_event_id=room_attachment_event_id,
+        room_id=record.owner_id,
+        episode_id=record.episode_id,
+    )
 
 
 def _state_index(row: sqlite3.Row, record: CurrentStateRecord) -> None:
@@ -481,6 +529,7 @@ def _end_target(
     connection: sqlite3.Connection,
     event: CurrentStateEndEvent,
     target: CurrentStateRecord,
+    room_attachment_event_id: str | None,
 ) -> None:
     if event.semantic_change_authority is not target.semantic_change_authority:
         raise CurrentStoreIntegrityError("Current end-event authority differs from target")
@@ -494,9 +543,111 @@ def _end_target(
             (event.episode_id, event.perspective_instance_id),
         ).fetchone() is None:
             raise CurrentStoreIntegrityError("Room Current end-event provenance is invalid")
-    elif event.episode_id is not None or event.perspective_instance_id is not None:
+        _assert_room_attachment_anchor(
+            connection,
+            room_attachment_event_id=room_attachment_event_id,
+            room_id=target.owner_id,
+            episode_id=event.episode_id,
+        )
+    elif (
+        event.episode_id is not None
+        or event.perspective_instance_id is not None
+        or room_attachment_event_id is not None
+    ):
         raise CurrentStoreIntegrityError("Shared Current end-event claims Room provenance")
 
+
+
+def _active_room_attachment(
+    connection: sqlite3.Connection,
+    *,
+    namespace: CurrentNamespace,
+    owner_id: str,
+    episode_id: str | None,
+    perspective_instance_id: str | None,
+) -> str | None:
+    """Return the exact active RoomAttachmentEvent used at admission time.
+
+    The event id is persisted as historical provenance. A later attachment
+    correction does not rewrite this anchor; it remains evidence of what route
+    the admission actually relied on.
+    """
+
+    if namespace is CurrentNamespace.SHARED:
+        if episode_id is not None or perspective_instance_id is not None:
+            raise CurrentStoreIntegrityError(
+                "Shared Current history cannot claim Room first-person provenance"
+            )
+        return None
+
+    if episode_id is None or perspective_instance_id is None:
+        raise CurrentStoreIntegrityError(
+            "Room Current history requires Episode/Perspective provenance"
+        )
+    if connection.execute(
+        f"SELECT 1 FROM {ROOM_TABLE} WHERE room_id=?",
+        (owner_id,),
+    ).fetchone() is None:
+        raise CurrentStoreIntegrityError("Room Current owner is missing")
+    if connection.execute(
+        f"SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id=? AND perspective_instance_id=?",
+        (episode_id, perspective_instance_id),
+    ).fetchone() is None:
+        raise CurrentStoreIntegrityError("Room Current Episode/Perspective is invalid")
+
+    heads = connection.execute(
+        f"""
+        SELECT a.attachment_event_id,a.route_kind,a.room_id
+        FROM {ATTACHMENT_TABLE} AS a
+        WHERE a.episode_id=?
+          AND NOT EXISTS (
+            SELECT 1 FROM {ATTACHMENT_TABLE} AS child
+            WHERE child.supersedes_attachment_event_id=a.attachment_event_id
+          )
+        ORDER BY a.rowid
+        """,
+        (episode_id,),
+    ).fetchall()
+    if len(heads) != 1:
+        raise CurrentStoreIntegrityError(
+            "Room Current admission requires one resolved active Room route"
+        )
+    head = heads[0]
+    if head["route_kind"] != "attached" or head["room_id"] != owner_id:
+        raise CurrentStoreIntegrityError(
+            "Room Current admission Episode is not actively routed to the target Room"
+        )
+    return head["attachment_event_id"]
+
+
+def _assert_room_attachment_anchor(
+    connection: sqlite3.Connection,
+    *,
+    room_attachment_event_id: str | None,
+    room_id: str,
+    episode_id: str | None,
+) -> None:
+    if room_attachment_event_id is None or episode_id is None:
+        raise CurrentStoreIntegrityError(
+            "Room Current history is missing attachment provenance"
+        )
+    row = connection.execute(
+        f"""
+        SELECT episode_id,route_kind,room_id
+        FROM {ATTACHMENT_TABLE}
+        WHERE attachment_event_id=?
+        """,
+        (room_attachment_event_id,),
+    ).fetchone()
+    if (
+        row is None
+        or row["episode_id"] != episode_id
+        or row["route_kind"] != "attached"
+        or row["room_id"] != room_id
+    ):
+        raise CurrentStoreIntegrityError(
+            "Room Current attachment provenance is invalid"
+        )
 
 def _insert_bindings(
     connection: sqlite3.Connection,
