@@ -375,6 +375,39 @@ class CurrentStoreTests(unittest.TestCase):
         with self.assertRaises(CurrentStoreIntegrityError):
             self.store.get_state_for_audit(record.state_id)
 
+    def test_unexpected_trigger_and_unique_index_are_detected(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                f"""
+                CREATE TRIGGER current_hidden_behavior
+                AFTER INSERT ON {CURRENT_STATE_TABLE}
+                BEGIN SELECT 1; END
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.list_states_for_audit()
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TRIGGER current_hidden_behavior")
+            connection.execute(
+                f"""
+                CREATE UNIQUE INDEX current_hidden_single_head
+                ON {CURRENT_STATE_TABLE}(namespace, owner_id, key)
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.list_states_for_audit()
+
     def test_shared_state_cannot_smuggle_room_provenance(self) -> None:
         shared = CurrentStateRecord(
             state_id="shared", namespace=CurrentNamespace.SHARED,
