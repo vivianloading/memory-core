@@ -136,6 +136,37 @@ class CurrentStoreTests(unittest.TestCase):
             timedelta.max,
         )
 
+    def test_calendar_edge_offsets_round_trip_without_utc_materialization(self) -> None:
+        cases = (
+            (
+                "lower-edge",
+                datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=8))),
+            ),
+            (
+                "upper-edge",
+                datetime(
+                    9999, 12, 31, 23, 59, 59, 999999,
+                    tzinfo=timezone(timedelta(hours=-8)),
+                ),
+            ),
+        )
+
+        for state_id, instant in cases:
+            record = self.room_state(
+                state_id,
+                event_time=instant,
+                recorded_at=instant,
+                valid_from=instant,
+            )
+            self.store.add_state_record(
+                record=record,
+                source_bindings=(self.binding(record.source_refs[0]),),
+            )
+            persisted = self.store.get_state_for_audit(state_id).record
+            self.assertEqual(persisted.event_time.isoformat(), instant.isoformat())
+            self.assertEqual(persisted.recorded_at.isoformat(), instant.isoformat())
+            self.assertEqual(persisted.valid_from.isoformat(), instant.isoformat())
+
     def test_typed_binding_must_match_ref_source_hash_and_suppression(self) -> None:
         record = self.room_state("binding")
         good = self.binding(record.source_refs[0])
