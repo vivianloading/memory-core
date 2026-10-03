@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from hashlib import sha256
 import json
 from pathlib import Path
 import sqlite3
@@ -410,7 +411,14 @@ def _validate_new_bindings(
             "SELECT content,content_sha256 FROM sources WHERE source_id=?",
             (evidence.source_id,),
         ).fetchone()
-        if row is None or row["content_sha256"] != evidence.source_sha256:
+        if row is None:
+            raise CurrentStoreIntegrityError("Current evidence source is missing")
+        actual_hash = sha256(row["content"].encode("utf-8")).hexdigest()
+        if actual_hash != row["content_sha256"]:
+            raise CurrentStoreIntegrityError(
+                "stored source content hash does not match content"
+            )
+        if row["content_sha256"] != evidence.source_sha256:
             raise CurrentStoreIntegrityError("Current evidence source/hash is invalid")
         if not (0 <= evidence.start_char < evidence.end_char <= len(row["content"])):
             raise CurrentStoreIntegrityError("Current evidence range is invalid")
@@ -430,7 +438,14 @@ def _persisted_bindings(
         row = connection.execute(
             "SELECT content,content_sha256 FROM sources WHERE source_id=?", (evidence.source_id,)
         ).fetchone()
-        if row is None or row["content_sha256"] != evidence.source_sha256:
+        if row is None:
+            raise CurrentStoreIntegrityError("persisted Current evidence source is missing")
+        actual_hash = sha256(row["content"].encode("utf-8")).hexdigest()
+        if actual_hash != row["content_sha256"]:
+            raise CurrentStoreIntegrityError(
+                "persisted source content hash does not match content"
+            )
+        if row["content_sha256"] != evidence.source_sha256:
             raise CurrentStoreIntegrityError("persisted Current evidence source/hash is invalid")
         if not (0 <= evidence.start_char < evidence.end_char <= len(row["content"])):
             raise CurrentStoreIntegrityError("persisted Current evidence range is invalid")
