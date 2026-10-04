@@ -232,6 +232,33 @@ class CurrentAdmissionTests(unittest.TestCase):
         )
         return record, receipt
 
+    def test_open_rejects_mismatched_store_before_installing_admission_schema(self) -> None:
+        other_db = self.root / "other" / "home.db"
+        other_memory = MemoryStore(other_db)
+        other_memory.initialize()
+        LivingStore(other_db).initialize()
+        CurrentStore(other_db).initialize()
+        other_admission = CurrentAdmissionStore(other_db)
+
+        with self.assertRaises(CurrentAdmissionAuthorizationError):
+            open_current_admission_authority(
+                current_store=self.current,
+                admission_store=other_admission,
+                room_authority=self.room_authority,
+            )
+
+        connection = sqlite3.connect(other_db)
+        try:
+            installed = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='current_admission_schema_marker'
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNone(installed)
+
     def test_room_state_admission_binds_live_grant_and_exact_effect(self) -> None:
         record, receipt = self.admit_state("state-a")
 
