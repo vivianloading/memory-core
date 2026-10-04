@@ -392,6 +392,83 @@ class SuppressionStorageTest(unittest.TestCase):
             (),
         )
 
+    def test_supersession_write_holds_lock_across_suppression_decision(
+        self,
+    ) -> None:
+        previous = self._stored_interpretation(
+            interpretation_id="stored-interpretation-race-previous",
+            source_id="stored-message-race-previous",
+            source_text="旧证据。",
+            interpretation_text="旧理解。",
+        )
+        new = self._stored_interpretation(
+            interpretation_id="stored-interpretation-race-new",
+            source_id="stored-message-race-new",
+            source_text="后来被停止使用的新证据。",
+            interpretation_text="新理解。",
+        )
+        self._admit_same_thread(previous, new)
+
+        suppression = create_suppression_record(
+            suppression_id="stored-suppression-supersession-race",
+            source_id=new.evidence[0].source_id,
+            requested_by="vivi",
+            reason="revision write 也必须和 stop-use 决策属于同一个数据库现实。",
+        )
+        self.store.suppress_source(suppression)
+        supersession = create_supersession_record(
+            previous=previous,
+            new=new,
+            reason_evidence=new.evidence,
+        )
+
+        observed_transactions = []
+        concurrent_damage_errors = []
+        db_path = self.db_path
+
+        class InspectingStore(MemoryStore):
+            def _get_suppressions_from_connection(
+                nested_self,
+                *,
+                connection,
+            ):
+                observed_transactions.append(connection.in_transaction)
+                damage = sqlite3.connect(db_path, timeout=0)
+                try:
+                    damage.execute("PRAGMA foreign_keys=OFF")
+                    damage.execute(
+                        "DROP TRIGGER source_suppressions_no_delete"
+                    )
+                    damage.execute(
+                        """
+                        DELETE FROM source_suppressions
+                        WHERE suppression_id=?
+                        """,
+                        (suppression.suppression_id,),
+                    )
+                    damage.commit()
+                except Exception as error:
+                    concurrent_damage_errors.append(error)
+                    damage.rollback()
+                finally:
+                    damage.close()
+
+                return super()._get_suppressions_from_connection(
+                    connection=connection,
+                )
+
+        inspecting = InspectingStore(self.db_path)
+        with self.assertRaises(SuppressedMemoryError):
+            inspecting.add_supersession(supersession)
+
+        self.assertEqual(observed_transactions, [True])
+        self.assertEqual(len(concurrent_damage_errors), 1)
+        self.assertIsInstance(
+            concurrent_damage_errors[0],
+            sqlite3.OperationalError,
+        )
+        self.assertEqual(self.store.get_supersessions(), ())
+
     def test_damaged_suppression_ledger_fails_closed_at_source_use(self) -> None:
         source = create_source_record(
             source_id="stored-message-damaged-ledger",
