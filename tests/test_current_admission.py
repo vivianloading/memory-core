@@ -513,6 +513,68 @@ class CurrentAdmissionTests(unittest.TestCase):
                 effect_id=record.state_id,
             )
 
+    def test_room_authority_lineage_reader_is_pinned_to_leased_database(self) -> None:
+        grant = self.grant()
+        record = self.room_state("room-reader-pinned")
+        binding = self.binding(record.source_refs[0])
+        other_db = self.root / "room-reader-other" / "home.db"
+        self.clone_database(other_db)
+
+        # Make leased database A stale for this grant by introducing a fork.
+        self.living.add_episode(
+            EpisodeRecord(
+                episode_id="episode-c",
+                perspective_instance_id="perspective-c",
+                runtime_instance_id="runtime-c",
+            )
+        )
+        self.living.add_continuity_edge(
+            ContinuityEdge(
+                edge_id="edge-a-c",
+                previous_episode_id="episode-a",
+                next_episode_id="episode-c",
+                transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                continuity_status=ContinuityStatus.UNKNOWN,
+            )
+        )
+        self.living.add_room_attachment(
+            RoomAttachmentEvent(
+                attachment_event_id="route-c",
+                episode_id="episode-c",
+                route_kind=RoomRouteKind.ATTACHED,
+                room_id="room-r",
+                basis="synthetic fork",
+            )
+        )
+
+        original_living_path = self.living.db_path
+        try:
+            # Caller-owned LivingStore now points at the pre-fork clone B.
+            # Operational Room authority must still read canonical leased A.
+            self.living.db_path = other_db
+            with self.assertRaises(RoomParticipationStaleError):
+                self.room_authority.require_grant(
+                    grant=grant,
+                    session_id=grant.session_id,
+                    episode_id=grant.episode_id,
+                    perspective_instance_id=grant.perspective_instance_id,
+                    room_id=grant.room_id,
+                    required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
+                )
+            with self.assertRaises(RoomParticipationStaleError):
+                self.admission.admit_room_state(
+                    record=record,
+                    source_bindings=(binding,),
+                    grant=grant,
+                )
+        finally:
+            self.living.db_path = original_living_path
+
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_TABLE), 0)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_ADMISSION_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_ADMISSION_TABLE), 0)
+
     def test_public_store_path_drift_cannot_redirect_admitted_effect(self) -> None:
         grant = self.grant()
         record = self.room_state("absolute-db-drift")
