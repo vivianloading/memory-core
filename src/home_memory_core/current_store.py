@@ -335,7 +335,6 @@ def assert_current_schema(connection: sqlite3.Connection) -> None:
         SELECT type,name,tbl_name,sql
         FROM sqlite_master
         WHERE type IN ('table','trigger','index')
-          AND name NOT LIKE 'sqlite_%'
         """
     ).fetchall()
 
@@ -932,10 +931,15 @@ def _dt(value: object) -> datetime:
 
 
 def _td(value: object) -> timedelta:
-    try:
-        micros = int(value)
-    except (TypeError, ValueError) as error:
-        raise CurrentStoreIntegrityError("stale_after_us is not an integer scalar") from error
+    if not isinstance(value, str) or not value or not value.isascii() or not value.isdigit():
+        raise CurrentStoreIntegrityError(
+            "stale_after_us must be a canonical positive integer string"
+        )
+    micros = int(value)
+    if value != str(micros):
+        raise CurrentStoreIntegrityError(
+            "stale_after_us must use canonical decimal encoding"
+        )
     if micros <= 0:
         raise CurrentStoreIntegrityError("stale_after_us must be positive")
     days, remainder = divmod(micros, 86_400_000_000)
