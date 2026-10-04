@@ -396,6 +396,47 @@ This preserves the broader rule:
 The #42 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #43 — domain admission belongs inside the protected database reality
+
+Independent re-review #43 returned **FAIL / NO-GO** on exact head
+`710e1bf54d4433835b22ea3ff72c095d2364990f`.
+
+The review found that suppression trust had been moved into coherent read/write
+transactions, but the higher-level synthetic-store admission check still
+happened before those transactions began. A valid synthetic-domain marker could
+therefore be observed, removed by another connection, and then followed by a
+source-use decision or derived effect that no longer belonged to a currently
+admitted synthetic store.
+
+The remediation moves that prerequisite trust into the same database reality
+as the operation itself:
+
+- read snapshots now open the raw SQLite connection, start `BEGIN`, then
+  establish the synthetic domain inside that snapshot before reading payload or
+  suppression permission inputs;
+- write effects use one shared `BEGIN IMMEDIATE` transaction that establishes
+  the synthetic domain before any effect-specific validation or mutation;
+- MemoryStore writes including source creation, suppression, interpretation,
+  thread admission and supersession use that verified write transaction;
+- the older generic internal connection helper is reduced to a verified
+  read-snapshot compatibility path rather than a transaction-free admission
+  check.
+
+Regression coverage records two boundaries directly: source-use observes the
+domain assertion only after a read transaction exists, and a derived write
+already holds its write transaction when domain admission is checked, so a
+competing local marker-loss write cannot interleave.
+
+The broader rule is:
+
+> **Prerequisite trust is part of the operation, not a preflight memory.
+> Domain admission, authority/permission inputs and the resulting read or
+> effect must be evaluated inside the database reality that gives them
+> meaning.**
+
+The #43 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
