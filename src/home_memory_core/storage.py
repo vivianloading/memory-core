@@ -27,6 +27,7 @@ from home_memory_core.store_domain import (
 )
 from home_memory_core.suppression import (
     SuppressedMemoryError,
+    SuppressionLedgerIntegrityError,
     SuppressionRecord,
     is_interpretation_usable as interpretation_is_usable,
     is_supersession_usable as supersession_is_usable,
@@ -104,7 +105,7 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
         "requested_by",
         "reason",
     ):
-        raise SuppressedMemoryError(
+        raise SuppressionLedgerIntegrityError(
             "source suppression ledger schema is unavailable"
         )
 
@@ -129,7 +130,7 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
         )
     )
     if unexpected:
-        raise SuppressedMemoryError(
+        raise SuppressionLedgerIntegrityError(
             "source suppression ledger has unexpected mutation behavior"
         )
 
@@ -162,7 +163,7 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
         """
     ).fetchone()
     if invalid is not None:
-        raise SuppressedMemoryError(
+        raise SuppressionLedgerIntegrityError(
             "source suppression ledger contains invalid provenance"
         )
 
