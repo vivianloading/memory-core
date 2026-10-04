@@ -42,7 +42,6 @@ from home_memory_core.storage import (
 )
 from home_memory_core.suppression import (
     SuppressionLedgerIntegrityError,
-    create_suppression_record,
     create_timed_suppression_record,
 )
 
@@ -152,6 +151,49 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
             )
         )
 
+    def legacy_suppress(
+        self,
+        binding: CurrentSourceBinding,
+        *,
+        suppression_id: str,
+        reason: str,
+    ) -> None:
+        """Test-only persisted pre-3B1 history with explicit unknown timing."""
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO source_suppressions (
+                    suppression_id,source_id,requested_by,reason
+                ) VALUES (?,?,?,?)
+                """,
+                (
+                    suppression_id,
+                    binding.evidence.source_id,
+                    "legacy-test",
+                    reason,
+                ),
+            )
+            connection.execute(
+                f"""
+                INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                    suppression_id,timing_status,
+                    effective_instant_us,recorded_instant_us,
+                    effective_at_iso,recorded_at_iso
+                ) VALUES (?, 'timing_unknown', NULL, NULL, NULL, NULL)
+                """,
+                (suppression_id,),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def test_source_and_current_historical_views_share_one_timed_cut(self) -> None:
         binding = self.binding("source-shared-cut")
         record = self.state("state-source-shared-cut", binding)
@@ -202,13 +244,10 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
         binding = self.binding("source-legacy")
         record = self.state("state-source-legacy", binding)
         self.current.add_state_record(record=record, source_bindings=(binding,))
-        self.memory.suppress_source(
-            create_suppression_record(
-                suppression_id="stop-source-legacy",
-                source_id=binding.evidence.source_id,
-                requested_by="legacy-test",
-                reason="legacy timing absent",
-            )
+        self.legacy_suppress(
+            binding,
+            suppression_id="stop-source-legacy",
+            reason="legacy timing absent",
         )
 
         source_decision = self.source_history.source_decision(
@@ -300,13 +339,10 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
         binding = self.binding("legacy")
         record = self.state("state-legacy", binding)
         self.current.add_state_record(record=record, source_bindings=(binding,))
-        self.memory.suppress_source(
-            create_suppression_record(
-                suppression_id="stop-legacy",
-                source_id=binding.evidence.source_id,
-                requested_by="legacy-test",
-                reason="timing never recorded",
-            )
+        self.legacy_suppress(
+            binding,
+            suppression_id="stop-legacy",
+            reason="timing never recorded",
         )
 
         decision = self.history.state_decision(
@@ -391,13 +427,10 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
             record=child,
             source_bindings=(child_binding,),
         )
-        self.memory.suppress_source(
-            create_suppression_record(
-                suppression_id="stop-legacy-parent",
-                source_id=parent_binding.evidence.source_id,
-                requested_by="legacy-test",
-                reason="timing was never captured",
-            )
+        self.legacy_suppress(
+            parent_binding,
+            suppression_id="stop-legacy-parent",
+            reason="timing was never captured",
         )
 
         decision = self.history.state_decision(
@@ -441,13 +474,10 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
             effective_at=stop_time,
             recorded_at=stop_time,
         )
-        self.memory.suppress_source(
-            create_suppression_record(
-                suppression_id="stop-mixed-unknown",
-                source_id=second.evidence.source_id,
-                requested_by="legacy-test",
-                reason="unknown timing",
-            )
+        self.legacy_suppress(
+            second,
+            suppression_id="stop-mixed-unknown",
+            reason="unknown timing",
         )
 
         decision = self.history.state_decision(
@@ -740,13 +770,10 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
         binding = self.binding("upgrade")
         record = self.state("state-upgrade", binding)
         self.current.add_state_record(record=record, source_bindings=(binding,))
-        self.memory.suppress_source(
-            create_suppression_record(
-                suppression_id="stop-upgrade",
-                source_id=binding.evidence.source_id,
-                requested_by="legacy-test",
-                reason="pre-3B1 stop-use",
-            )
+        self.legacy_suppress(
+            binding,
+            suppression_id="stop-upgrade",
+            reason="pre-3B1 stop-use",
         )
 
         connection = sqlite3.connect(self.db)
