@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import re
 import sqlite3
 
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
