@@ -115,6 +115,17 @@ The supported schema installs and audits append-only guards against:
 Present-use decisions fail closed if those guards or the suppression ledger
 shape are altered.
 
+The suppression ledger is also `WITHOUT ROWID`. HOME previously learned on
+Current persistence that append-only triggers which guard only semantic keys can
+still be bypassed by an implicit SQLite rowid replacement channel. Slice 3A does
+not repeat that mistake.
+
+`MemoryStore.initialize()` accepts exactly one historical suppression-table
+shape for upgrade: the pre-Slice-3A schema already present on `main`. It
+migrates that exact shape to `WITHOUT ROWID` while preserving every suppression
+record. Unknown or modified look-alike schemas are not normalized or repaired;
+they fail closed.
+
 This does not claim that arbitrary programs with direct filesystem/SQLite
 control are transformed into authorized HOME callers. It ensures the supported
 HOME boundary can mechanically detect when its stop-use ledger is no longer a
