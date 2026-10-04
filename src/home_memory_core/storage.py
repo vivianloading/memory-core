@@ -1279,6 +1279,7 @@ class MemoryStore:
         )
 
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             suppressed_ids = self._get_suppressed_source_ids_from_connection(
                 connection=connection,
             )
