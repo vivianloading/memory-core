@@ -17,6 +17,7 @@ from _trusted_test_support import (
     trusted_test_room_continuation_policy,
     trusted_test_runtime_launch_issuer,
 )
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.current_admission import (
     CURRENT_END_ADMISSION_TABLE,
     CURRENT_STATE_ADMISSION_TABLE,
@@ -67,7 +68,6 @@ from home_memory_core.living_continuity import (
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
-from home_memory_core.suppression import create_suppression_record
 
 
 UTC = timezone.utc
