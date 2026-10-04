@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -32,7 +33,7 @@ from home_memory_core.source import create_source_record  # noqa: E402
 from home_memory_core.storage import MemoryStore  # noqa: E402
 from home_memory_core.suppression import (  # noqa: E402
     SuppressedMemoryError,
-    create_suppression_record,
+    create_timed_suppression_record,
 )
 
 
@@ -106,11 +107,13 @@ def _seed_rehearsal_store(config_path: Path) -> tuple[object, object]:
     store.add_source(active)
     store.add_source(suppressed)
     store.suppress_source(
-        create_suppression_record(
+        create_timed_suppression_record(
             suppression_id="mini-rehearsal-stop-use",
             source_id=suppressed.source_id,
             requested_by="rehearsal",
             reason="prove that migration does not resurrect a suppressed source",
+            effective_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
     )
 
