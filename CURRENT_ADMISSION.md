@@ -199,6 +199,41 @@ structurally identical database B.
 The #26 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #27 — authorization reader must share the leased trust root
+
+Independent review #27 returned **FAIL / NO-GO** on exact head
+`a41c31f42316d4d65ad524b8aa996e6e92c7a2a5`.
+
+Issue #26 pinned Current/admission effect connections to the host lease's
+canonical database, but Room authority still retained the caller-owned
+`LivingStore` as its operational lineage reader. Its live-host path check and
+the later continuation snapshot read were separate operations. A concurrent
+change to that public store's `db_path` could therefore make grant
+revalidation read structurally similar database B while the authorized Current
+effect committed to leased database A.
+
+The independent proof made A stale by introducing a continuity fork while a
+pre-fork clone B remained linear. By switching only the caller-owned
+`LivingStore.db_path` during lineage read, the supported admission path
+accepted lineage from B and committed the effect to A.
+
+The remediation extends the lease-rooted binding to the authorization reader:
+`RoomParticipationAuthority` now creates and owns an internal
+`LivingStore` pinned to the lease identity's canonical database path. The
+caller-owned LivingStore is used only to establish the open-time binding and is
+not retained as the later operational reader.
+
+The resulting rule is stronger than a path pre-check:
+
+> **Authorization evidence must be read from the same immutable trust root that
+> will receive the authorized effect.**
+
+Checking that a mutable reader points to A and then later reading from that
+reader is not equivalent to binding the read to A.
+
+The #27 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Deliberate non-claims
 
 This slice does not provide:
