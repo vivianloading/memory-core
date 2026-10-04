@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import wraps
@@ -8,6 +9,7 @@ import json
 from pathlib import Path
 import secrets
 from threading import Lock, RLock
+from typing import Iterator
 
 from home_memory_core.host_runtime import HomeSingleInstanceLease
 from home_memory_core.living_continuity import (
@@ -982,6 +984,38 @@ class RoomParticipationAuthority:
             session.evidence,
             policy=policy,
         )
+
+    @contextmanager
+    def hold_grant_for_operation(
+        self,
+        *,
+        grant: RoomParticipationGrant,
+        session_id: str,
+        episode_id: str,
+        perspective_instance_id: str,
+        room_id: str,
+        required_scope: RoomParticipationScope,
+    ) -> Iterator[None]:
+        """Hold exact grant authority across one synchronous local effect.
+
+        The authority lock remains held until the caller's effect has either
+        committed or unwound. This prevents process-local suspension or session
+        revocation from interleaving after revalidation but before the effect.
+        Database writers must establish their own ordering before entering this
+        context; Room routing changes remain serialized by the shared SQLite
+        write transaction rather than by this process-local lock.
+        """
+
+        with self._guard:
+            self.require_grant(
+                grant=grant,
+                session_id=session_id,
+                episode_id=episode_id,
+                perspective_instance_id=perspective_instance_id,
+                room_id=room_id,
+                required_scope=required_scope,
+            )
+            yield
 
     @_guarded
     def suspend_policy(self, *, policy_id: str) -> None:
