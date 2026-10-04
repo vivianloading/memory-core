@@ -13,9 +13,11 @@ from home_memory_core.current_use_asof import (
 )
 from home_memory_core.current_view import (
     CurrentNamespace,
+    CurrentStateEndEvent,
     CurrentStateKind,
     CurrentStateRecord,
     DowngradeRule,
+    EndKind,
     SemanticChangeAuthority,
     ValidityRule,
 )
@@ -287,6 +289,164 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
             HistoricalCurrentUseStatus.SUPPRESSED_AS_OF,
         )
         self.assertEqual(after.blocks[0].origin_effect_id, parent.state_id)
+
+    def test_legacy_ancestor_timing_unknown_propagates_to_descendant(self) -> None:
+        parent_binding = self.binding("legacy-parent")
+        parent = self.state("legacy-parent-state", parent_binding)
+        self.current.add_state_record(
+            record=parent,
+            source_bindings=(parent_binding,),
+        )
+        child_binding = self.binding("legacy-child")
+        child = self.state(
+            "legacy-child-state",
+            child_binding,
+            recorded_at=self.t0 + timedelta(hours=1),
+            supersedes_state_id=parent.state_id,
+        )
+        self.current.add_state_record(
+            record=child,
+            source_bindings=(child_binding,),
+        )
+        self.memory.suppress_source(
+            create_suppression_record(
+                suppression_id="stop-legacy-parent",
+                source_id=parent_binding.evidence.source_id,
+                requested_by="legacy-test",
+                reason="timing was never captured",
+            )
+        )
+
+        decision = self.history.state_decision(
+            state_id=child.state_id,
+            as_of=self.t0 + timedelta(days=1),
+        )
+        self.assertEqual(
+            decision.status,
+            HistoricalCurrentUseStatus.TIMING_UNKNOWN,
+        )
+        self.assertEqual(decision.blocks[0].origin_effect_id, parent.state_id)
+
+    def test_definite_suppression_dominates_coexisting_timing_unknown(self) -> None:
+        first = self.binding("mixed-known")
+        second = self.binding("mixed-unknown")
+        record = CurrentStateRecord(
+            state_id="mixed-state",
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            key="project.status",
+            state_kind=CurrentStateKind.PROJECT_STATUS,
+            value="mixed",
+            event_time=self.t0,
+            recorded_at=self.t0,
+            valid_from=self.t0,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=(first.source_ref, second.source_ref),
+        )
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(first, second),
+        )
+        stop_time = self.t0 + timedelta(hours=1)
+        self.timed_suppress(
+            first,
+            suppression_id="stop-mixed-known",
+            effective_at=stop_time,
+            recorded_at=stop_time,
+        )
+        self.memory.suppress_source(
+            create_suppression_record(
+                suppression_id="stop-mixed-unknown",
+                source_id=second.evidence.source_id,
+                requested_by="legacy-test",
+                reason="unknown timing",
+            )
+        )
+
+        decision = self.history.state_decision(
+            state_id=record.state_id,
+            as_of=stop_time,
+        )
+        self.assertEqual(
+            decision.status,
+            HistoricalCurrentUseStatus.SUPPRESSED_AS_OF,
+        )
+        self.assertEqual(
+            tuple(block.status for block in decision.blocks),
+            (
+                HistoricalSuppressionBlockStatus.SUPPRESSED_AS_OF,
+                HistoricalSuppressionBlockStatus.TIMING_UNKNOWN,
+            ),
+        )
+
+    def test_end_event_direct_suppression_does_not_propagate_backward_to_target(self) -> None:
+        state_binding = self.binding("end-target")
+        state = self.state("end-target-state", state_binding)
+        self.current.add_state_record(
+            record=state,
+            source_bindings=(state_binding,),
+        )
+        end_binding = self.binding("end-direct")
+        event = CurrentStateEndEvent(
+            end_event_id="end-direct-event",
+            state_id=state.state_id,
+            ended_at=self.t0 + timedelta(hours=1),
+            recorded_at=self.t0 + timedelta(hours=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic historical end",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=(end_binding.source_ref,),
+        )
+        self.current.add_end_event(
+            event=event,
+            source_bindings=(end_binding,),
+        )
+        stop_time = self.t0 + timedelta(hours=2)
+        self.timed_suppress(
+            end_binding,
+            suppression_id="stop-end-direct",
+            effective_at=stop_time,
+            recorded_at=stop_time,
+        )
+
+        state_decision = self.history.state_decision(
+            state_id=state.state_id,
+            as_of=stop_time,
+        )
+        end_decision = self.history.end_event_decision(
+            end_event_id=event.end_event_id,
+            as_of=stop_time,
+        )
+
+        self.assertEqual(
+            state_decision.status,
+            HistoricalCurrentUseStatus.NOT_SUPPRESSED_AS_OF,
+        )
+        self.assertEqual(
+            end_decision.status,
+            HistoricalCurrentUseStatus.SUPPRESSED_AS_OF,
+        )
+        self.assertEqual(
+            end_decision.blocks[0].origin_effect_id,
+            event.end_event_id,
+        )
+
+    def test_naive_as_of_is_rejected(self) -> None:
+        binding = self.binding("naive")
+        record = self.state("naive-state", binding)
+        self.current.add_state_record(record=record, source_bindings=(binding,))
+
+        with self.assertRaises(ValueError):
+            self.history.state_decision(
+                state_id=record.state_id,
+                as_of=datetime(2026, 1, 1, 12),
+            )
 
     def test_future_record_is_not_known_and_is_absent_from_historical_list(self) -> None:
         binding = self.binding("future")
