@@ -96,7 +96,7 @@ class StoreDomainBoundaryTest(unittest.TestCase):
                 for row in connection.execute(
                     """
                     SELECT name FROM sqlite_master
-                    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    WHERE type = 'table' AND name NOT GLOB 'sqlite_*'
                     """
                 ).fetchall()
             }
@@ -266,6 +266,136 @@ class StoreDomainBoundaryTest(unittest.TestCase):
             )
         finally:
             connection.close()
+
+    def test_sqlite_like_wildcard_names_are_not_hidden_from_synthetic_classifier(self) -> None:
+        for table_name in ("sqliteXpayload", "sqliteApayload", "sqlitezpayload"):
+            with self.subTest(table_name=table_name):
+                db_path = self.root / f"{table_name}.sqlite3"
+                connection = sqlite3.connect(db_path)
+                try:
+                    connection.execute(
+                        f"CREATE TABLE {table_name} (payload TEXT)"
+                    )
+                    connection.execute(
+                        f"INSERT INTO {table_name} VALUES (?)",
+                        ("synthetic sentinel",),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+
+                with self.assertRaises(StoreDomainError):
+                    MemoryStore(db_path).initialize()
+
+                self.assertIsNone(read_store_domain(db_path))
+                check = sqlite3.connect(db_path)
+                try:
+                    tables = {
+                        row[0]
+                        for row in check.execute(
+                            """
+                            SELECT name FROM sqlite_master
+                            WHERE type='table'
+                            """
+                        ).fetchall()
+                    }
+                finally:
+                    check.close()
+                self.assertEqual(tables, {table_name})
+
+    def test_literal_sqlite_internal_prefix_remains_ignored(self) -> None:
+        db_path = self.root / "sqlite-internal-prefix.sqlite3"
+        connection = sqlite3.connect(db_path)
+        try:
+            # AUTOINCREMENT creates SQLite's internal sqlite_sequence table.
+            connection.execute(
+                "CREATE TABLE sources ("
+                "source_id TEXT PRIMARY KEY,"
+                "content TEXT,"
+                "authored_by TEXT,"
+                "scope TEXT,"
+                "content_sha256 TEXT"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE interpretations ("
+                "interpretation_id TEXT PRIMARY KEY,"
+                "text TEXT,"
+                "perspective_owner TEXT,"
+                "perspective_instance_id TEXT,"
+                "about_subject TEXT,"
+                "scope TEXT"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE interpretation_evidence ("
+                "interpretation_id TEXT,"
+                "position INTEGER,"
+                "source_id TEXT,"
+                "source_sha256 TEXT,"
+                "start_char INTEGER,"
+                "end_char INTEGER"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE interpretation_threads ("
+                "thread_id TEXT PRIMARY KEY,"
+                "question TEXT,"
+                "perspective_owner TEXT,"
+                "perspective_instance_id TEXT,"
+                "about_subject TEXT,"
+                "scope TEXT"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE interpretation_thread_memberships ("
+                "admission_id TEXT PRIMARY KEY,"
+                "interpretation_id TEXT,"
+                "thread_id TEXT,"
+                "perspective_instance_id TEXT,"
+                "admitted_by_instance_id TEXT"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE supersessions ("
+                "previous_interpretation_id TEXT,"
+                "new_interpretation_id TEXT"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE supersession_evidence ("
+                "previous_interpretation_id TEXT,"
+                "new_interpretation_id TEXT,"
+                "position INTEGER,"
+                "source_id TEXT,"
+                "source_sha256 TEXT,"
+                "start_char INTEGER,"
+                "end_char INTEGER"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE source_suppressions ("
+                "suppression_id TEXT PRIMARY KEY,"
+                "source_id TEXT NOT NULL UNIQUE,"
+                "requested_by TEXT NOT NULL,"
+                "reason TEXT NOT NULL,"
+                "FOREIGN KEY(source_id) REFERENCES sources(source_id)"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE legacy_autoincrement("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT)"
+            )
+            connection.execute("DROP TABLE legacy_autoincrement")
+            connection.commit()
+        finally:
+            connection.close()
+
+        MemoryStore(db_path).initialize()
+        self.assertEqual(
+            read_store_domain(db_path),
+            SYNTHETIC_STORE_DOMAIN,
+        )
 
     def test_unmarked_unknown_table_is_not_adopted_as_synthetic(self) -> None:
         db_path = self.root / "unknown-unmarked.sqlite3"
