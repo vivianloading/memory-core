@@ -209,13 +209,20 @@ def _assert_source_suppression_timing(connection: sqlite3.Connection) -> None:
             )
 
 
-def _source_suppression_marker_table_sql() -> str:
+def _source_suppression_marker_table_sql(
+    version: str = SUPPRESSION_SCHEMA_VERSION,
+) -> str:
+    if version not in {
+        LEGACY_SUPPRESSION_SCHEMA_VERSION,
+        SUPPRESSION_SCHEMA_VERSION,
+    }:
+        raise ValueError("unsupported suppression schema marker version")
     return f"""
         CREATE TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE} (
             marker_key TEXT PRIMARY KEY
                 CHECK (marker_key='source_suppression_schema'),
             schema_version TEXT NOT NULL
-                CHECK (schema_version='{SUPPRESSION_SCHEMA_VERSION}')
+                CHECK (schema_version='{version}')
         ) WITHOUT ROWID
     """
 
@@ -252,9 +259,9 @@ def _suppression_schema_marker_exists(connection: sqlite3.Connection) -> bool:
     )
 
 
-def _assert_source_suppression_schema_marker(
+def _source_suppression_schema_marker_version(
     connection: sqlite3.Connection,
-) -> None:
+) -> str | None:
     table_row = connection.execute(
         """
         SELECT sql FROM sqlite_master
@@ -262,14 +269,8 @@ def _assert_source_suppression_schema_marker(
         """,
         (SUPPRESSION_SCHEMA_MARKER_TABLE,),
     ).fetchone()
-    if (
-        table_row is None
-        or _normalize_schema_sql(table_row["sql"])
-        != _normalize_schema_sql(_source_suppression_marker_table_sql())
-    ):
-        raise SuppressionLedgerIntegrityError(
-            "source suppression schema completion marker is missing or altered"
-        )
+    if table_row is None:
+        return None
 
     rows = connection.execute(
         f"""
@@ -277,12 +278,27 @@ def _assert_source_suppression_schema_marker(
         FROM {SUPPRESSION_SCHEMA_MARKER_TABLE}
         """
     ).fetchall()
-    if len(rows) != 1 or tuple(rows[0]) != (
-        "source_suppression_schema",
-        SUPPRESSION_SCHEMA_VERSION,
-    ):
+    if len(rows) != 1 or rows[0]["marker_key"] != "source_suppression_schema":
         raise SuppressionLedgerIntegrityError(
             "source suppression schema completion marker is inconsistent"
+        )
+    version = rows[0]["schema_version"]
+    if version not in {
+        LEGACY_SUPPRESSION_SCHEMA_VERSION,
+        SUPPRESSION_SCHEMA_VERSION,
+    }:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker version is unknown"
+        )
+
+    if (
+        _normalize_schema_sql(table_row["sql"])
+        != _normalize_schema_sql(
+            _source_suppression_marker_table_sql(version)
+        )
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is altered"
         )
 
     trigger_rows = connection.execute(
@@ -305,23 +321,65 @@ def _assert_source_suppression_schema_marker(
         raise SuppressionLedgerIntegrityError(
             "source suppression schema completion marker guards were altered"
         )
+    return version
 
 
-def _install_source_suppression_schema_marker(
+def _assert_source_suppression_schema_marker(
     connection: sqlite3.Connection,
 ) -> None:
-    if _suppression_schema_marker_exists(connection):
-        _assert_source_suppression_schema_marker(connection)
+    version = _source_suppression_schema_marker_version(connection)
+    if version != SUPPRESSION_SCHEMA_VERSION:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is not current"
+        )
+
+
+def _install_or_upgrade_source_suppression_schema_marker(
+    connection: sqlite3.Connection,
+) -> None:
+    version = _source_suppression_schema_marker_version(connection)
+    if version == SUPPRESSION_SCHEMA_VERSION:
         return
-    connection.execute(_source_suppression_marker_table_sql())
-    connection.execute(
-        f"""
-        INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
-            (marker_key,schema_version)
-        VALUES ('source_suppression_schema',?)
-        """,
-        (SUPPRESSION_SCHEMA_VERSION,),
-    )
+
+    if version == LEGACY_SUPPRESSION_SCHEMA_VERSION:
+        staging = "source_suppression_schema_marker_legacy_v01"
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (staging,),
+        ).fetchone() is not None:
+            raise SuppressionLedgerIntegrityError(
+                "suppression marker migration staging table already exists"
+            )
+        for name in SUPPRESSION_SCHEMA_MARKER_TRIGGERS:
+            connection.execute(f"DROP TRIGGER {name}")
+        connection.execute(
+            f"ALTER TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE} RENAME TO {staging}"
+        )
+        connection.execute(_source_suppression_marker_table_sql())
+        connection.execute(
+            f"""
+            INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
+                (marker_key,schema_version)
+            VALUES ('source_suppression_schema',?)
+            """,
+            (SUPPRESSION_SCHEMA_VERSION,),
+        )
+        connection.execute(f"DROP TABLE {staging}")
+    elif version is None:
+        connection.execute(_source_suppression_marker_table_sql())
+        connection.execute(
+            f"""
+            INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
+                (marker_key,schema_version)
+            VALUES ('source_suppression_schema',?)
+            """,
+            (SUPPRESSION_SCHEMA_VERSION,),
+        )
+    else:
+        raise SuppressionLedgerIntegrityError(
+            "unsupported suppression schema marker migration"
+        )
+
     for sql in _source_suppression_marker_trigger_sql().values():
         connection.execute(sql)
     _assert_source_suppression_schema_marker(connection)
