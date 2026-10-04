@@ -213,6 +213,7 @@ class CurrentAdmissionStore:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
             assert_synthetic_store_domain(connection)
+            CurrentStore(self.db_path)._assert_upstream(connection)
             assert_current_schema(connection)
             assert_current_data_integrity(connection)
             assert_current_admission_schema(connection)
