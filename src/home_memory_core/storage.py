@@ -22,11 +22,13 @@ from home_memory_core.revision import SupersessionRecord
 from home_memory_core.source import SourceRecord
 from home_memory_core.state import validate_supersession_graph
 from home_memory_core.store_domain import (
+    SYNTHETIC_STORE_DOMAIN,
     assert_synthetic_store_domain,
     ensure_synthetic_store_domain,
 )
 from home_memory_core.suppression import (
     SuppressedMemoryError,
+    SuppressionLedgerIntegrityError,
     SuppressionRecord,
     is_interpretation_usable as interpretation_is_usable,
     is_supersession_usable as supersession_is_usable,
@@ -41,6 +43,484 @@ from home_memory_core.thread import (
 _WRITE_RESULT = TypeVar("_WRITE_RESULT")
 _AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
 _AUTHORITY_LOCKS: dict[str, RLock] = {}
+
+
+SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
+SUPPRESSION_SCHEMA_MARKER_TABLE = "source_suppression_schema_marker"
+SUPPRESSION_SCHEMA_MARKER_TRIGGERS = frozenset(
+    {
+        "source_suppression_schema_marker_no_update",
+        "source_suppression_schema_marker_no_delete",
+    }
+)
+
+
+SOURCE_SUPPRESSION_TRIGGERS = frozenset(
+    {
+        "source_suppressions_no_replace",
+        "source_suppressions_no_update",
+        "source_suppressions_no_delete",
+    }
+)
+
+
+def _source_suppression_marker_table_sql() -> str:
+    return f"""
+        CREATE TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE} (
+            marker_key TEXT PRIMARY KEY
+                CHECK (marker_key='source_suppression_schema'),
+            schema_version TEXT NOT NULL
+                CHECK (schema_version='{SUPPRESSION_SCHEMA_VERSION}')
+        ) WITHOUT ROWID
+    """
+
+
+def _source_suppression_marker_trigger_sql() -> dict[str, str]:
+    return {
+        "source_suppression_schema_marker_no_update": f"""
+            CREATE TRIGGER source_suppression_schema_marker_no_update
+            BEFORE UPDATE ON {SUPPRESSION_SCHEMA_MARKER_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression schema marker is immutable');
+            END
+        """,
+        "source_suppression_schema_marker_no_delete": f"""
+            CREATE TRIGGER source_suppression_schema_marker_no_delete
+            BEFORE DELETE ON {SUPPRESSION_SCHEMA_MARKER_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression schema marker is immutable');
+            END
+        """,
+    }
+
+
+def _suppression_schema_marker_exists(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name=?
+            """,
+            (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _assert_source_suppression_schema_marker(
+    connection: sqlite3.Connection,
+) -> None:
+    table_row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type='table' AND name=?
+        """,
+        (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+    ).fetchone()
+    if (
+        table_row is None
+        or _normalize_schema_sql(table_row["sql"])
+        != _normalize_schema_sql(_source_suppression_marker_table_sql())
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is missing or altered"
+        )
+
+    rows = connection.execute(
+        f"""
+        SELECT marker_key,schema_version
+        FROM {SUPPRESSION_SCHEMA_MARKER_TABLE}
+        """
+    ).fetchall()
+    if len(rows) != 1 or tuple(rows[0]) != (
+        "source_suppression_schema",
+        SUPPRESSION_SCHEMA_VERSION,
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is inconsistent"
+        )
+
+    trigger_rows = connection.execute(
+        """
+        SELECT name,sql
+        FROM sqlite_master
+        WHERE type='trigger' AND tbl_name=?
+        """,
+        (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+    ).fetchall()
+    actual = {
+        row["name"]: _normalize_schema_sql(row["sql"])
+        for row in trigger_rows
+    }
+    expected = {
+        name: _normalize_schema_sql(sql)
+        for name, sql in _source_suppression_marker_trigger_sql().items()
+    }
+    if actual != expected:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker guards were altered"
+        )
+
+
+def _install_source_suppression_schema_marker(
+    connection: sqlite3.Connection,
+) -> None:
+    if _suppression_schema_marker_exists(connection):
+        _assert_source_suppression_schema_marker(connection)
+        return
+    connection.execute(_source_suppression_marker_table_sql())
+    connection.execute(
+        f"""
+        INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
+            (marker_key,schema_version)
+        VALUES ('source_suppression_schema',?)
+        """,
+        (SUPPRESSION_SCHEMA_VERSION,),
+    )
+    for sql in _source_suppression_marker_trigger_sql().values():
+        connection.execute(sql)
+    _assert_source_suppression_schema_marker(connection)
+
+
+def _source_suppression_table_sql(
+    table_name: str = "source_suppressions",
+) -> str:
+    if table_name not in {
+        "source_suppressions",
+        "source_suppressions_migration_v01",
+    }:
+        raise ValueError("unsupported suppression table name")
+    return f"""
+        CREATE TABLE {table_name} (
+            suppression_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL UNIQUE,
+            requested_by TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            FOREIGN KEY (source_id)
+                REFERENCES sources(source_id)
+                ON DELETE RESTRICT
+        ) WITHOUT ROWID
+    """
+
+
+def _legacy_source_suppression_table_sql() -> str:
+    """Exact pre-Slice-3A synthetic schema accepted for one-way migration."""
+
+    return """
+        CREATE TABLE source_suppressions (
+            suppression_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL UNIQUE,
+            requested_by TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            FOREIGN KEY (source_id)
+                REFERENCES sources(source_id)
+                ON DELETE RESTRICT
+        )
+    """
+
+
+def _assert_missing_suppression_ledger_is_bootstrap_safe(
+    connection: sqlite3.Connection,
+) -> None:
+    """Reject ledger loss in an already HOME-marked synthetic store.
+
+    The decision must be made before ensure_synthetic_store_domain() can add a
+    marker to a genuinely fresh or recognized unmarked legacy database.
+    """
+
+    ledger_exists = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='source_suppressions'
+        """
+    ).fetchone() is not None
+    if ledger_exists:
+        return
+
+    domain_table_exists = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='home_store_domain'
+        """
+    ).fetchone() is not None
+    if not domain_table_exists:
+        return
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT domain
+            FROM home_store_domain
+            WHERE marker_key='store_domain'
+            """
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        # Let the existing store-domain boundary classify malformed markers.
+        return
+
+    if len(rows) == 1 and rows[0][0] == SYNTHETIC_STORE_DOMAIN:
+        raise SuppressionLedgerIntegrityError(
+            "trusted synthetic HOME store is missing the source suppression ledger"
+        )
+
+
+def _prepare_source_suppression_table(
+    connection: sqlite3.Connection,
+) -> None:
+    marker_exists = _suppression_schema_marker_exists(connection)
+    if marker_exists:
+        _assert_source_suppression_schema_marker(connection)
+
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='table' AND name='source_suppressions'
+        """
+    ).fetchone()
+    if row is None:
+        return
+
+    actual = _normalize_schema_sql(row["sql"])
+    target = _normalize_schema_sql(_source_suppression_table_sql())
+    if actual == target:
+        if not marker_exists:
+            raise SuppressionLedgerIntegrityError(
+                "canonical source suppression ledger lacks completed-upgrade marker"
+            )
+        # An already-upgraded ledger must arrive with intact guards.
+        # Initialization does not silently heal drift in a trusted stop-use
+        # boundary, because that could conceal a prior resurrection window.
+        assert_source_suppression_ledger(connection)
+        return
+    legacy = _normalize_schema_sql(_legacy_source_suppression_table_sql())
+    if actual != legacy:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression table is not a recognized migratable schema"
+        )
+    if marker_exists:
+        raise SuppressionLedgerIntegrityError(
+            "completed source suppression schema cannot re-enter legacy migration"
+        )
+
+    _assert_source_suppression_rows(connection)
+    legacy_name = "source_suppressions_legacy_v01"
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (legacy_name,),
+    ).fetchone() is not None:
+        raise SuppressionLedgerIntegrityError(
+            "suppression migration staging table already exists"
+        )
+    attached_triggers = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type='trigger' AND tbl_name='source_suppressions'
+        """
+    ).fetchall()
+    if attached_triggers:
+        raise SuppressionLedgerIntegrityError(
+            "legacy suppression table has unexpected attached triggers"
+        )
+
+    previous_legacy_mode = int(
+        connection.execute("PRAGMA legacy_alter_table").fetchone()[0]
+    )
+    try:
+        connection.execute("PRAGMA legacy_alter_table=ON")
+        # Legacy rename mode deliberately does not rewrite references inside
+        # triggers on other tables. Current evidence triggers therefore keep
+        # referring to the canonical name while the old table is staged.
+        connection.execute(
+            f"ALTER TABLE source_suppressions RENAME TO {legacy_name}"
+        )
+        connection.execute(_source_suppression_table_sql())
+        connection.execute(
+            f"""
+            INSERT INTO source_suppressions (
+                suppression_id,source_id,requested_by,reason
+            )
+            SELECT suppression_id,source_id,requested_by,reason
+            FROM {legacy_name}
+            """
+        )
+        connection.execute(f"DROP TABLE {legacy_name}")
+    finally:
+        connection.execute(
+            f"PRAGMA legacy_alter_table={previous_legacy_mode}"
+        )
+
+
+def _source_suppression_guard_sql() -> dict[str, str]:
+    return {
+        "source_suppressions_no_replace": """
+            CREATE TRIGGER source_suppressions_no_replace
+            BEFORE INSERT ON source_suppressions
+            WHEN EXISTS (
+                SELECT 1 FROM source_suppressions
+                WHERE suppression_id=NEW.suppression_id
+                   OR source_id=NEW.source_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression is append-only');
+            END
+        """,
+        "source_suppressions_no_update": """
+            CREATE TRIGGER source_suppressions_no_update
+            BEFORE UPDATE ON source_suppressions
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression is append-only');
+            END
+        """,
+        "source_suppressions_no_delete": """
+            CREATE TRIGGER source_suppressions_no_delete
+            BEFORE DELETE ON source_suppressions
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression is append-only');
+            END
+        """,
+    }
+
+
+def _normalize_schema_sql(value: str | None) -> str:
+    if value is None:
+        return ""
+    return " ".join(value.replace("\n", " ").replace("\t", " ").split()).lower()
+
+
+def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
+    """Fail closed if the synthetic stop-use ledger is mutable or malformed."""
+
+    _assert_source_suppression_schema_marker(connection)
+
+    columns = tuple(
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(source_suppressions)"
+        ).fetchall()
+    )
+    if columns != (
+        "suppression_id",
+        "source_id",
+        "requested_by",
+        "reason",
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression ledger schema is unavailable"
+        )
+
+    table_row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='table' AND name='source_suppressions'
+        """
+    ).fetchone()
+    if (
+        table_row is None
+        or _normalize_schema_sql(table_row["sql"])
+        != _normalize_schema_sql(_source_suppression_table_sql())
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression table definition was altered"
+        )
+
+    rows = connection.execute(
+        """
+        SELECT type,name,tbl_name,sql
+        FROM sqlite_master
+        WHERE tbl_name='source_suppressions'
+          AND type IN ('trigger','index')
+        """
+    ).fetchall()
+    unexpected = tuple(
+        (row["type"], row["name"])
+        for row in rows
+        if (
+            row["type"] == "trigger"
+            and row["name"] not in SOURCE_SUPPRESSION_TRIGGERS
+        )
+        or (
+            row["type"] == "index"
+            and row["sql"] is not None
+        )
+    )
+    if unexpected:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression ledger has unexpected mutation behavior"
+        )
+
+    actual_triggers = {
+        row["name"]: _normalize_schema_sql(row["sql"])
+        for row in rows
+        if row["type"] == "trigger"
+    }
+    expected_triggers = {
+        name: _normalize_schema_sql(sql)
+        for name, sql in _source_suppression_guard_sql().items()
+    }
+    if actual_triggers != expected_triggers:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression append-only guards were altered"
+        )
+
+    _assert_source_suppression_rows(connection)
+
+
+def _assert_source_suppression_rows(
+    connection: sqlite3.Connection,
+) -> None:
+    invalid = connection.execute(
+        """
+        SELECT 1
+        FROM source_suppressions AS suppressions
+        LEFT JOIN sources
+          ON sources.source_id=suppressions.source_id
+        WHERE sources.source_id IS NULL
+           OR length(trim(suppressions.suppression_id))=0
+           OR length(trim(suppressions.source_id))=0
+           OR length(trim(suppressions.requested_by))=0
+           OR length(trim(suppressions.reason))=0
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid is not None:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression ledger contains invalid provenance"
+        )
+
+
+def _execute_sql_script_in_current_transaction(
+    connection: sqlite3.Connection,
+    script: str,
+) -> None:
+    """Execute a DDL script without sqlite3.executescript() transaction breaks."""
+
+    if not connection.in_transaction:
+        raise SuppressionLedgerIntegrityError(
+            "schema installation requires an active SQLite transaction"
+        )
+
+    pending = ""
+    for character in script:
+        pending += character
+        if character != ";":
+            continue
+        if not sqlite3.complete_statement(pending):
+            continue
+        statement = pending.strip()
+        pending = ""
+        if statement:
+            connection.execute(statement)
+        if not connection.in_transaction:
+            raise SuppressionLedgerIntegrityError(
+                "schema installation escaped its SQLite transaction"
+            )
+
+    if pending.strip():
+        raise SuppressionLedgerIntegrityError(
+            "schema installation script ended with incomplete SQL"
+        )
 
 
 def _authority_lock_for_path(db_path: Path) -> RLock:
@@ -82,8 +562,16 @@ class MemoryStore:
         # Existing pre-real-data HOME databases may be marked synthetic here,
         # but a database already marked real is never downgraded or adopted.
         with self._unverified_connection() as connection:
+            # One write transaction covers trust classification, any admitted
+            # legacy migration, schema/guard installation, marker installation,
+            # and the final integrity audit. No concurrent writer can alter the
+            # stop-use ledger between those phases.
+            connection.execute("BEGIN IMMEDIATE")
+            _assert_missing_suppression_ledger_is_bootstrap_safe(connection)
             ensure_synthetic_store_domain(connection)
-            connection.executescript(
+            _prepare_source_suppression_table(connection)
+            _execute_sql_script_in_current_transaction(
+                connection,
                 """
                 CREATE TABLE IF NOT EXISTS sources (
                     source_id TEXT PRIMARY KEY,
@@ -102,7 +590,30 @@ class MemoryStore:
                     FOREIGN KEY (source_id)
                         REFERENCES sources(source_id)
                         ON DELETE RESTRICT
-                );
+                ) WITHOUT ROWID;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppressions_no_replace
+                BEFORE INSERT ON source_suppressions
+                WHEN EXISTS (
+                    SELECT 1 FROM source_suppressions
+                    WHERE suppression_id=NEW.suppression_id
+                       OR source_id=NEW.source_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppressions_no_update
+                BEFORE UPDATE ON source_suppressions
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppressions_no_delete
+                BEFORE DELETE ON source_suppressions
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression is append-only');
+                END;
 
                 CREATE TABLE IF NOT EXISTS interpretations (
                     interpretation_id TEXT PRIMARY KEY
@@ -226,6 +737,12 @@ class MemoryStore:
                 );
                 """
             )
+            _install_source_suppression_schema_marker(connection)
+            assert_source_suppression_ledger(connection)
+            if not connection.in_transaction:
+                raise SuppressionLedgerIntegrityError(
+                    "MemoryStore initialization lost its SQLite write transaction"
+                )
 
     @_authority_ordered_write
     def add_source(self, source: SourceRecord) -> None:
@@ -288,6 +805,8 @@ class MemoryStore:
         suppression: SuppressionRecord,
     ) -> None:
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            assert_source_suppression_ledger(connection)
             self._get_source_from_connection(
                 connection=connection,
                 source_id=suppression.source_id,
@@ -1553,7 +2072,7 @@ class MemoryStore:
                 requested_by,
                 reason
             FROM source_suppressions
-            ORDER BY rowid
+            ORDER BY suppression_id
             """
         ).fetchall()
 

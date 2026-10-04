@@ -10,6 +10,10 @@ class SuppressedMemoryError(RuntimeError):
     pass
 
 
+class SuppressionLedgerIntegrityError(RuntimeError):
+    """Persisted stop-use state cannot be trusted for present-use decisions."""
+
+
 @dataclass(frozen=True)
 class SuppressionRecord:
     suppression_id: str

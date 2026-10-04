@@ -42,6 +42,7 @@ from home_memory_core.living_store import (
 )
 from home_memory_core.store_domain import assert_synthetic_store_domain
 from home_memory_core.suppression import SuppressedMemoryError
+from home_memory_core.storage import assert_source_suppression_ledger
 
 
 class CurrentStoreError(RuntimeError):
@@ -321,6 +322,7 @@ class CurrentStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             self._assert_upstream(connection)
+            assert_source_suppression_ledger(connection)
             assert_current_schema(connection)
             assert_current_data_integrity(connection)
             return connection

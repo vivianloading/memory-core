@@ -276,23 +276,37 @@ def _read_domain_from_connection(
     return domain
 
 
-def _validate_unmarked_legacy_synthetic_database(
+def _list_user_tables(
     connection: sqlite3.Connection,
-) -> None:
-    user_tables = tuple(
+) -> tuple[str, ...]:
+    """List non-internal tables using a literal sqlite_ prefix rule.
+
+    SQLite LIKE treats '_' as a wildcard, so predicates such as
+    `name NOT LIKE 'sqlite_%'` can hide ordinary user tables like
+    `sqliteXpayload`. GLOB keeps '_' literal while '*' provides the
+    intended suffix match.
+    """
+
+    return tuple(
         row[0]
         for row in connection.execute(
             """
             SELECT name
             FROM sqlite_master
             WHERE type = 'table'
-              AND name NOT LIKE 'sqlite_%'
+              AND name NOT GLOB 'sqlite_*'
               AND name != ?
             ORDER BY name
             """,
             (_DOMAIN_TABLE,),
         ).fetchall()
     )
+
+
+def _validate_unmarked_legacy_synthetic_database(
+    connection: sqlite3.Connection,
+) -> None:
+    user_tables = _list_user_tables(connection)
     if not user_tables:
         return
 
@@ -325,20 +339,7 @@ def _create_domain_marker(
     if domain not in {SYNTHETIC_STORE_DOMAIN, REAL_STORE_DOMAIN}:
         raise StoreDomainError("invalid HOME store domain")
 
-    existing_user_tables = tuple(
-        row[0]
-        for row in connection.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name NOT LIKE 'sqlite_%'
-              AND name != ?
-            ORDER BY name
-            """,
-            (_DOMAIN_TABLE,),
-        ).fetchall()
-    )
+    existing_user_tables = _list_user_tables(connection)
     if existing_user_tables and not allow_existing_user_tables:
         raise StoreDomainError(
             "refusing to label a non-empty unmarked database as real"
@@ -362,18 +363,23 @@ def _create_domain_marker(
 
 
 def _ensure_immutability_triggers(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+    # Use individual execute() calls so callers can keep one outer transaction
+    # across domain admission and higher-layer schema initialization.
+    connection.execute(
         f"""
         CREATE TRIGGER IF NOT EXISTS home_store_domain_no_update
         BEFORE UPDATE ON {_DOMAIN_TABLE}
         BEGIN
             SELECT RAISE(ABORT, 'HOME store domain is immutable');
-        END;
-
+        END
+        """
+    )
+    connection.execute(
+        f"""
         CREATE TRIGGER IF NOT EXISTS home_store_domain_no_delete
         BEFORE DELETE ON {_DOMAIN_TABLE}
         BEGIN
             SELECT RAISE(ABORT, 'HOME store domain is immutable');
-        END;
+        END
         """
     )
