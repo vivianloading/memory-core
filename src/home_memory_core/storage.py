@@ -110,6 +110,7 @@ def _prepare_source_suppression_table(
             "source suppression table is not a recognized migratable schema"
         )
 
+    _assert_source_suppression_rows(connection)
     connection.execute(
         "ALTER TABLE source_suppressions RENAME TO source_suppressions_legacy_v01"
     )
@@ -237,6 +238,12 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
             "source suppression append-only guards were altered"
         )
 
+    _assert_source_suppression_rows(connection)
+
+
+def _assert_source_suppression_rows(
+    connection: sqlite3.Connection,
+) -> None:
     invalid = connection.execute(
         """
         SELECT 1
