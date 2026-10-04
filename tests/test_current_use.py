@@ -591,6 +591,36 @@ class CurrentPresentUseTests(unittest.TestCase):
         with self.assertRaises(SuppressionLedgerIntegrityError):
             self.use.state_decision(record.state_id)
 
+    def test_current_write_fails_closed_on_suppression_ledger_drift_but_audit_remains(self) -> None:
+        historical = self.state("historical-before-ledger-drift")
+        historical_binding = self.binding(historical.source_refs[0])
+        self.current.add_state_record(
+            record=historical,
+            source_bindings=(historical_binding,),
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TRIGGER source_suppressions_no_update")
+            connection.commit()
+        finally:
+            connection.close()
+
+        new_record = self.state("blocked-after-ledger-drift")
+        new_binding = self.binding(new_record.source_refs[0])
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.current.add_state_record(
+                record=new_record,
+                source_bindings=(new_binding,),
+            )
+
+        self.assertEqual(
+            self.current.get_state_for_audit(historical.state_id).record,
+            historical,
+        )
+        with self.assertRaises(KeyError):
+            self.current.get_state_for_audit(new_record.state_id)
+
     def test_present_use_fails_closed_if_suppression_guard_is_removed(self) -> None:
         record = self.state("guard-drift")
         binding = self.binding(record.source_refs[0])
