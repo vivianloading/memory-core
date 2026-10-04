@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.evidence import create_evidence_ref
 from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.revision import create_supersession_record
@@ -19,7 +20,6 @@ from home_memory_core.thread import (
 )
 from home_memory_core.suppression import (
     SuppressedMemoryError,
-    create_suppression_record,
 )
 
 
