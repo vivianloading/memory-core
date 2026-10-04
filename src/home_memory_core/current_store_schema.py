@@ -25,13 +25,16 @@ CURRENT_TRIGGERS = frozenset({
     "current_schema_marker_no_update", "current_schema_marker_no_delete",
     "current_state_no_replace", "current_state_no_update", "current_state_no_delete",
     "current_state_room_exists", "current_state_room_episode_binding",
-    "current_state_room_attachment_binding", "current_state_supersession_line",
-    "current_state_evidence_no_replace", "current_state_evidence_no_update",
+    "current_state_room_attachment_binding", "current_state_stable_kind",
+    "current_state_supersession_line",
+    "current_state_evidence_no_replace", "current_state_evidence_capacity",
+    "current_state_evidence_no_update",
     "current_state_evidence_no_delete", "current_state_evidence_exact_source",
     "current_state_evidence_not_suppressed",
     "current_end_no_replace", "current_end_no_update", "current_end_no_delete",
     "current_end_target_binding",
-    "current_end_evidence_no_replace", "current_end_evidence_no_update",
+    "current_end_evidence_no_replace", "current_end_evidence_capacity",
+    "current_end_evidence_no_update",
     "current_end_evidence_no_delete", "current_end_evidence_exact_source",
     "current_end_evidence_not_suppressed",
 })
@@ -43,7 +46,7 @@ def current_schema_script() -> str:
     CREATE TABLE {CURRENT_SCHEMA_MARKER_TABLE} (
         marker_key TEXT PRIMARY KEY CHECK (marker_key='current_persistence_schema'),
         schema_version TEXT NOT NULL CHECK (schema_version='{CURRENT_SCHEMA_VERSION}')
-    );
+    ) WITHOUT ROWID;
     INSERT INTO {CURRENT_SCHEMA_MARKER_TABLE}
       VALUES ('current_persistence_schema','{CURRENT_SCHEMA_VERSION}');
 
@@ -60,6 +63,8 @@ def current_schema_script() -> str:
         perspective_instance_id TEXT,
         room_attachment_event_id TEXT,
         supersedes_state_id TEXT,
+        source_ref_count INTEGER NOT NULL
+          CHECK(typeof(source_ref_count)='integer' AND source_ref_count>0),
         payload_json TEXT NOT NULL CHECK(length(trim(payload_json))>0),
         CHECK(
           (namespace='room' AND semantic_change_authority='room_first_person'
@@ -78,21 +83,24 @@ def current_schema_script() -> str:
           ON UPDATE RESTRICT ON DELETE RESTRICT,
         FOREIGN KEY(supersedes_state_id) REFERENCES {CURRENT_STATE_TABLE}(state_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT
-    );
+    ) WITHOUT ROWID;
     CREATE TABLE {CURRENT_STATE_EVIDENCE_TABLE} (
         state_id TEXT NOT NULL,
-        position INTEGER NOT NULL CHECK(position>=0),
+        position INTEGER NOT NULL
+          CHECK(typeof(position)='integer' AND position>=0),
         source_ref TEXT NOT NULL CHECK(length(trim(source_ref))>0),
         source_id TEXT NOT NULL,
         source_sha256 TEXT NOT NULL CHECK(length(trim(source_sha256))>0),
-        start_char INTEGER NOT NULL CHECK(start_char>=0),
-        end_char INTEGER NOT NULL CHECK(end_char>start_char),
+        start_char INTEGER NOT NULL
+          CHECK(typeof(start_char)='integer' AND start_char>=0),
+        end_char INTEGER NOT NULL
+          CHECK(typeof(end_char)='integer' AND end_char>start_char),
         PRIMARY KEY(state_id,position), UNIQUE(state_id,source_ref),
         FOREIGN KEY(state_id) REFERENCES {CURRENT_STATE_TABLE}(state_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT,
         FOREIGN KEY(source_id) REFERENCES sources(source_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT
-    );
+    ) WITHOUT ROWID;
     CREATE TABLE {CURRENT_END_TABLE} (
         end_event_id TEXT PRIMARY KEY CHECK(length(trim(end_event_id))>0),
         state_id TEXT NOT NULL,
@@ -102,6 +110,8 @@ def current_schema_script() -> str:
         episode_id TEXT,
         perspective_instance_id TEXT,
         room_attachment_event_id TEXT,
+        source_ref_count INTEGER NOT NULL
+          CHECK(typeof(source_ref_count)='integer' AND source_ref_count>0),
         payload_json TEXT NOT NULL CHECK(length(trim(payload_json))>0),
         CHECK(
           (semantic_change_authority='room_first_person' AND episode_id IS NOT NULL
@@ -117,21 +127,24 @@ def current_schema_script() -> str:
           ON UPDATE RESTRICT ON DELETE RESTRICT,
         FOREIGN KEY(room_attachment_event_id) REFERENCES {ATTACHMENT_TABLE}(attachment_event_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT
-    );
+    ) WITHOUT ROWID;
     CREATE TABLE {CURRENT_END_EVIDENCE_TABLE} (
         end_event_id TEXT NOT NULL,
-        position INTEGER NOT NULL CHECK(position>=0),
+        position INTEGER NOT NULL
+          CHECK(typeof(position)='integer' AND position>=0),
         source_ref TEXT NOT NULL CHECK(length(trim(source_ref))>0),
         source_id TEXT NOT NULL,
         source_sha256 TEXT NOT NULL CHECK(length(trim(source_sha256))>0),
-        start_char INTEGER NOT NULL CHECK(start_char>=0),
-        end_char INTEGER NOT NULL CHECK(end_char>start_char),
+        start_char INTEGER NOT NULL
+          CHECK(typeof(start_char)='integer' AND start_char>=0),
+        end_char INTEGER NOT NULL
+          CHECK(typeof(end_char)='integer' AND end_char>start_char),
         PRIMARY KEY(end_event_id,position), UNIQUE(end_event_id,source_ref),
         FOREIGN KEY(end_event_id) REFERENCES {CURRENT_END_TABLE}(end_event_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT,
         FOREIGN KEY(source_id) REFERENCES sources(source_id)
           ON UPDATE RESTRICT ON DELETE RESTRICT
-    );
+    ) WITHOUT ROWID;
 
     CREATE TRIGGER current_schema_marker_no_update BEFORE UPDATE ON {CURRENT_SCHEMA_MARKER_TABLE}
       BEGIN SELECT RAISE(ABORT,'Current schema marker is immutable'); END;
@@ -160,6 +173,14 @@ def current_schema_script() -> str:
           AND a.episode_id=NEW.episode_id AND a.route_kind='attached'
           AND a.room_id=NEW.owner_id)
       BEGIN SELECT RAISE(ABORT,'Room Current attachment provenance is invalid'); END;
+    CREATE TRIGGER current_state_stable_kind BEFORE INSERT ON {CURRENT_STATE_TABLE}
+      WHEN EXISTS(
+        SELECT 1 FROM {CURRENT_STATE_TABLE} p
+        WHERE p.namespace=NEW.namespace
+          AND p.owner_id=NEW.owner_id
+          AND p.key=NEW.key
+          AND p.state_kind<>NEW.state_kind)
+      BEGIN SELECT RAISE(ABORT,'Current key state_kind is immutable across history'); END;
     CREATE TRIGGER current_state_supersession_line BEFORE INSERT ON {CURRENT_STATE_TABLE}
       WHEN NEW.supersedes_state_id IS NOT NULL AND NOT EXISTS(
         SELECT 1 FROM {CURRENT_STATE_TABLE} p WHERE p.state_id=NEW.supersedes_state_id
@@ -172,13 +193,22 @@ def current_schema_script() -> str:
       WHEN EXISTS(SELECT 1 FROM {CURRENT_STATE_EVIDENCE_TABLE}
         WHERE state_id=NEW.state_id AND (position=NEW.position OR source_ref=NEW.source_ref))
       BEGIN SELECT RAISE(ABORT,'Current state evidence binding already exists'); END;
+    CREATE TRIGGER current_state_evidence_capacity BEFORE INSERT ON {CURRENT_STATE_EVIDENCE_TABLE}
+      WHEN (
+        SELECT COUNT(*) FROM {CURRENT_STATE_EVIDENCE_TABLE}
+        WHERE state_id=NEW.state_id
+      ) >= (
+        SELECT source_ref_count FROM {CURRENT_STATE_TABLE}
+        WHERE state_id=NEW.state_id
+      )
+      BEGIN SELECT RAISE(ABORT,'Current state evidence set is sealed'); END;
     CREATE TRIGGER current_state_evidence_no_update BEFORE UPDATE ON {CURRENT_STATE_EVIDENCE_TABLE}
       BEGIN SELECT RAISE(ABORT,'Current state evidence is append-only'); END;
     CREATE TRIGGER current_state_evidence_no_delete BEFORE DELETE ON {CURRENT_STATE_EVIDENCE_TABLE}
       BEGIN SELECT RAISE(ABORT,'Current state evidence is append-only'); END;
     CREATE TRIGGER current_state_evidence_exact_source BEFORE INSERT ON {CURRENT_STATE_EVIDENCE_TABLE}
       WHEN NOT EXISTS(SELECT 1 FROM sources s WHERE s.source_id=NEW.source_id
-        AND s.content_sha256=NEW.source_sha256 AND NEW.end_char<=length(s.content))
+        AND s.content_sha256=NEW.source_sha256)
       BEGIN SELECT RAISE(ABORT,'Current state evidence does not match exact source'); END;
     CREATE TRIGGER current_state_evidence_not_suppressed BEFORE INSERT ON {CURRENT_STATE_EVIDENCE_TABLE}
       WHEN EXISTS(SELECT 1 FROM source_suppressions WHERE source_id=NEW.source_id)
@@ -231,6 +261,15 @@ def current_schema_script() -> str:
       WHEN EXISTS(SELECT 1 FROM {CURRENT_END_EVIDENCE_TABLE}
         WHERE end_event_id=NEW.end_event_id AND (position=NEW.position OR source_ref=NEW.source_ref))
       BEGIN SELECT RAISE(ABORT,'Current end evidence binding already exists'); END;
+    CREATE TRIGGER current_end_evidence_capacity BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
+      WHEN (
+        SELECT COUNT(*) FROM {CURRENT_END_EVIDENCE_TABLE}
+        WHERE end_event_id=NEW.end_event_id
+      ) >= (
+        SELECT source_ref_count FROM {CURRENT_END_TABLE}
+        WHERE end_event_id=NEW.end_event_id
+      )
+      BEGIN SELECT RAISE(ABORT,'Current end evidence set is sealed'); END;
     CREATE TRIGGER current_end_evidence_no_update BEFORE UPDATE ON {CURRENT_END_EVIDENCE_TABLE}
       BEGIN SELECT RAISE(ABORT,'Current end evidence is append-only'); END;
     CREATE TRIGGER current_end_evidence_no_delete BEFORE DELETE ON {CURRENT_END_EVIDENCE_TABLE}
