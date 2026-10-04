@@ -9,6 +9,8 @@ from home_memory_core.current_use import (
     CurrentEffectSuppressedError,
     CurrentPresentUseStatus,
     CurrentPresentUseStore,
+    CurrentUseEffectKind,
+    require_current_effect_usable,
 )
 from home_memory_core.current_view import (
     CurrentNamespace,
@@ -290,12 +292,11 @@ class CurrentPresentUseTests(unittest.TestCase):
             connection.close()
 
         with self.assertRaises(CurrentEffectSuppressedError):
-            from home_memory_core.current_use import require_current_effect_usable
             read = self.current._read_connection()
             try:
                 require_current_effect_usable(
                     connection=read,
-                    effect_kind=before_kind(),
+                    effect_kind=CurrentUseEffectKind.STATE,
                     effect_id=record.state_id,
                 )
             finally:
@@ -318,11 +319,6 @@ class CurrentPresentUseTests(unittest.TestCase):
 
         with self.assertRaises(SuppressedMemoryError):
             self.use.state_decision(record.state_id)
-
-
-def before_kind():
-    from home_memory_core.current_use import CurrentUseEffectKind
-    return CurrentUseEffectKind.STATE
 
 
 if __name__ == "__main__":
