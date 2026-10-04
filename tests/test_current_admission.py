@@ -627,6 +627,85 @@ class CurrentAdmissionTests(unittest.TestCase):
         self.assertEqual(self.table_count(self.db, CURRENT_END_TABLE), 0)
         self.assertEqual(self.table_count(self.db, CURRENT_END_ADMISSION_TABLE), 0)
 
+    def test_suppression_committed_first_blocks_waiting_supersession(self) -> None:
+        grant = self.grant()
+        parent = self.room_state("ordered-parent")
+        parent_binding = self.binding(parent.source_refs[0])
+        parent_receipt = self.admission.admit_room_state(
+            record=parent,
+            source_bindings=(parent_binding,),
+            grant=grant,
+        )
+        child = self.room_state(
+            "ordered-child",
+            supersedes_state_id=parent.state_id,
+        )
+        child_binding = self.binding(child.source_refs[0])
+
+        suppression_locked = Event()
+        release_suppression = Event()
+        child_finished = Event()
+        suppression_errors = []
+        child_errors = []
+        original_get = self.memory._get_source_from_connection
+
+        def pausing_get(*, connection, source_id):
+            suppression_locked.set()
+            self.assertTrue(release_suppression.wait(5))
+            return original_get(
+                connection=connection,
+                source_id=source_id,
+            )
+
+        def run_suppression() -> None:
+            try:
+                self.memory.suppress_source(
+                    create_suppression_record(
+                        suppression_id="stop-ordered-parent",
+                        source_id=parent_binding.evidence.source_id,
+                        requested_by="synthetic-test",
+                        reason="win the write ordering before supersession",
+                    )
+                )
+            except Exception as error:
+                suppression_errors.append(error)
+
+        def run_child() -> None:
+            try:
+                self.admission.admit_room_state(
+                    record=child,
+                    source_bindings=(child_binding,),
+                    grant=grant,
+                    supersedes_receipt=parent_receipt,
+                )
+            except Exception as error:
+                child_errors.append(error)
+            finally:
+                child_finished.set()
+
+        with patch.object(
+            self.memory,
+            "_get_source_from_connection",
+            side_effect=pausing_get,
+        ):
+            suppression_thread = Thread(target=run_suppression)
+            child_thread = Thread(target=run_child)
+            suppression_thread.start()
+            self.assertTrue(suppression_locked.wait(5))
+            child_thread.start()
+            self.assertFalse(child_finished.wait(0.1))
+            release_suppression.set()
+            suppression_thread.join(5)
+            child_thread.join(5)
+
+        self.assertFalse(suppression_thread.is_alive())
+        self.assertFalse(child_thread.is_alive())
+        self.assertEqual(suppression_errors, [])
+        self.assertEqual(len(child_errors), 1)
+        self.assertIsInstance(child_errors[0], CurrentEffectSuppressedError)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_TABLE), 1)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_ADMISSION_TABLE), 1)
+
     def test_room_authority_lineage_reader_is_pinned_to_leased_database(self) -> None:
         grant = self.grant()
         record = self.room_state("room-reader-pinned")
