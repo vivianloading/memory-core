@@ -156,6 +156,32 @@ The remediation in subsequent heads treats these findings as changes to the
 mechanical contract, not as reasons to erase the prior FAIL. A later PASS, if
 earned, must bind to a new exact SHA.
 
+### Issue #17 re-review
+
+Issue #17 reviewed remediation head
+`42764d8427ab5a1d3897f697ca7c0947e61c3e6b` and returned **FAIL / NO-GO**.
+
+It found that the schema audit query used
+`name NOT LIKE 'sqlite_%'`. In SQLite LIKE syntax, `_` is a wildcard, so
+legal user objects such as `sqliteXhidden` could disappear from the audit.
+A hidden secondary UNIQUE index could then provide a replacement identity and
+silently suppress representable conflict heads while the audit accepted the
+altered schema.
+
+The remediation removes name-pattern filtering from the Current schema scan.
+SQLite internal auto-indexes are tolerated by their actual properties
+(`sql IS NULL`), while every user-defined index or unexpected trigger attached
+to Current tables remains visible and rejected regardless of name.
+
+The same review also found that the persisted duration parser used
+`int(value)`, which silently coerced a malformed JSON number such as `1.9`
+to one microsecond. Audit now requires the exact canonical positive decimal
+string emitted by the supported writer instead of coercing alternate scalar
+types or encodings.
+
+The #17 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Deliberate sequencing
 
 Slice 1: persistence substrate — this document.
