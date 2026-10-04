@@ -530,7 +530,7 @@ class CurrentStoreTests(unittest.TestCase):
                     INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
                         state_id,position,source_ref,source_id,
                         source_sha256,start_char,end_char
-                    ) VALUES ('absent',0,'orphan-ref',?,?,?,?,?)
+                    ) VALUES ('absent',0,'orphan-ref',?,?,?,?)
                     """,
                     (
                         binding.evidence.source_id,
@@ -554,7 +554,7 @@ class CurrentStoreTests(unittest.TestCase):
                 INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
                     state_id,position,source_ref,source_id,
                     source_sha256,start_char,end_char
-                ) VALUES ('absent',0,'orphan-ref',?,?,?,?,?)
+                ) VALUES ('absent',0,'orphan-ref',?,?,?,?)
                 """,
                 (
                     binding.evidence.source_id,
