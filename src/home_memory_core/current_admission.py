@@ -276,20 +276,27 @@ class CurrentAdmissionAuthority:
             raise TypeError("admission_store must be CurrentAdmissionStore")
         if not isinstance(room_authority, RoomParticipationAuthority):
             raise TypeError("room_authority must be RoomParticipationAuthority")
+        room_authority._assert_live_host()
+        leased_path = Path(room_authority._lease.identity.db_path).resolve()
         current_path = Path(current_store.db_path).resolve()
-        if current_path != Path(admission_store.db_path).resolve():
+        admission_path = Path(admission_store.db_path).resolve()
+        room_path = Path(room_authority._store.db_path).resolve()
+        if current_path != admission_path:
             raise CurrentAdmissionAuthorizationError(
                 "Current and admission stores must use the same database"
             )
-        room_path = Path(room_authority._store.db_path).resolve()
-        if room_path != current_path:
+        if current_path != leased_path or room_path != leased_path:
             raise CurrentAdmissionAuthorizationError(
-                "Room authority belongs to another HOME database"
+                "Current admission stores must belong to the leased HOME database"
             )
-        room_authority._assert_live_host()
         self._home_process_instance_id = current_home_process_instance_id()
-        self._current_store = current_store
-        self._admission_store = admission_store
+        self._canonical_db_path = leased_path
+        self._bound_current_store = current_store
+        self._bound_admission_store = admission_store
+        # Operational connections are pinned to the lease-rooted canonical path.
+        # Caller-owned store objects remain binding evidence, not connection targets.
+        self._current_store = CurrentStore(leased_path)
+        self._admission_store = CurrentAdmissionStore(leased_path)
         self._room_authority = room_authority
         self._receipt_guard = Lock()
         self._receipts: dict[str, _ReceiptState] = {}
@@ -302,7 +309,7 @@ class CurrentAdmissionAuthority:
         grant: RoomParticipationGrant,
         supersedes_receipt: CurrentAdmissionReceipt | None = None,
     ) -> CurrentAdmissionReceipt:
-        self._assert_live_process()
+        self._assert_live_authority_binding()
         if not isinstance(record, CurrentStateRecord):
             raise TypeError("record must be CurrentStateRecord")
         if not isinstance(grant, RoomParticipationGrant):
@@ -374,7 +381,7 @@ class CurrentAdmissionAuthority:
         grant: RoomParticipationGrant,
         target_state_receipt: CurrentAdmissionReceipt,
     ) -> CurrentAdmissionReceipt:
-        self._assert_live_process()
+        self._assert_live_authority_binding()
         if not isinstance(event, CurrentStateEndEvent):
             raise TypeError("event must be CurrentStateEndEvent")
         if not isinstance(grant, RoomParticipationGrant):
@@ -463,7 +470,7 @@ class CurrentAdmissionAuthority:
         effect_kind: CurrentAdmissionEffectKind,
         effect_id: str,
     ) -> None:
-        self._assert_live_process()
+        self._assert_live_authority_binding()
         connection = self._admission_store._connect()
         try:
             connection.execute("PRAGMA query_only=ON")
@@ -568,6 +575,38 @@ class CurrentAdmissionAuthority:
         if current != self._home_process_instance_id:
             raise CurrentAdmissionAuthorizationError(
                 "Current admission authority belongs to another HOME process incarnation"
+            )
+
+    def _assert_live_authority_binding(self) -> None:
+        self._assert_live_process()
+        self._room_authority._assert_live_host()
+        leased_path = Path(self._room_authority._lease.identity.db_path).resolve()
+        if leased_path != self._canonical_db_path:
+            raise CurrentAdmissionAuthorizationError(
+                "Current admission lease database binding changed"
+            )
+        bindings = (
+            ("CurrentStore", self._bound_current_store),
+            ("CurrentAdmissionStore", self._bound_admission_store),
+        )
+        for label, store in bindings:
+            try:
+                resolved = Path(store.db_path).resolve()
+            except (OSError, RuntimeError) as error:
+                raise CurrentAdmissionAuthorizationError(
+                    f"{label} database binding cannot be resolved"
+                ) from error
+            if resolved != self._canonical_db_path:
+                raise CurrentAdmissionAuthorizationError(
+                    f"{label} drifted away from the leased HOME database"
+                )
+        if (
+            Path(self._current_store.db_path).resolve() != self._canonical_db_path
+            or Path(self._admission_store.db_path).resolve()
+            != self._canonical_db_path
+        ):
+            raise CurrentAdmissionIntegrityError(
+                "Current admission internal canonical database binding changed"
             )
 
     def _insert_state_admission(
@@ -726,18 +765,23 @@ def open_current_admission_authority(
         raise TypeError("admission_store must be CurrentAdmissionStore")
     if not isinstance(room_authority, RoomParticipationAuthority):
         raise TypeError("room_authority must be RoomParticipationAuthority")
-    current_path = str(Path(current_store.db_path).resolve())
-    if str(Path(admission_store.db_path).resolve()) != current_path:
+    room_authority._assert_live_host()
+    leased_path = Path(room_authority._lease.identity.db_path).resolve()
+    current_path = Path(current_store.db_path).resolve()
+    admission_path = Path(admission_store.db_path).resolve()
+    room_path = Path(room_authority._store.db_path).resolve()
+    if admission_path != current_path:
         raise CurrentAdmissionAuthorizationError(
             "Current and admission stores must use the same database"
         )
-    if str(Path(room_authority._store.db_path).resolve()) != current_path:
+    if current_path != leased_path or room_path != leased_path:
         raise CurrentAdmissionAuthorizationError(
-            "Room authority belongs to another HOME database"
+            "Current admission stores must belong to the leased HOME database"
         )
-    room_authority._assert_live_host()
-    admission_store.initialize()
-    key = (id(room_authority), current_path)
+    # Install/audit through the immutable lease-rooted path, not a caller-owned
+    # relative or mutable store configuration.
+    CurrentAdmissionStore(leased_path).initialize()
+    key = (id(room_authority), str(leased_path))
     with _ADMISSION_AUTHORITY_REGISTRY_GUARD:
         authority = _ADMISSION_AUTHORITY_REGISTRY.get(key)
         if authority is None:
