@@ -1790,7 +1790,7 @@ class MemoryStore:
                 requested_by,
                 reason
             FROM source_suppressions
-            ORDER BY rowid
+            ORDER BY suppression_id
             """
         ).fetchall()
 
