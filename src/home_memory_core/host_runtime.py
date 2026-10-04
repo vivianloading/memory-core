@@ -83,7 +83,7 @@ class HomeSingleInstanceLease:
             return self._released
 
     @contextmanager
-    def hold_active(self) -> Iterator[None]:
+    def _hold_active_for_authority(self) -> Iterator[None]:
         """Keep this host lease live across one synchronous authority effect."""
 
         self._assert_owner_process()
