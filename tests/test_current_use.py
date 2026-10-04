@@ -269,6 +269,55 @@ class CurrentPresentUseTests(unittest.TestCase):
             ("lineage-child", "lineage-parent"),
         )
 
+    def test_grandchild_reports_direct_and_inherited_suppression_blocks_in_order(self) -> None:
+        root = self.state("multi-root")
+        root_binding = self.binding(root.source_refs[0])
+        self.current.add_state_record(
+            record=root,
+            source_bindings=(root_binding,),
+        )
+        child = self.state(
+            "multi-child",
+            supersedes_state_id=root.state_id,
+        )
+        child_binding = self.binding(child.source_refs[0])
+        self.current.add_state_record(
+            record=child,
+            source_bindings=(child_binding,),
+        )
+        grandchild = self.state(
+            "multi-grandchild",
+            supersedes_state_id=child.state_id,
+        )
+        grandchild_binding = self.binding(grandchild.source_refs[0])
+        self.current.add_state_record(
+            record=grandchild,
+            source_bindings=(grandchild_binding,),
+        )
+
+        self.suppress(root_binding, "stop-multi-root")
+        self.suppress(child_binding, "stop-multi-child")
+
+        decision = self.use.state_decision(grandchild.state_id)
+        self.assertEqual(
+            decision.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(
+            tuple(
+                (
+                    block.suppression_id,
+                    block.origin_effect_id,
+                    block.source_ref,
+                )
+                for block in decision.blocks
+            ),
+            (
+                ("stop-multi-child", child.state_id, child.source_refs[0]),
+                ("stop-multi-root", root.state_id, root.source_refs[0]),
+            ),
+        )
+
     def test_target_state_suppression_propagates_to_existing_end_event(self) -> None:
         state = self.state("target-state")
         state_binding = self.binding(state.source_refs[0])
