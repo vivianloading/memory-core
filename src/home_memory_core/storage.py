@@ -162,17 +162,29 @@ def _assert_source_suppression_timing(connection: sqlite3.Connection) -> None:
             "source suppression timing table is missing or altered"
         )
 
-    trigger_rows = connection.execute(
+    schema_rows = connection.execute(
         """
-        SELECT name,sql
+        SELECT type,name,sql
         FROM sqlite_master
-        WHERE type='trigger' AND tbl_name=?
+        WHERE tbl_name=?
+          AND type IN ('trigger','index')
         """,
         (SOURCE_SUPPRESSION_TIMING_TABLE,),
     ).fetchall()
+    unexpected_indexes = tuple(
+        item["name"]
+        for item in schema_rows
+        if item["type"] == "index" and item["sql"] is not None
+    )
+    if unexpected_indexes:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression timing has unexpected user-defined indexes"
+        )
+
     actual = {
         item["name"]: _normalize_schema_sql(item["sql"])
-        for item in trigger_rows
+        for item in schema_rows
+        if item["type"] == "trigger"
     }
     expected = {
         name: _normalize_schema_sql(sql)
