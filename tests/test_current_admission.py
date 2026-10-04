@@ -548,7 +548,7 @@ class CurrentAdmissionTests(unittest.TestCase):
             release_finished.set()
 
         thread = Thread(target=release_lease)
-        with self.room_authority.hold_grant_for_operation(
+        with self.room_authority._hold_grant_for_operation(
             grant=grant,
             session_id=grant.session_id,
             episode_id=grant.episode_id,
