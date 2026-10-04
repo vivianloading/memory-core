@@ -362,18 +362,23 @@ def _create_domain_marker(
 
 
 def _ensure_immutability_triggers(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+    # Use individual execute() calls so callers can keep one outer transaction
+    # across domain admission and higher-layer schema initialization.
+    connection.execute(
         f"""
         CREATE TRIGGER IF NOT EXISTS home_store_domain_no_update
         BEFORE UPDATE ON {_DOMAIN_TABLE}
         BEGIN
             SELECT RAISE(ABORT, 'HOME store domain is immutable');
-        END;
-
+        END
+        """
+    )
+    connection.execute(
+        f"""
         CREATE TRIGGER IF NOT EXISTS home_store_domain_no_delete
         BEFORE DELETE ON {_DOMAIN_TABLE}
         BEGIN
             SELECT RAISE(ABORT, 'HOME store domain is immutable');
-        END;
+        END
         """
     )
