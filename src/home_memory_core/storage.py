@@ -852,6 +852,44 @@ class MemoryStore:
                     SELECT RAISE(ABORT,'source suppression is append-only');
                 END;
 
+                CREATE TABLE IF NOT EXISTS source_suppression_timing (
+                    suppression_id TEXT PRIMARY KEY,
+                    effective_instant_us INTEGER NOT NULL
+                        CHECK(typeof(effective_instant_us)='integer'),
+                    recorded_instant_us INTEGER NOT NULL
+                        CHECK(typeof(recorded_instant_us)='integer'),
+                    effective_at_iso TEXT NOT NULL
+                        CHECK(length(trim(effective_at_iso))>0),
+                    recorded_at_iso TEXT NOT NULL
+                        CHECK(length(trim(recorded_at_iso))>0),
+                    CHECK(effective_instant_us<=recorded_instant_us),
+                    FOREIGN KEY(suppression_id)
+                        REFERENCES source_suppressions(suppression_id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT
+                ) WITHOUT ROWID;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppression_timing_no_replace
+                BEFORE INSERT ON source_suppression_timing
+                WHEN EXISTS(
+                    SELECT 1 FROM source_suppression_timing
+                    WHERE suppression_id=NEW.suppression_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing already exists');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppression_timing_no_update
+                BEFORE UPDATE ON source_suppression_timing
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppression_timing_no_delete
+                BEFORE DELETE ON source_suppression_timing
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing is append-only');
+                END;
+
                 CREATE TABLE IF NOT EXISTS interpretations (
                     interpretation_id TEXT PRIMARY KEY
                         CHECK (length(trim(interpretation_id)) > 0),
@@ -974,7 +1012,7 @@ class MemoryStore:
                 );
                 """
             )
-            _install_source_suppression_schema_marker(connection)
+            _install_or_upgrade_source_suppression_schema_marker(connection)
             assert_source_suppression_ledger(connection)
             if not connection.in_transaction:
                 raise SuppressionLedgerIntegrityError(
