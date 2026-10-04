@@ -27,6 +27,7 @@ from home_memory_core.current_view import (
     CurrentStateEndEvent,
     CurrentStateRecord,
 )
+from home_memory_core.process_boundary import current_home_process_instance_id
 from home_memory_core.living_authority import (
     RoomParticipationAuthority,
     RoomParticipationGrant,
@@ -286,6 +287,7 @@ class CurrentAdmissionAuthority:
                 "Room authority belongs to another HOME database"
             )
         room_authority._assert_live_host()
+        self._home_process_instance_id = current_home_process_instance_id()
         self._current_store = current_store
         self._admission_store = admission_store
         self._room_authority = room_authority
@@ -300,6 +302,7 @@ class CurrentAdmissionAuthority:
         grant: RoomParticipationGrant,
         supersedes_receipt: CurrentAdmissionReceipt | None = None,
     ) -> CurrentAdmissionReceipt:
+        self._assert_live_process()
         if not isinstance(record, CurrentStateRecord):
             raise TypeError("record must be CurrentStateRecord")
         if not isinstance(grant, RoomParticipationGrant):
@@ -371,6 +374,7 @@ class CurrentAdmissionAuthority:
         grant: RoomParticipationGrant,
         target_state_receipt: CurrentAdmissionReceipt,
     ) -> CurrentAdmissionReceipt:
+        self._assert_live_process()
         if not isinstance(event, CurrentStateEndEvent):
             raise TypeError("event must be CurrentStateEndEvent")
         if not isinstance(grant, RoomParticipationGrant):
@@ -459,6 +463,7 @@ class CurrentAdmissionAuthority:
         effect_kind: CurrentAdmissionEffectKind,
         effect_id: str,
     ) -> None:
+        self._assert_live_process()
         connection = self._admission_store._connect()
         try:
             connection.execute("PRAGMA query_only=ON")
@@ -512,6 +517,7 @@ class CurrentAdmissionAuthority:
         effect_kind: CurrentAdmissionEffectKind,
         effect_id: str,
     ) -> CurrentAdmissionReceipt:
+        self._assert_live_process()
         if not isinstance(effect_kind, CurrentAdmissionEffectKind):
             raise CurrentAdmissionAuthorizationError(
                 "effect_kind must use CurrentAdmissionEffectKind"
@@ -556,6 +562,13 @@ class CurrentAdmissionAuthority:
                 "live Current admission receipt differs from durable audit record"
             )
         return receipt
+
+    def _assert_live_process(self) -> None:
+        current = current_home_process_instance_id()
+        if current != self._home_process_instance_id:
+            raise CurrentAdmissionAuthorizationError(
+                "Current admission authority belongs to another HOME process incarnation"
+            )
 
     def _insert_state_admission(
         self,
