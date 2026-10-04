@@ -396,7 +396,7 @@ def assert_current_data_integrity(connection: sqlite3.Connection) -> None:
 
         states = []
         for row in connection.execute(
-            f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY rowid"
+            f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY state_id"
         ).fetchall():
             bindings = _read_bindings(
                 connection, CURRENT_STATE_EVIDENCE_TABLE, "state_id", row["state_id"]
