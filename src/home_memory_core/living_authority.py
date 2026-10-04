@@ -413,7 +413,10 @@ class TrustedRuntimeLaunchIssuer:
                 "runtime launch issuer must come from trusted host bootstrap"
             )
         self._lease = lease
-        self._store = store
+        self._canonical_db_path = Path(lease.identity.db_path).resolve()
+        # The caller-owned LivingStore proves the open-time binding only.
+        # Operational Room authority reads are pinned to the lease-rooted DB.
+        self._store = LivingStore(self._canonical_db_path)
         self._home_process_instance_id = current_home_process_instance_id()
         self._guard = RLock()
         self._assert_live_host()
@@ -487,7 +490,7 @@ class TrustedRuntimeLaunchIssuer:
         return (
             self._home_process_instance_id,
             self._lease.identity.process_instance_id,
-            str(Path(self._store.db_path).resolve()),
+            str(self._canonical_db_path),
         )
 
     def _assert_live_host(self) -> None:
@@ -1132,9 +1135,13 @@ class RoomParticipationAuthority:
                 "HOME host lease was released"
             )
         identity = self._lease.identity
-        if Path(self._store.db_path).resolve() != identity.db_path:
+        if Path(identity.db_path).resolve() != self._canonical_db_path:
             raise RoomParticipationAuthorizationError(
-                "LivingStore does not belong to the leased HOME database"
+                "HOME host lease database binding changed"
+            )
+        if Path(self._store.db_path).resolve() != self._canonical_db_path:
+            raise RoomParticipationAuthorizationError(
+                "Room authority internal LivingStore left the leased HOME database"
             )
 
     def _assert_live_runtime_launch(
