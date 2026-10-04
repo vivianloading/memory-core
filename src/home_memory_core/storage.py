@@ -1546,6 +1546,7 @@ class MemoryStore:
             raise ValueError("supersession must have evidence")
 
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             previous = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=(
