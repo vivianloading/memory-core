@@ -490,6 +490,39 @@ def _assert_source_suppression_rows(
         )
 
 
+def _execute_sql_script_in_current_transaction(
+    connection: sqlite3.Connection,
+    script: str,
+) -> None:
+    """Execute a DDL script without sqlite3.executescript() transaction breaks."""
+
+    if not connection.in_transaction:
+        raise SuppressionLedgerIntegrityError(
+            "schema installation requires an active SQLite transaction"
+        )
+
+    pending = ""
+    for character in script:
+        pending += character
+        if character != ";":
+            continue
+        if not sqlite3.complete_statement(pending):
+            continue
+        statement = pending.strip()
+        pending = ""
+        if statement:
+            connection.execute(statement)
+        if not connection.in_transaction:
+            raise SuppressionLedgerIntegrityError(
+                "schema installation escaped its SQLite transaction"
+            )
+
+    if pending.strip():
+        raise SuppressionLedgerIntegrityError(
+            "schema installation script ended with incomplete SQL"
+        )
+
+
 def _authority_lock_for_path(db_path: Path) -> RLock:
     key = str(db_path.expanduser().resolve())
     with _AUTHORITY_LOCK_REGISTRY_GUARD:
@@ -529,10 +562,16 @@ class MemoryStore:
         # Existing pre-real-data HOME databases may be marked synthetic here,
         # but a database already marked real is never downgraded or adopted.
         with self._unverified_connection() as connection:
+            # One write transaction covers trust classification, any admitted
+            # legacy migration, schema/guard installation, marker installation,
+            # and the final integrity audit. No concurrent writer can alter the
+            # stop-use ledger between those phases.
+            connection.execute("BEGIN IMMEDIATE")
             _assert_missing_suppression_ledger_is_bootstrap_safe(connection)
             ensure_synthetic_store_domain(connection)
             _prepare_source_suppression_table(connection)
-            connection.executescript(
+            _execute_sql_script_in_current_transaction(
+                connection,
                 """
                 CREATE TABLE IF NOT EXISTS sources (
                     source_id TEXT PRIMARY KEY,
@@ -700,6 +739,10 @@ class MemoryStore:
             )
             _install_source_suppression_schema_marker(connection)
             assert_source_suppression_ledger(connection)
+            if not connection.in_transaction:
+                raise SuppressionLedgerIntegrityError(
+                    "MemoryStore initialization lost its SQLite write transaction"
+                )
 
     @_authority_ordered_write
     def add_source(self, source: SourceRecord) -> None:
