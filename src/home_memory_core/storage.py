@@ -63,8 +63,63 @@ def _source_suppression_table_sql() -> str:
             FOREIGN KEY (source_id)
                 REFERENCES sources(source_id)
                 ON DELETE RESTRICT
+        ) WITHOUT ROWID
+    """
+
+
+def _legacy_source_suppression_table_sql() -> str:
+    """Exact pre-Slice-3A synthetic schema accepted for one-way migration."""
+
+    return """
+        CREATE TABLE source_suppressions (
+            suppression_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL UNIQUE,
+            requested_by TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            FOREIGN KEY (source_id)
+                REFERENCES sources(source_id)
+                ON DELETE RESTRICT
         )
     """
+
+
+def _migrate_legacy_source_suppression_table(
+    connection: sqlite3.Connection,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='table' AND name='source_suppressions'
+        """
+    ).fetchone()
+    if row is None:
+        return
+
+    actual = _normalize_schema_sql(row["sql"])
+    target = _normalize_schema_sql(_source_suppression_table_sql())
+    if actual == target:
+        return
+    legacy = _normalize_schema_sql(_legacy_source_suppression_table_sql())
+    if actual != legacy:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression table is not a recognized migratable schema"
+        )
+
+    connection.execute(
+        "ALTER TABLE source_suppressions RENAME TO source_suppressions_legacy_v01"
+    )
+    connection.execute(_source_suppression_table_sql())
+    connection.execute(
+        """
+        INSERT INTO source_suppressions (
+            suppression_id,source_id,requested_by,reason
+        )
+        SELECT suppression_id,source_id,requested_by,reason
+        FROM source_suppressions_legacy_v01
+        """
+    )
+    connection.execute("DROP TABLE source_suppressions_legacy_v01")
 
 
 def _source_suppression_guard_sql() -> dict[str, str]:
@@ -238,6 +293,7 @@ class MemoryStore:
         # but a database already marked real is never downgraded or adopted.
         with self._unverified_connection() as connection:
             ensure_synthetic_store_domain(connection)
+            _migrate_legacy_source_suppression_table(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
@@ -257,7 +313,7 @@ class MemoryStore:
                     FOREIGN KEY (source_id)
                         REFERENCES sources(source_id)
                         ON DELETE RESTRICT
-                );
+                ) WITHOUT ROWID;
 
                 CREATE TRIGGER IF NOT EXISTS source_suppressions_no_replace
                 BEFORE INSERT ON source_suppressions
