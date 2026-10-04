@@ -182,6 +182,33 @@ types or encodings.
 The #17 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+### Issue #19 re-review
+
+Issue #19 reviewed exact head
+`464dac091b8623aa3d3b6923b9b41c398d61cdb7` and returned **FAIL / NO-GO**.
+
+Fresh discovery found a supported-input datetime round-trip defect. Python
+`datetime.isoformat()` can emit subsecond UTC offsets such as
+`+00:00:00.000001`, while the reviewed runtime's
+`datetime.fromisoformat()` reconstructed that exact string with zero offset.
+The persisted JSON therefore retained text that looked exact while the audit
+reader silently changed the absolute historical instant. In the minimal proof,
+that one-microsecond reinterpretation changed derived Current standing from
+`last_known` to `current`.
+
+The remediation keeps the existing canonical `datetime.isoformat()` wire
+encoding but no longer delegates offset interpretation to
+`datetime.fromisoformat()`. HOME now parses the wall-clock portion and the
+signed hour/minute/second/microsecond UTC offset separately, reconstructs a
+fixed-offset aware datetime, and requires that serializing the result yields the
+exact original canonical string.
+
+This preserves the intended lesson from earlier Current time failures:
+representation boundaries must not silently become semantic boundaries.
+
+The #19 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Deliberate sequencing
 
 Slice 1: persistence substrate — this document.
