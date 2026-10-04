@@ -144,7 +144,7 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
         for name, sql in _source_suppression_guard_sql().items()
     }
     if actual_triggers != expected_triggers:
-        raise SuppressedMemoryError(
+        raise SuppressionLedgerIntegrityError(
             "source suppression append-only guards were altered"
         )
 
