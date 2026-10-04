@@ -1773,13 +1773,9 @@ class MemoryStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        """Verified read snapshot for compatibility with older internal callers."""
+        with self._read_snapshot() as connection:
+            yield connection
 
     @contextmanager
     def _unverified_connection(self) -> Iterator[sqlite3.Connection]:
@@ -1794,25 +1790,33 @@ class MemoryStore:
 
     @contextmanager
     def _read_snapshot(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
+        connection = self._connect_raw()
 
         try:
             connection.execute("PRAGMA query_only = ON")
             connection.execute("BEGIN")
+            assert_synthetic_store_domain(connection)
             yield connection
         finally:
             if connection.in_transaction:
                 connection.rollback()
             connection.close()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _write_transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect_raw()
+
         try:
+            connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
+            yield connection
+            connection.commit()
         except BaseException:
-            connection.close()
+            if connection.in_transaction:
+                connection.rollback()
             raise
-        return connection
+        finally:
+            connection.close()
 
     def _connect_raw(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
