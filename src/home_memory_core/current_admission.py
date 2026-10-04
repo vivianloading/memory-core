@@ -1268,7 +1268,7 @@ def _assert_binding_digest(audit: CurrentAdmissionAuditRecord) -> None:
         policy_id=audit.policy_id,
         policy_issuance_id=audit.policy_issuance_id,
         proposal_id=audit.proposal_id,
-        approval_id=audit.apval_id if False else audit.approval_id,
+        approval_id=audit.approval_id,
         session_id=audit.session_id,
         episode_id=audit.episode_id,
         perspective_instance_id=audit.perspective_instance_id,
@@ -1392,9 +1392,24 @@ def _validate_audit_record(record: CurrentAdmissionAuditRecord) -> None:
             raise CurrentAdmissionIntegrityError(
                 f"{field_name} must be non-empty text"
             )
-    if len(record.effect_digest) != 64 or len(record.admission_binding_digest) != 64:
+    if (
+        len(record.effect_digest) != 64
+        or len(record.admission_binding_digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in record.effect_digest)
+        or any(ch not in "0123456789abcdef" for ch in record.admission_binding_digest)
+    ):
         raise CurrentAdmissionIntegrityError(
-            "Current admission digests must be sha256 hex length"
+            "Current admission digests must be lowercase sha256 hex"
+        )
+    if (
+        record.predecessor_admission_id is not None
+        and (
+            not isinstance(record.predecessor_admission_id, str)
+            or not record.predecessor_admission_id.strip()
+        )
+    ):
+        raise CurrentAdmissionIntegrityError(
+            "predecessor_admission_id must be non-empty text when present"
         )
 
 
