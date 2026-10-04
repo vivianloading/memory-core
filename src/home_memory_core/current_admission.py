@@ -302,6 +302,10 @@ class CurrentAdmissionAuthority:
     ) -> CurrentAdmissionReceipt:
         if not isinstance(record, CurrentStateRecord):
             raise TypeError("record must be CurrentStateRecord")
+        if not isinstance(grant, RoomParticipationGrant):
+            raise CurrentAdmissionAuthorizationError(
+                "Room Current admission requires RoomParticipationGrant"
+            )
         if record.namespace is not CurrentNamespace.ROOM:
             raise CurrentAdmissionAuthorizationError(
                 "Slice 2 v0.1 admits Room Current only; Shared admission is closed"
@@ -369,6 +373,10 @@ class CurrentAdmissionAuthority:
     ) -> CurrentAdmissionReceipt:
         if not isinstance(event, CurrentStateEndEvent):
             raise TypeError("event must be CurrentStateEndEvent")
+        if not isinstance(grant, RoomParticipationGrant):
+            raise CurrentAdmissionAuthorizationError(
+                "Room Current admission requires RoomParticipationGrant"
+            )
         if event.episode_id is None or event.perspective_instance_id is None:
             raise CurrentAdmissionAuthorizationError(
                 "Room Current end-event admission requires Episode/Perspective provenance"
