@@ -176,7 +176,7 @@ class CurrentPresentUseStore:
             raise
 
 
-def require_current_effect_usable(
+def _require_current_effect_usable(
     *,
     connection: sqlite3.Connection,
     effect_kind: CurrentUseEffectKind,
