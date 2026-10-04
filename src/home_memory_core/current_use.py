@@ -5,10 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 import sqlite3
 
-from home_memory_core.current_store import (
-    CurrentStore,
-    CurrentStoreIntegrityError,
-)
+from home_memory_core.current_store import CurrentStore
 from home_memory_core.current_store_schema import (
     CURRENT_END_EVIDENCE_TABLE,
     CURRENT_END_TABLE,
@@ -141,6 +138,7 @@ class CurrentPresentUseStore:
         connection = self._read_connection()
         try:
             decisions: list[CurrentPresentUseDecision] = []
+            state_memo: dict[str, CurrentPresentUseDecision] = {}
             for row in connection.execute(
                 f"SELECT state_id FROM {CURRENT_STATE_TABLE} ORDER BY state_id"
             ).fetchall():
@@ -149,6 +147,7 @@ class CurrentPresentUseStore:
                         connection=connection,
                         effect_kind=CurrentUseEffectKind.STATE,
                         effect_id=row["state_id"],
+                        state_memo=state_memo,
                     )
                 )
             for row in connection.execute(
@@ -159,6 +158,7 @@ class CurrentPresentUseStore:
                         connection=connection,
                         effect_kind=CurrentUseEffectKind.END_EVENT,
                         effect_id=row["end_event_id"],
+                        state_memo=state_memo,
                     )
                 )
             return tuple(decisions)
