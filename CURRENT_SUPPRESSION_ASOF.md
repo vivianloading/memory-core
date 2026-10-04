@@ -98,6 +98,11 @@ audit.
 The sidecar is `WITHOUT ROWID` and protected from UPDATE, DELETE and
 replacement.
 
+Its integrity audit also rejects user-defined indexes. This is part of the
+append-only contract, not cosmetic schema tidiness: an added uniqueness
+constraint can change SQLite conflict behavior and create an indirect
+replacement path that the canonical guards were not designed to authorize.
+
 Every suppression ledger row has exactly one timing sidecar row in the v0.2
 schema.
 
