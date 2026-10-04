@@ -9,9 +9,9 @@ from home_memory_core.source import SourceRecord
 
 
 _CANONICAL_DATETIME = re.compile(
-    r"^(?P<wall>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?)"
-    r"(?P<sign>[+-])(?P<hours>\\d{2}):(?P<minutes>\\d{2})"
-    r"(?::(?P<seconds>\\d{2})(?:\\.(?P<microseconds>\\d{6}))?)?$"
+    r"^(?P<wall>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?)"
+    r"(?P<sign>[+-])(?P<hours>\d{2}):(?P<minutes>\d{2})"
+    r"(?::(?P<seconds>\d{2})(?:\.(?P<microseconds>\d{6}))?)?$"
 )
 
 
