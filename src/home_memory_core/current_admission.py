@@ -27,6 +27,10 @@ from home_memory_core.current_view import (
     CurrentStateEndEvent,
     CurrentStateRecord,
 )
+from home_memory_core.current_use import (
+    CurrentUseEffectKind,
+    require_current_effect_usable,
+)
 from home_memory_core.process_boundary import current_home_process_instance_id
 from home_memory_core.living_authority import (
     RoomParticipationAuthority,
@@ -568,6 +572,15 @@ class CurrentAdmissionAuthority:
             raise CurrentAdmissionIntegrityError(
                 "live Current admission receipt differs from durable audit record"
             )
+        require_current_effect_usable(
+            connection=connection,
+            effect_kind=(
+                CurrentUseEffectKind.STATE
+                if effect_kind is CurrentAdmissionEffectKind.STATE
+                else CurrentUseEffectKind.END_EVENT
+            ),
+            effect_id=effect_id,
+        )
         return receipt
 
     def _assert_live_process(self) -> None:
