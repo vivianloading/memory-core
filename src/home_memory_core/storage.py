@@ -2528,6 +2528,7 @@ class MemoryStore:
         *,
         connection: sqlite3.Connection,
     ) -> frozenset[str]:
+        assert_source_suppression_ledger(connection)
         rows = connection.execute(
             """
             SELECT source_id
