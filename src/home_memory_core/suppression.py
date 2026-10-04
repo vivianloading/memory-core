@@ -32,6 +32,28 @@ class SuppressionRecord:
     effective_at: datetime | None = None
     recorded_at: datetime | None = None
 
+    def __post_init__(self) -> None:
+        for field_name in (
+            "suppression_id",
+            "source_id",
+            "requested_by",
+            "reason",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} cannot be empty")
+
+        if (self.effective_at is None) != (self.recorded_at is None):
+            raise ValueError(
+                "effective_at and recorded_at must both be present or both absent"
+            )
+        if self.effective_at is not None:
+            assert self.recorded_at is not None
+            _require_aware("effective_at", self.effective_at)
+            _require_aware("recorded_at", self.recorded_at)
+            if _instant(self.effective_at) > _instant(self.recorded_at):
+                raise ValueError("effective_at cannot be later than recorded_at")
+
     @property
     def timing_known(self) -> bool:
         return self.effective_at is not None and self.recorded_at is not None
