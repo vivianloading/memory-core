@@ -199,7 +199,11 @@ def current_schema_script() -> str:
         WHERE state_id=NEW.state_id)
       BEGIN SELECT RAISE(ABORT,'Current state evidence parent is missing'); END;
     CREATE TRIGGER current_state_evidence_capacity BEFORE INSERT ON {CURRENT_STATE_EVIDENCE_TABLE}
-      WHEN (
+      WHEN NEW.position >= (
+        SELECT source_ref_count FROM {CURRENT_STATE_TABLE}
+        WHERE state_id=NEW.state_id
+      )
+      OR (
         SELECT COUNT(*) FROM {CURRENT_STATE_EVIDENCE_TABLE}
         WHERE state_id=NEW.state_id
       ) >= (
@@ -272,7 +276,11 @@ def current_schema_script() -> str:
         WHERE end_event_id=NEW.end_event_id)
       BEGIN SELECT RAISE(ABORT,'Current end evidence parent is missing'); END;
     CREATE TRIGGER current_end_evidence_capacity BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
-      WHEN (
+      WHEN NEW.position >= (
+        SELECT source_ref_count FROM {CURRENT_END_TABLE}
+        WHERE end_event_id=NEW.end_event_id
+      )
+      OR (
         SELECT COUNT(*) FROM {CURRENT_END_EVIDENCE_TABLE}
         WHERE end_event_id=NEW.end_event_id
       ) >= (
