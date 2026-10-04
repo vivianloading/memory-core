@@ -289,6 +289,7 @@ class CurrentAdmissionAuthority:
         self._current_store = current_store
         self._admission_store = admission_store
         self._room_authority = room_authority
+        self._receipt_guard = Lock()
         self._receipts: dict[str, _ReceiptState] = {}
 
     def admit_room_state(
@@ -503,14 +504,16 @@ class CurrentAdmissionAuthority:
             raise CurrentAdmissionAuthorizationError(
                 "effect_kind must use CurrentAdmissionEffectKind"
             )
-        state = self._receipts.get(getattr(receipt, "admission_id", ""))
-        if (
-            not isinstance(receipt, CurrentAdmissionReceipt)
-            or receipt._marker is not _ADMISSION_RECEIPT_MARKER
-            or state is None
-            or state.receipt is not receipt
-            or state.fingerprint != _receipt_fingerprint(receipt)
-        ):
+        with self._receipt_guard:
+            state = self._receipts.get(getattr(receipt, "admission_id", ""))
+            registry_matches = (
+                isinstance(receipt, CurrentAdmissionReceipt)
+                and receipt._marker is _ADMISSION_RECEIPT_MARKER
+                and state is not None
+                and state.receipt is receipt
+                and state.fingerprint == _receipt_fingerprint(receipt)
+            )
+        if not registry_matches:
             raise CurrentAdmissionAuthorizationError(
                 "Current admission receipt was not issued by this live authority"
             )
@@ -675,14 +678,15 @@ class CurrentAdmissionAuthority:
         )
 
     def _register_receipt(self, receipt: CurrentAdmissionReceipt) -> None:
-        if receipt.admission_id in self._receipts:
-            raise CurrentAdmissionIntegrityError(
-                "Current admission id was already issued in this process"
+        with self._receipt_guard:
+            if receipt.admission_id in self._receipts:
+                raise CurrentAdmissionIntegrityError(
+                    "Current admission id was already issued in this process"
+                )
+            self._receipts[receipt.admission_id] = _ReceiptState(
+                receipt=receipt,
+                fingerprint=_receipt_fingerprint(receipt),
             )
-        self._receipts[receipt.admission_id] = _ReceiptState(
-            receipt=receipt,
-            fingerprint=_receipt_fingerprint(receipt),
-        )
 
 
 def open_current_admission_authority(
@@ -697,7 +701,6 @@ def open_current_admission_authority(
         raise TypeError("admission_store must be CurrentAdmissionStore")
     if not isinstance(room_authority, RoomParticipationAuthority):
         raise TypeError("room_authority must be RoomParticipationAuthority")
-    admission_store.initialize()
     current_path = str(Path(current_store.db_path).resolve())
     if str(Path(admission_store.db_path).resolve()) != current_path:
         raise CurrentAdmissionAuthorizationError(
@@ -708,6 +711,7 @@ def open_current_admission_authority(
             "Room authority belongs to another HOME database"
         )
     room_authority._assert_live_host()
+    admission_store.initialize()
     key = (id(room_authority), current_path)
     with _ADMISSION_AUTHORITY_REGISTRY_GUARD:
         authority = _ADMISSION_AUTHORITY_REGISTRY.get(key)
