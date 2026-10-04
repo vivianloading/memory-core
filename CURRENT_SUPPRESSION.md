@@ -227,6 +227,52 @@ prove that erased history.
 The #34 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #35 — integrity audit and installation need one database reality
+
+Independent review #35 returned **FAIL / NO-GO** on exact head
+`3d2b2a299a84e573a68fc33e891df60ffc155dea`.
+
+The suppression ledger and durable migration marker were structurally strong,
+but `MemoryStore.initialize()` audited them before calling Python
+`sqlite3.executescript()`. That created an audit-to-install scheduling window:
+another SQLite writer could remove a suppression guard and stop-use row after
+the audit, then the initializer could recreate the missing guard and accept the
+remaining empty ledger.
+
+The problem was not missing schema evidence. It was **time**: the audit and the
+effect of initialization did not share one continuous write-serialized
+database state.
+
+The remediation gives initialization one SQLite `BEGIN IMMEDIATE` boundary
+covering:
+
+- incoming trust/domain classification;
+- admitted legacy suppression migration;
+- schema and guard installation;
+- suppression migration-completion marker installation;
+- final ledger/marker integrity audit;
+- commit.
+
+The initialization path no longer uses `sqlite3.executescript()`, whose
+transaction behavior would break that outer boundary. HOME instead executes
+the schema statements individually while asserting that the outer transaction
+remains active. Store-domain immutability triggers were likewise changed from
+`executescript()` to individual `execute()` calls so domain setup cannot
+silently end the caller's transaction.
+
+This preserves the rule:
+
+> **An integrity check only authorizes what remains true until the protected
+> operation commits. A past check is not present authority.**
+
+For an existing trusted store, concurrent ledger damage must therefore either
+happen before initialization acquires the write boundary and be rejected by
+preflight, or wait until initialization commits. It cannot occur between
+preflight and final acceptance.
+
+The #35 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
