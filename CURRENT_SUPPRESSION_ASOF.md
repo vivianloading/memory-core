@@ -98,8 +98,17 @@ audit.
 The sidecar is `WITHOUT ROWID` and protected from UPDATE, DELETE and
 replacement.
 
-A suppression ledger row may legitimately have no timing row only when it is
-legacy/untimed evidence.
+Every suppression ledger row has exactly one timing sidecar row in the v0.2
+schema.
+
+- newly timed stop-use uses `timing_status='timed'` with exact temporal
+  evidence;
+- migrated legacy stop-use uses `timing_status='timing_unknown'` with all
+  exact time fields NULL.
+
+A missing timing row is therefore corruption, not an alternate spelling of
+unknown. Historical projection and supported initialization fail closed rather
+than silently turning lost timing evidence into `timing_unknown`.
 
 ## Schema completion evidence
 
@@ -114,7 +123,8 @@ Slice 3A used suppression schema marker:
 The accepted transition is:
 
 - exact v0.1 marker + healthy canonical Slice 3A ledger + no timing sidecar
-  → install timing sidecar and move marker to v0.2 in one initialization
+  → install timing sidecar, write one explicit `timing_unknown` row for each
+  already-existing suppression, and move marker to v0.2 in one initialization
   transaction.
 
 Fresh stores install v0.2 directly.
