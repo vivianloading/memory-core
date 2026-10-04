@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import wraps
@@ -8,6 +9,7 @@ import json
 from pathlib import Path
 import secrets
 from threading import Lock, RLock
+from typing import Iterator
 
 from home_memory_core.host_runtime import HomeSingleInstanceLease
 from home_memory_core.living_continuity import (
@@ -411,7 +413,10 @@ class TrustedRuntimeLaunchIssuer:
                 "runtime launch issuer must come from trusted host bootstrap"
             )
         self._lease = lease
-        self._store = store
+        self._canonical_db_path = Path(lease.identity.db_path).resolve()
+        # The caller-owned LivingStore proves the open-time binding only.
+        # Operational Room authority reads are pinned to the lease-rooted DB.
+        self._store = LivingStore(self._canonical_db_path)
         self._home_process_instance_id = current_home_process_instance_id()
         self._guard = RLock()
         self._assert_live_host()
@@ -485,7 +490,7 @@ class TrustedRuntimeLaunchIssuer:
         return (
             self._home_process_instance_id,
             self._lease.identity.process_instance_id,
-            str(Path(self._store.db_path).resolve()),
+            str(self._canonical_db_path),
         )
 
     def _assert_live_host(self) -> None:
@@ -567,7 +572,10 @@ class RoomParticipationAuthority:
                 "RoomParticipationAuthority must be opened from a HOME host lease"
             )
         self._lease = lease
-        self._store = store
+        self._canonical_db_path = Path(lease.identity.db_path).resolve()
+        # The caller-owned LivingStore proves the open-time binding only.
+        # Operational Room authority reads are pinned to the lease-rooted DB.
+        self._store = LivingStore(self._canonical_db_path)
         self._home_process_instance_id = current_home_process_instance_id()
         self._guard = RLock()
         self._sessions: dict[str, _SessionState] = {}
@@ -983,6 +991,39 @@ class RoomParticipationAuthority:
             policy=policy,
         )
 
+    @contextmanager
+    def _hold_grant_for_operation(
+        self,
+        *,
+        grant: RoomParticipationGrant,
+        session_id: str,
+        episode_id: str,
+        perspective_instance_id: str,
+        room_id: str,
+        required_scope: RoomParticipationScope,
+    ) -> Iterator[None]:
+        """Hold exact grant authority across one synchronous local effect.
+
+        The authority lock remains held until the caller's effect has either
+        committed or unwound. This prevents process-local suspension or session
+        revocation from interleaving after revalidation but before the effect.
+        Database writers must establish their own ordering before entering this
+        context; Room routing changes remain serialized by the shared SQLite
+        write transaction rather than by this process-local lock.
+        """
+
+        with self._guard:
+            with self._lease._hold_active_for_authority():
+                self.require_grant(
+                    grant=grant,
+                    session_id=session_id,
+                    episode_id=episode_id,
+                    perspective_instance_id=perspective_instance_id,
+                    room_id=room_id,
+                    required_scope=required_scope,
+                )
+                yield
+
     @_guarded
     def suspend_policy(self, *, policy_id: str) -> None:
         """Operationally stop grants without rewriting inhabitant intent."""
@@ -1097,9 +1138,13 @@ class RoomParticipationAuthority:
                 "HOME host lease was released"
             )
         identity = self._lease.identity
-        if Path(self._store.db_path).resolve() != identity.db_path:
+        if Path(identity.db_path).resolve() != self._canonical_db_path:
             raise RoomParticipationAuthorizationError(
-                "LivingStore does not belong to the leased HOME database"
+                "HOME host lease database binding changed"
+            )
+        if Path(self._store.db_path).resolve() != self._canonical_db_path:
+            raise RoomParticipationAuthorizationError(
+                "Room authority internal LivingStore left the leased HOME database"
             )
 
     def _assert_live_runtime_launch(

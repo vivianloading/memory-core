@@ -131,44 +131,18 @@ class CurrentStore:
         record: CurrentStateRecord,
         source_bindings: tuple[CurrentSourceBinding, ...],
     ) -> None:
-        if not isinstance(record, CurrentStateRecord):
-            raise TypeError("record must be CurrentStateRecord")
-        _binding_shape(record.source_refs, source_bindings)
         connection = self._write_connection()
         try:
-            _validate_new_bindings(connection, source_bindings)
-            room_attachment_event_id = _active_room_attachment(
-                connection,
-                namespace=record.namespace,
-                owner_id=record.owner_id,
-                episode_id=record.episode_id,
-                perspective_instance_id=record.perspective_instance_id,
+            self._append_state_in_transaction(
+                connection=connection,
+                record=record,
+                source_bindings=source_bindings,
             )
-            connection.execute(
-                f"""INSERT INTO {CURRENT_STATE_TABLE} (
-                  state_id,namespace,owner_id,key,state_kind,recorded_instant_us,
-                  semantic_change_authority,episode_id,perspective_instance_id,
-                  room_attachment_event_id,supersedes_state_id,source_ref_count,payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    record.state_id, record.namespace.value, record.owner_id,
-                    record.key, record.state_kind.value, _instant(record.recorded_at),
-                    record.semantic_change_authority.value, record.episode_id,
-                    record.perspective_instance_id, room_attachment_event_id,
-                    record.supersedes_state_id, len(record.source_refs),
-                    _state_payload(record),
-                ),
-            )
-            _insert_bindings(
-                connection, CURRENT_STATE_EVIDENCE_TABLE, "state_id",
-                record.state_id, source_bindings,
-            )
-            assert_current_data_integrity(connection)
             connection.commit()
         except sqlite3.IntegrityError as error:
             connection.rollback()
             raise CurrentStoreConflictError(
-                f"Current state conflicts with persisted history: {record.state_id}"
+                f"Current state conflicts with persisted history: {getattr(record, 'state_id', '<invalid>')}"
             ) from error
         except Exception:
             connection.rollback()
@@ -176,60 +150,120 @@ class CurrentStore:
         finally:
             connection.close()
 
+    def _append_state_in_transaction(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        record: CurrentStateRecord,
+        source_bindings: tuple[CurrentSourceBinding, ...],
+    ) -> str | None:
+        """Package-internal append seam for one already-open Current transaction."""
+
+        if not isinstance(record, CurrentStateRecord):
+            raise TypeError("record must be CurrentStateRecord")
+        _binding_shape(record.source_refs, source_bindings)
+        _validate_new_bindings(connection, source_bindings)
+        room_attachment_event_id = _active_room_attachment(
+            connection,
+            namespace=record.namespace,
+            owner_id=record.owner_id,
+            episode_id=record.episode_id,
+            perspective_instance_id=record.perspective_instance_id,
+        )
+        connection.execute(
+            f"""INSERT INTO {CURRENT_STATE_TABLE} (
+              state_id,namespace,owner_id,key,state_kind,recorded_instant_us,
+              semantic_change_authority,episode_id,perspective_instance_id,
+              room_attachment_event_id,supersedes_state_id,source_ref_count,payload_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                record.state_id, record.namespace.value, record.owner_id,
+                record.key, record.state_kind.value, _instant(record.recorded_at),
+                record.semantic_change_authority.value, record.episode_id,
+                record.perspective_instance_id, room_attachment_event_id,
+                record.supersedes_state_id, len(record.source_refs),
+                _state_payload(record),
+            ),
+        )
+        _insert_bindings(
+            connection, CURRENT_STATE_EVIDENCE_TABLE, "state_id",
+            record.state_id, source_bindings,
+        )
+        assert_current_data_integrity(connection)
+        return room_attachment_event_id
+
     def add_end_event(
         self,
         *,
         event: CurrentStateEndEvent,
         source_bindings: tuple[CurrentSourceBinding, ...],
     ) -> None:
-        if not isinstance(event, CurrentStateEndEvent):
-            raise TypeError("event must be CurrentStateEndEvent")
-        _binding_shape(event.source_refs, source_bindings)
         connection = self._write_connection()
         try:
-            _validate_new_bindings(connection, source_bindings)
-            target = connection.execute(
-                f"SELECT namespace,owner_id FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
-                (event.state_id,),
-            ).fetchone()
-            if target is None:
-                raise CurrentStoreIntegrityError("Current end event target is missing")
-            room_attachment_event_id = _active_room_attachment(
-                connection,
-                namespace=CurrentNamespace(target["namespace"]),
-                owner_id=target["owner_id"],
-                episode_id=event.episode_id,
-                perspective_instance_id=event.perspective_instance_id,
+            self._append_end_event_in_transaction(
+                connection=connection,
+                event=event,
+                source_bindings=source_bindings,
             )
-            connection.execute(
-                f"""INSERT INTO {CURRENT_END_TABLE} (
-                  end_event_id,state_id,recorded_instant_us,semantic_change_authority,
-                  episode_id,perspective_instance_id,room_attachment_event_id,
-                  source_ref_count,payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?)""",
-                (
-                    event.end_event_id, event.state_id, _instant(event.recorded_at),
-                    event.semantic_change_authority.value, event.episode_id,
-                    event.perspective_instance_id, room_attachment_event_id,
-                    len(event.source_refs), _end_payload(event),
-                ),
-            )
-            _insert_bindings(
-                connection, CURRENT_END_EVIDENCE_TABLE, "end_event_id",
-                event.end_event_id, source_bindings,
-            )
-            assert_current_data_integrity(connection)
             connection.commit()
         except sqlite3.IntegrityError as error:
             connection.rollback()
             raise CurrentStoreConflictError(
-                f"Current end event conflicts with persisted history: {event.end_event_id}"
+                f"Current end event conflicts with persisted history: {getattr(event, 'end_event_id', '<invalid>')}"
             ) from error
         except Exception:
             connection.rollback()
             raise
         finally:
             connection.close()
+
+    def _append_end_event_in_transaction(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        event: CurrentStateEndEvent,
+        source_bindings: tuple[CurrentSourceBinding, ...],
+    ) -> tuple[str | None, CurrentNamespace, str]:
+        """Package-internal append seam for one already-open Current transaction."""
+
+        if not isinstance(event, CurrentStateEndEvent):
+            raise TypeError("event must be CurrentStateEndEvent")
+        _binding_shape(event.source_refs, source_bindings)
+        _validate_new_bindings(connection, source_bindings)
+        target = connection.execute(
+            f"SELECT namespace,owner_id FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+            (event.state_id,),
+        ).fetchone()
+        if target is None:
+            raise CurrentStoreIntegrityError("Current end event target is missing")
+        namespace = CurrentNamespace(target["namespace"])
+        owner_id = target["owner_id"]
+        room_attachment_event_id = _active_room_attachment(
+            connection,
+            namespace=namespace,
+            owner_id=owner_id,
+            episode_id=event.episode_id,
+            perspective_instance_id=event.perspective_instance_id,
+        )
+        connection.execute(
+            f"""INSERT INTO {CURRENT_END_TABLE} (
+              end_event_id,state_id,recorded_instant_us,semantic_change_authority,
+              episode_id,perspective_instance_id,room_attachment_event_id,
+              source_ref_count,payload_json
+            ) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                event.end_event_id, event.state_id, _instant(event.recorded_at),
+                event.semantic_change_authority.value, event.episode_id,
+                event.perspective_instance_id, room_attachment_event_id,
+                len(event.source_refs), _end_payload(event),
+            ),
+        )
+        _insert_bindings(
+            connection, CURRENT_END_EVIDENCE_TABLE, "end_event_id",
+            event.end_event_id, source_bindings,
+        )
+        assert_current_data_integrity(connection)
+        return room_attachment_event_id, namespace, owner_id
 
     def get_state_for_audit(self, state_id: str) -> PersistedCurrentState:
         connection = self._read_connection()

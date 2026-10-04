@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import secrets
 import sys
-from typing import IO
+from threading import RLock
+from typing import IO, Iterator
 
 from home_memory_core.process_boundary import (
     HomeProcessIsolationError,
@@ -66,24 +68,40 @@ class HomeSingleInstanceLease:
         self._identity = identity
         self._handle = handle
         self._released = False
+        self._guard = RLock()
 
     @property
     def identity(self) -> HomeHostRuntimeIdentity:
         self._assert_owner_process()
-        return self._identity
+        with self._guard:
+            return self._identity
 
     @property
     def released(self) -> bool:
         self._assert_owner_process()
-        return self._released
+        with self._guard:
+            return self._released
+
+    @contextmanager
+    def _hold_active_for_authority(self) -> Iterator[None]:
+        """Keep this host lease live across one synchronous authority effect."""
+
+        self._assert_owner_process()
+        with self._guard:
+            if self._released:
+                raise HostRuntimeLeaseError(
+                    "released HOME host lease cannot authorize an effect"
+                )
+            yield
 
     def release(self) -> None:
         self._assert_owner_process()
-        if self._released:
-            return
-        _unlock_file(self._handle)
-        self._handle.close()
-        self._released = True
+        with self._guard:
+            if self._released:
+                return
+            _unlock_file(self._handle)
+            self._handle.close()
+            self._released = True
 
     def __enter__(self) -> HomeSingleInstanceLease:
         self._assert_owner_process()
