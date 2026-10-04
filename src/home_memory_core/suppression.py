@@ -1,10 +1,18 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import re
 
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.interpretation import InterpretationRecord
 from home_memory_core.revision import SupersessionRecord
 from home_memory_core.source import SourceRecord
+
+
+_CANONICAL_DATETIME = re.compile(
+    r"^(?P<wall>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?)"
+    r"(?P<sign>[+-])(?P<hours>\\d{2}):(?P<minutes>\\d{2})"
+    r"(?::(?P<seconds>\\d{2})(?:\\.(?P<microseconds>\\d{6}))?)?$"
+)
 
 
 class SuppressedMemoryError(RuntimeError):
@@ -98,6 +106,45 @@ def suppression_instant(value: datetime) -> int:
     """Return an aware datetime as the same absolute microsecond scalar as Current."""
 
     return _instant(value)
+
+
+def suppression_datetime_to_iso(value: datetime) -> str:
+    _require_aware("timestamp", value)
+    return value.isoformat()
+
+
+def suppression_datetime_from_iso(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("suppression datetime payload must be text")
+    match = _CANONICAL_DATETIME.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            "suppression datetime payload must use canonical datetime.isoformat encoding"
+        )
+    try:
+        wall = datetime.fromisoformat(match.group("wall"))
+        hours = int(match.group("hours"))
+        minutes = int(match.group("minutes"))
+        seconds = int(match.group("seconds") or "0")
+        microseconds = int(match.group("microseconds") or "0")
+        offset = timedelta(
+            hours=hours,
+            minutes=minutes,
+            seconds=seconds,
+            microseconds=microseconds,
+        )
+        if match.group("sign") == "-":
+            offset = -offset
+        result = wall.replace(tzinfo=timezone(offset))
+    except (ValueError, OverflowError) as error:
+        raise ValueError(
+            "suppression datetime payload is outside the supported aware datetime domain"
+        ) from error
+    if result.isoformat() != value:
+        raise ValueError(
+            "suppression datetime payload is not canonical for its represented instant"
+        )
+    return result
 
 
 def _instant(value: datetime) -> int:
