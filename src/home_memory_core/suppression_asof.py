@@ -109,9 +109,9 @@ class SuppressionAsOfStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         try:
-            assert_synthetic_store_domain(connection)
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
+            assert_synthetic_store_domain(connection)
             assert_source_suppression_ledger(connection)
             return connection
         except Exception:
