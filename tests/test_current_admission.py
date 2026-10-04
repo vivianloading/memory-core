@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -47,6 +48,7 @@ from home_memory_core.living_authority import (
     RoomParticipationStaleError,
     open_room_participation_authority,
 )
+from home_memory_core.process_boundary import HomeProcessIsolationError
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
@@ -496,6 +498,55 @@ class CurrentAdmissionTests(unittest.TestCase):
                 effect_kind=CurrentAdmissionEffectKind.STATE,
                 effect_id=record.state_id,
             )
+
+    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork semantics")
+    def test_fork_child_cannot_reuse_live_current_admission_receipt(self) -> None:
+        record, receipt = self.admit_state("fork-isolation")
+
+        self.admission.require_live_receipt(
+            receipt=receipt,
+            effect_kind=CurrentAdmissionEffectKind.STATE,
+            effect_id=record.state_id,
+        )
+
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(read_fd)
+            try:
+                try:
+                    self.admission.require_live_receipt(
+                        receipt=receipt,
+                        effect_kind=CurrentAdmissionEffectKind.STATE,
+                        effect_id=record.state_id,
+                    )
+                except Exception as error:
+                    result = type(error).__name__
+                else:
+                    result = "ACCEPTED"
+                os.write(write_fd, result.encode("utf-8"))
+            finally:
+                os.close(write_fd)
+                os._exit(0)
+
+        os.close(write_fd)
+        try:
+            with os.fdopen(read_fd, "rb", closefd=True) as stream:
+                child_result = stream.read().decode("utf-8")
+            _, status = os.waitpid(pid, 0)
+        finally:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+
+        self.assertEqual(status, 0)
+        self.assertEqual(child_result, HomeProcessIsolationError.__name__)
+        self.admission.require_live_receipt(
+            receipt=receipt,
+            effect_kind=CurrentAdmissionEffectKind.STATE,
+            effect_id=record.state_id,
+        )
 
     def test_durable_audit_does_not_recreate_live_receipt(self) -> None:
         record, receipt = self.admit_state("state-a")
