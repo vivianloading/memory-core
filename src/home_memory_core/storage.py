@@ -90,6 +90,36 @@ def _legacy_source_suppression_table_sql() -> str:
     """
 
 
+def _assert_missing_suppression_ledger_is_bootstrap_safe(
+    connection: sqlite3.Connection,
+) -> None:
+    """Reject ledger loss in an already HOME-marked synthetic store.
+
+    The decision must be made before ensure_synthetic_store_domain() can add a
+    marker to a genuinely fresh or recognized unmarked legacy database.
+    """
+
+    ledger_exists = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='source_suppressions'
+        """
+    ).fetchone() is not None
+    if ledger_exists:
+        return
+
+    domain_table_exists = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='home_store_domain'
+        """
+    ).fetchone() is not None
+    if domain_table_exists:
+        raise SuppressionLedgerIntegrityError(
+            "trusted HOME store is missing the source suppression ledger"
+        )
+
+
 def _prepare_source_suppression_table(
     connection: sqlite3.Connection,
 ) -> None:
@@ -341,6 +371,7 @@ class MemoryStore:
         # Existing pre-real-data HOME databases may be marked synthetic here,
         # but a database already marked real is never downgraded or adopted.
         with self._unverified_connection() as connection:
+            _assert_missing_suppression_ledger_is_bootstrap_safe(connection)
             ensure_synthetic_store_domain(connection)
             _prepare_source_suppression_table(connection)
             connection.executescript(
