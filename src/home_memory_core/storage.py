@@ -1154,7 +1154,7 @@ class MemoryStore:
                 ) from error
 
     def get_source(self, source_id: str) -> SourceRecord:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             source = self._get_source_from_connection(
                 connection=connection,
                 source_id=source_id,
@@ -1257,7 +1257,7 @@ class MemoryStore:
             )
 
     def is_source_usable(self, source_id: str) -> bool:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             self._get_source_from_connection(
                 connection=connection,
                 source_id=source_id,
@@ -2069,6 +2069,7 @@ class MemoryStore:
         connection: sqlite3.Connection,
         thread_id: str,
     ) -> LineageResolutionInput:
+        assert_source_suppression_ledger(connection)
         thread = self._get_thread_from_connection(
             connection=connection,
             thread_id=thread_id,
