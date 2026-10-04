@@ -88,6 +88,31 @@ Therefore:
 
 > durable admission audit presence != live operational credential.
 
+## Authority/effect ordering
+
+The combined Room admission path establishes one lock order:
+
+1. open the Current `BEGIN IMMEDIATE` write transaction;
+2. enter the package-internal Room grant hold, which revalidates the exact grant;
+3. append the Current effect and exact admission audit row;
+4. re-audit Current and admission integrity;
+5. commit before releasing the Room authority hold;
+6. register and return the process-local receipt.
+
+The Room grant hold is deliberately package-internal. It is not a general caller
+capability for wrapping arbitrary database writes; exposing that shape would
+allow callers to invent the opposite authority-lock -> database-lock ordering.
+
+Admission audit reads also re-check synthetic store-domain, Living/source
+upstream integrity, Current schema/data integrity, and admission schema/data
+integrity from one read transaction. Exact admission provenance must not remain
+apparently valid on top of a damaged upstream history.
+
+A crash or process restart after durable commit but before/after receipt
+registration can leave durable audit provenance without a live receipt. That
+fails closed: durable audit presence alone never recreates operational
+authority.
+
 ## Shared boundary
 
 v0.1 refuses to infer Shared authority from:
