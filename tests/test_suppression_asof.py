@@ -30,6 +30,10 @@ from home_memory_core.living_continuity import (
 )
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
+from home_memory_core.suppression_asof import (
+    SuppressionAsOfStatus,
+    SuppressionAsOfStore,
+)
 from home_memory_core.storage import (
     SOURCE_SUPPRESSION_TIMING_TABLE,
     SUPPRESSION_SCHEMA_MARKER_TABLE,
@@ -78,6 +82,7 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
         self.current.initialize()
         self.present = CurrentPresentUseStore(self.db)
         self.history = HistoricalCurrentUseStore(self.db)
+        self.source_history = SuppressionAsOfStore(self.db)
         self.t0 = datetime(2026, 1, 1, 9, tzinfo=UTC)
 
     def tearDown(self) -> None:
@@ -145,6 +150,83 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
                 effective_at=effective_at,
                 recorded_at=recorded_at,
             )
+        )
+
+    def test_source_and_current_historical_views_share_one_timed_cut(self) -> None:
+        binding = self.binding("source-shared-cut")
+        record = self.state("state-source-shared-cut", binding)
+        self.current.add_state_record(record=record, source_bindings=(binding,))
+        stop_time = self.t0 + timedelta(hours=2)
+        self.timed_suppress(
+            binding,
+            suppression_id="stop-source-shared-cut",
+            effective_at=stop_time,
+            recorded_at=stop_time,
+        )
+
+        source_before = self.source_history.source_decision(
+            source_id=binding.evidence.source_id,
+            as_of=stop_time - timedelta(microseconds=1),
+        )
+        current_before = self.history.state_decision(
+            state_id=record.state_id,
+            as_of=stop_time - timedelta(microseconds=1),
+        )
+        source_at = self.source_history.source_decision(
+            source_id=binding.evidence.source_id,
+            as_of=stop_time,
+        )
+        current_at = self.history.state_decision(
+            state_id=record.state_id,
+            as_of=stop_time,
+        )
+
+        self.assertEqual(
+            source_before.status,
+            SuppressionAsOfStatus.NOT_SUPPRESSED_AS_OF,
+        )
+        self.assertEqual(
+            current_before.status,
+            HistoricalCurrentUseStatus.NOT_SUPPRESSED_AS_OF,
+        )
+        self.assertEqual(
+            source_at.status,
+            SuppressionAsOfStatus.SUPPRESSED_AS_OF,
+        )
+        self.assertEqual(
+            current_at.status,
+            HistoricalCurrentUseStatus.SUPPRESSED_AS_OF,
+        )
+
+    def test_source_and_current_legacy_views_both_report_timing_unknown(self) -> None:
+        binding = self.binding("source-legacy")
+        record = self.state("state-source-legacy", binding)
+        self.current.add_state_record(record=record, source_bindings=(binding,))
+        self.memory.suppress_source(
+            create_suppression_record(
+                suppression_id="stop-source-legacy",
+                source_id=binding.evidence.source_id,
+                requested_by="legacy-test",
+                reason="legacy timing absent",
+            )
+        )
+
+        source_decision = self.source_history.source_decision(
+            source_id=binding.evidence.source_id,
+            as_of=self.t0 + timedelta(days=1),
+        )
+        current_decision = self.history.state_decision(
+            state_id=record.state_id,
+            as_of=self.t0 + timedelta(days=1),
+        )
+
+        self.assertEqual(
+            source_decision.status,
+            SuppressionAsOfStatus.TIMING_UNKNOWN,
+        )
+        self.assertEqual(
+            current_decision.status,
+            HistoricalCurrentUseStatus.TIMING_UNKNOWN,
         )
 
     def test_timed_suppression_changes_only_views_at_or_after_record_time(self) -> None:
