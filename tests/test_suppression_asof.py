@@ -42,6 +42,7 @@ from home_memory_core.storage import (
 )
 from home_memory_core.suppression import (
     SuppressionLedgerIntegrityError,
+    create_suppression_record,
     create_timed_suppression_record,
 )
 
@@ -609,6 +610,30 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
             as_of=stop_plus8,
         )
         self.assertEqual(utc_decision, plus8_decision)
+
+    def test_supported_writer_rejects_new_untimed_suppression(self) -> None:
+        binding = self.binding("untimed-write")
+        untimed = create_suppression_record(
+            suppression_id="stop-untimed-write",
+            source_id=binding.evidence.source_id,
+            requested_by="asof-test",
+            reason="new writes must not manufacture timing unknown",
+        )
+
+        with self.assertRaises(ValueError):
+            self.memory.suppress_source(untimed)
+
+        check = sqlite3.connect(self.db)
+        try:
+            count = check.execute(
+                """
+                SELECT count(*) FROM source_suppressions
+                WHERE suppression_id='stop-untimed-write'
+                """
+            ).fetchone()[0]
+        finally:
+            check.close()
+        self.assertEqual(count, 0)
 
     def test_timed_suppression_round_trip_preserves_exact_temporal_record(self) -> None:
         binding = self.binding("roundtrip")
