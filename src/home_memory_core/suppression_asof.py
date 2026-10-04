@@ -141,10 +141,11 @@ def _source_decision_in_connection(
         f"""
         SELECT
             suppressions.suppression_id,
+            timing.timing_status,
             timing.effective_instant_us,
             timing.recorded_instant_us
         FROM source_suppressions AS suppressions
-        LEFT JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+        JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
           ON timing.suppression_id=suppressions.suppression_id
         WHERE suppressions.source_id=?
         """,
@@ -162,9 +163,10 @@ def _source_decision_in_connection(
         )
 
     suppression_id = row["suppression_id"]
+    timing_status = row["timing_status"]
     effective_us = row["effective_instant_us"]
     recorded_us = row["recorded_instant_us"]
-    if effective_us is None and recorded_us is None:
+    if timing_status == "timing_unknown":
         return SuppressionAsOfDecision(
             source_id=source_id,
             as_of_instant_us=as_of_us,
@@ -173,9 +175,13 @@ def _source_decision_in_connection(
             effective_instant_us=None,
             recorded_instant_us=None,
         )
+    if timing_status != "timed":
+        raise SuppressionAsOfError(
+            "suppression timing status is invalid"
+        )
     if not isinstance(effective_us, int) or not isinstance(recorded_us, int):
         raise SuppressionAsOfError(
-            "suppression timing sidecar is partially missing"
+            "timed suppression is missing exact timing"
         )
 
     if recorded_us <= as_of_us and effective_us <= as_of_us:
