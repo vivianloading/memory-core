@@ -30,7 +30,7 @@ The admitted write holds these boundaries in this order:
 
 1. acquire the Current SQLite `BEGIN IMMEDIATE` write transaction;
 2. audit existing Current and admission persistence;
-3. hold and revalidate the exact Room grant for the target
+3. hold the host lease and revalidate the exact Room grant for the target
    session/Episode/PerspectiveInstance/Room/scope;
 4. append the Current history effect;
 5. append the exact admission audit binding in the same transaction;
@@ -41,7 +41,9 @@ The admitted write holds these boundaries in this order:
 The SQLite write transaction prevents Room route corrections from interleaving
 with the effect. Holding Room authority prevents process-local grant
 suspension/session revocation from interleaving after the grant check but before
-commit.
+commit. The Room authority hold also keeps the exact host lease active until the
+effect has committed or unwound, so host shutdown/release cannot remove that
+trust root between authorization and commit.
 
 ## No post-hoc grandfathering
 
