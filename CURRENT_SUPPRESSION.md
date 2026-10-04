@@ -273,6 +273,48 @@ preflight and final acceptance.
 The #35 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #36 — wildcard syntax is not a trust boundary
+
+Independent review #36 returned **FAIL / NO-GO** on exact head
+`e16d19df8134d5798615fc88665b4c67c5624dd4`.
+
+The unmarked-store classifier intended to ignore SQLite's internal tables with:
+
+`name NOT LIKE 'sqlite_%'`
+
+But SQLite `LIKE` treats `_` as a single-character wildcard. Ordinary user
+tables such as `sqliteXpayload` and `sqliteApayload` were therefore hidden
+from classification even though they do not begin with the literal internal
+prefix `sqlite_`.
+
+That allowed an unmarked database containing an unknown user table to appear
+empty/recognized and be adopted as a synthetic HOME store.
+
+The remediation centralizes user-table enumeration in one helper and uses:
+
+`name NOT GLOB 'sqlite_*'`
+
+Here `_` is literal and `*` is the intended suffix wildcard. Both synthetic
+legacy classification and domain-marker creation now share this exact rule.
+
+Regression coverage proves that user tables whose names merely match the old
+LIKE pattern are visible and rejected, while SQLite's actual
+`sqlite_sequence` internal table remains ignored.
+
+The broader lesson is:
+
+> **Pattern syntax is part of the trust model. A predicate that is only
+> approximately literal is not safe enough for admission or authority
+> classification.**
+
+This defect pre-dated Slice 3A and was not introduced by the initializer
+transaction remediation. It still blocks the current review target because
+domain classification is a prerequisite of the supported initialization
+boundary.
+
+The #36 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
