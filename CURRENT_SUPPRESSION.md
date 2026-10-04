@@ -357,6 +357,45 @@ The broader rule is:
 The #41 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #42 — trust checks and derived effects need one database reality
+
+Independent re-review #42 returned **FAIL / NO-GO** on exact head
+`68ff15cb2b026aaf3a318ca26b2c0603a19c6a5b`.
+
+Issue #41 had made the shared source present-use lookup audit the suppression
+ledger before treating a missing suppression row as permission. #42 found the
+transactional version of the same rule: for a derived write,
+**audit → permission lookup → effect commit** cannot be three moments that may
+observe different database states.
+
+The failing path was `MemoryStore.add_interpretation()`. It could complete a
+healthy ledger audit without an active SQLite transaction, then observe a
+later damaged ledger from which the stop row had disappeared, and finally
+commit a new interpretation from evidence that should still have been blocked.
+
+The remediation closes the class rather than only the exact call site:
+
+- `add_interpretation()` starts `BEGIN IMMEDIATE` before suppression trust,
+  evidence validation and permission lookup, and keeps that transaction
+  through the derived effect commit;
+- `add_supersession()` uses the same write-transaction rule because revision
+  is another suppression-sensitive derived effect;
+- suppression-backed present-use reads such as interpretation and
+  supersession usability use explicit read snapshots so audit and permission
+  inputs come from one coherent database reality;
+- regression coverage injects a second local writer at the suppression decision
+  point and requires the derived writer to already hold the SQLite write
+  boundary. The competing ledger damage must fail rather than interleave.
+
+This preserves the broader rule:
+
+> **A trustworthy permission input is not enough if the effect can be committed
+> against a different database reality. Trust, decision and effect must share
+> the transaction boundary appropriate to that operation.**
+
+The #42 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
