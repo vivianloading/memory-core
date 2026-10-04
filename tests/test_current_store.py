@@ -14,7 +14,12 @@ from home_memory_core.current_store import (
     CurrentStoreConflictError,
     CurrentStoreIntegrityError,
 )
-from home_memory_core.current_store_schema import CURRENT_STATE_TABLE
+from home_memory_core.current_store_schema import (
+    CURRENT_END_EVIDENCE_TABLE,
+    CURRENT_END_TABLE,
+    CURRENT_STATE_EVIDENCE_TABLE,
+    CURRENT_STATE_TABLE,
+)
 from home_memory_core.current_view import (
     CurrentNamespace,
     CurrentStanding,
@@ -27,7 +32,7 @@ from home_memory_core.current_view import (
     ValidityRule,
     resolve_current_state,
 )
-from home_memory_core.evidence import EvidenceRef, create_evidence_ref
+from home_memory_core.evidence import EvidenceRef, create_evidence_ref, read_evidence
 from home_memory_core.living_continuity import (
     EpisodeRecord,
     RoomAttachmentEvent,
@@ -296,6 +301,275 @@ class CurrentStoreTests(unittest.TestCase):
                 connection.rollback()
         finally:
             connection.close()
+
+    def test_current_history_tables_have_no_hidden_rowid_replace_channel(self) -> None:
+        record = self.room_state("rowid-state")
+        binding = self.binding(record.source_refs[0])
+        self.store.add_state_record(record=record, source_bindings=(binding,))
+        event = CurrentStateEndEvent(
+            end_event_id="rowid-end",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(hours=1),
+            recorded_at=self.t0 + timedelta(hours=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=("rowid-end-ref",),
+        )
+        self.store.add_end_event(
+            event=event,
+            source_bindings=(self.binding("rowid-end-ref"),),
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("PRAGMA recursive_triggers=OFF")
+            for table in (
+                CURRENT_STATE_TABLE,
+                CURRENT_STATE_EVIDENCE_TABLE,
+                CURRENT_END_TABLE,
+                CURRENT_END_EVIDENCE_TABLE,
+            ):
+                with self.assertRaises(sqlite3.DatabaseError):
+                    connection.execute(f"SELECT rowid FROM {table}").fetchone()
+        finally:
+            connection.close()
+
+        self.assertEqual(
+            self.store.get_state_for_audit(record.state_id).record.state_id,
+            record.state_id,
+        )
+        self.assertEqual(
+            self.store.get_end_event_for_audit(event.end_event_id).event.end_event_id,
+            event.end_event_id,
+        )
+
+    def test_committed_evidence_set_cannot_grow_after_parent_commit(self) -> None:
+        record = self.room_state("sealed-state", source_refs=("sealed-ref",))
+        binding = self.binding("sealed-ref")
+        self.store.add_state_record(record=record, source_bindings=(binding,))
+
+        event = CurrentStateEndEvent(
+            end_event_id="sealed-end",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(hours=1),
+            recorded_at=self.t0 + timedelta(hours=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=("sealed-end-ref",),
+        )
+        end_binding = self.binding("sealed-end-ref")
+        self.store.add_end_event(event=event, source_bindings=(end_binding,))
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
+                        state_id,position,source_ref,source_id,
+                        source_sha256,start_char,end_char
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (
+                        record.state_id, 1, "extra-ref",
+                        binding.evidence.source_id,
+                        binding.evidence.source_sha256,
+                        binding.evidence.start_char,
+                        binding.evidence.end_char,
+                    ),
+                )
+            connection.rollback()
+
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CURRENT_END_EVIDENCE_TABLE} (
+                        end_event_id,position,source_ref,source_id,
+                        source_sha256,start_char,end_char
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (
+                        event.end_event_id, 1, "extra-end-ref",
+                        end_binding.evidence.source_id,
+                        end_binding.evidence.source_sha256,
+                        end_binding.evidence.start_char,
+                        end_binding.evidence.end_char,
+                    ),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+        self.assertEqual(
+            self.store.get_state_for_audit(record.state_id).record.source_refs,
+            ("sealed-ref",),
+        )
+        self.assertEqual(
+            self.store.get_end_event_for_audit(event.end_event_id).event.source_refs,
+            ("sealed-end-ref",),
+        )
+
+    def test_fractional_evidence_coordinates_fail_at_current_boundary(self) -> None:
+        source = create_source_record(
+            source_id="src-fractional",
+            content="abcd",
+            authored_by="synthetic-test",
+            scope="room-r",
+        )
+        self.memory.add_source(source)
+        fractional = EvidenceRef(
+            source_id=source.source_id,
+            source_sha256=source.content_sha256,
+            start_char=0.5,
+            end_char=1.5,
+        )
+        with self.assertRaises(CurrentStoreIntegrityError):
+            CurrentSourceBinding("fractional", fractional)
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            record = self.room_state("fractional-raw")
+            binding = self.binding(record.source_refs[0])
+            self.store.add_state_record(record=record, source_bindings=(binding,))
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
+                        state_id,position,source_ref,source_id,
+                        source_sha256,start_char,end_char
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (
+                        record.state_id, 1, "fractional-raw-extra",
+                        source.source_id, source.content_sha256, 0.5, 1.5,
+                    ),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+    def test_state_kind_is_stable_per_key_but_same_kind_heads_can_conflict(self) -> None:
+        first = self.room_state("kind-a")
+        self.store.add_state_record(
+            record=first,
+            source_bindings=(self.binding(first.source_refs[0]),),
+        )
+
+        changed_kind = self.room_state(
+            "kind-b",
+            state_kind=CurrentStateKind.PREFERENCE,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+        )
+        with self.assertRaises(CurrentStoreConflictError):
+            self.store.add_state_record(
+                record=changed_kind,
+                source_bindings=(self.binding(changed_kind.source_refs[0]),),
+            )
+
+        same_kind = self.room_state("kind-c")
+        self.store.add_state_record(
+            record=same_kind,
+            source_bindings=(self.binding(same_kind.source_refs[0]),),
+        )
+        persisted = self.store.list_states_for_audit()
+        resolution = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-r",
+            key=first.key,
+            records=tuple(item.record for item in persisted),
+            as_of=self.t0,
+        )
+        self.assertEqual(resolution.standing, CurrentStanding.CONFLICTING)
+
+    def test_nul_and_unicode_source_span_uses_python_code_point_domain(self) -> None:
+        source = create_source_record(
+            source_id="src-nul-unicode",
+            content="A\x00😀Z",
+            authored_by="synthetic-test",
+            scope="room-r",
+        )
+        self.memory.add_source(source)
+        evidence = create_evidence_ref(
+            source=source,
+            start_char=2,
+            end_char=3,
+        )
+        binding = CurrentSourceBinding("nul-unicode", evidence)
+        record = self.room_state(
+            "nul-unicode",
+            source_refs=("nul-unicode",),
+        )
+        self.store.add_state_record(record=record, source_bindings=(binding,))
+        audited = self.store.get_state_for_audit(record.state_id)
+        self.assertEqual(
+            read_evidence(source=source, evidence=audited.source_bindings[0].evidence),
+            "😀",
+        )
+
+    def test_orphan_evidence_is_blocked_without_foreign_keys_and_detected_by_audit(self) -> None:
+        record = self.room_state("orphan-parent")
+        binding = self.binding(record.source_refs[0])
+        self.store.add_state_record(record=record, source_bindings=(binding,))
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
+                        state_id,position,source_ref,source_id,
+                        source_sha256,start_char,end_char
+                    ) VALUES ('absent',0,'orphan-ref',?,?,?,?,?)
+                    """,
+                    (
+                        binding.evidence.source_id,
+                        binding.evidence.source_sha256,
+                        binding.evidence.start_char,
+                        binding.evidence.end_char,
+                    ),
+                )
+            connection.rollback()
+
+            trigger_sql = connection.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type='trigger'
+                  AND name='current_state_evidence_parent_exists'
+                """
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER current_state_evidence_parent_exists")
+            connection.execute(
+                f"""
+                INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
+                    state_id,position,source_ref,source_id,
+                    source_sha256,start_char,end_char
+                ) VALUES ('absent',0,'orphan-ref',?,?,?,?,?)
+                """,
+                (
+                    binding.evidence.source_id,
+                    binding.evidence.source_sha256,
+                    binding.evidence.start_char,
+                    binding.evidence.end_char,
+                ),
+            )
+            connection.execute(trigger_sql)
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.get_state_for_audit(record.state_id)
 
     def test_same_name_empty_trigger_is_detected_not_trusted(self) -> None:
         connection = sqlite3.connect(self.db)
