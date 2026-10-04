@@ -1251,7 +1251,7 @@ class MemoryStore:
     def get_suppressions(
         self,
     ) -> tuple[SuppressionRecord, ...]:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             return self._get_suppressions_from_connection(
                 connection=connection,
             )
@@ -1354,7 +1354,7 @@ class MemoryStore:
         self,
         interpretation_id: str,
     ) -> InterpretationRecord:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             interpretation = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=interpretation_id,
@@ -1388,7 +1388,7 @@ class MemoryStore:
         self,
         interpretation_id: str,
     ) -> bool:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             interpretation = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=interpretation_id,
@@ -1733,7 +1733,7 @@ class MemoryStore:
         previous_interpretation_id: str,
         new_interpretation_id: str,
     ) -> bool:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             supersession = self._get_supersession_from_connection(
                 connection=connection,
                 previous_interpretation_id=previous_interpretation_id,
