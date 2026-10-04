@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import sqlite3
 
 from home_memory_core.current_store_schema import (
@@ -921,12 +922,44 @@ def _sealed_source_refs(
     return declared
 
 
+_CANONICAL_DATETIME = re.compile(
+    r"^(?P<wall>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?)"
+    r"(?P<sign>[+-])(?P<hours>\\d{2}):(?P<minutes>\\d{2})"
+    r"(?::(?P<seconds>\\d{2})(?:\\.(?P<microseconds>\\d{6}))?)?$"
+)
+
+
 def _dt(value: object) -> datetime:
     if not isinstance(value, str):
         raise CurrentStoreIntegrityError("Current datetime payload must be text")
-    result = datetime.fromisoformat(value)
-    if result.tzinfo is None or result.utcoffset() is None:
-        raise CurrentStoreIntegrityError("Current datetime payload is naive")
+    match = _CANONICAL_DATETIME.fullmatch(value)
+    if match is None:
+        raise CurrentStoreIntegrityError(
+            "Current datetime payload must use canonical datetime.isoformat encoding"
+        )
+    try:
+        wall = datetime.fromisoformat(match.group("wall"))
+        hours = int(match.group("hours"))
+        minutes = int(match.group("minutes"))
+        seconds = int(match.group("seconds") or "0")
+        microseconds = int(match.group("microseconds") or "0")
+        offset = timedelta(
+            hours=hours,
+            minutes=minutes,
+            seconds=seconds,
+            microseconds=microseconds,
+        )
+        if match.group("sign") == "-":
+            offset = -offset
+        result = wall.replace(tzinfo=timezone(offset))
+    except (ValueError, OverflowError) as error:
+        raise CurrentStoreIntegrityError(
+            "Current datetime payload is outside the supported aware datetime domain"
+        ) from error
+    if result.isoformat() != value:
+        raise CurrentStoreIntegrityError(
+            "Current datetime payload is not canonical for its represented instant"
+        )
     return result
 
 
