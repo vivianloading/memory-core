@@ -2482,10 +2482,11 @@ class MemoryStore:
                 suppressions.source_id,
                 suppressions.requested_by,
                 suppressions.reason,
+                timing.timing_status,
                 timing.effective_at_iso,
                 timing.recorded_at_iso
             FROM source_suppressions AS suppressions
-            LEFT JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+            JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
               ON timing.suppression_id=suppressions.suppression_id
             ORDER BY suppressions.suppression_id
             """
@@ -2493,16 +2494,20 @@ class MemoryStore:
 
         result: list[SuppressionRecord] = []
         for row in rows:
-            effective_at = (
-                None
-                if row["effective_at_iso"] is None
-                else suppression_datetime_from_iso(row["effective_at_iso"])
-            )
-            recorded_at = (
-                None
-                if row["recorded_at_iso"] is None
-                else suppression_datetime_from_iso(row["recorded_at_iso"])
-            )
+            if row["timing_status"] == "timing_unknown":
+                effective_at = None
+                recorded_at = None
+            elif row["timing_status"] == "timed":
+                effective_at = suppression_datetime_from_iso(
+                    row["effective_at_iso"]
+                )
+                recorded_at = suppression_datetime_from_iso(
+                    row["recorded_at_iso"]
+                )
+            else:
+                raise SuppressionLedgerIntegrityError(
+                    "suppression timing status is invalid"
+                )
             result.append(
                 SuppressionRecord(
                     suppression_id=row["suppression_id"],
