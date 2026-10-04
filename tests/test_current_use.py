@@ -621,6 +621,30 @@ class CurrentPresentUseTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.current.get_state_for_audit(new_record.state_id)
 
+    def test_initialize_does_not_silently_repair_upgraded_ledger_guard_drift(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TRIGGER source_suppressions_no_delete")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
+        check = sqlite3.connect(self.db)
+        try:
+            restored = check.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='trigger'
+                  AND name='source_suppressions_no_delete'
+                """
+            ).fetchone()
+        finally:
+            check.close()
+        self.assertIsNone(restored)
+
     def test_present_use_fails_closed_if_suppression_guard_is_removed(self) -> None:
         record = self.state("guard-drift")
         binding = self.binding(record.source_refs[0])
