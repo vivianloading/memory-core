@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 import tempfile
@@ -140,6 +141,72 @@ class CurrentStoreTests(unittest.TestCase):
             self.store.get_state_for_audit(record.state_id).record.stale_after,
             timedelta.max,
         )
+
+    def test_audit_rejects_noncanonical_stale_duration_scalar(self) -> None:
+        record = self.room_state(
+            "duration-template",
+            key="project.home.preference",
+            state_kind=CurrentStateKind.PREFERENCE,
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(microseconds=2),
+        )
+        binding = self.binding(record.source_refs[0])
+        self.store.add_state_record(record=record, source_bindings=(binding,))
+
+        connection = sqlite3.connect(self.db)
+        connection.row_factory = sqlite3.Row
+        try:
+            source = connection.execute(
+                f"SELECT * FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+                (record.state_id,),
+            ).fetchone()
+            payload = json.loads(source["payload_json"])
+            payload["stale_after_us"] = 1.9
+            connection.execute(
+                f"""
+                INSERT INTO {CURRENT_STATE_TABLE} (
+                    state_id,namespace,owner_id,key,state_kind,recorded_instant_us,
+                    semantic_change_authority,episode_id,perspective_instance_id,
+                    room_attachment_event_id,supersedes_state_id,
+                    source_ref_count,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "duration-malformed",
+                    source["namespace"],
+                    source["owner_id"],
+                    "project.home.preference.malformed",
+                    source["state_kind"],
+                    source["recorded_instant_us"],
+                    source["semantic_change_authority"],
+                    source["episode_id"],
+                    source["perspective_instance_id"],
+                    source["room_attachment_event_id"],
+                    None,
+                    source["source_ref_count"],
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            connection.execute(
+                f"""
+                INSERT INTO {CURRENT_STATE_EVIDENCE_TABLE} (
+                    state_id,position,source_ref,source_id,
+                    source_sha256,start_char,end_char
+                )
+                SELECT ?,position,source_ref,source_id,
+                       source_sha256,start_char,end_char
+                FROM {CURRENT_STATE_EVIDENCE_TABLE}
+                WHERE state_id=?
+                """,
+                ("duration-malformed", record.state_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.list_states_for_audit()
 
     def test_calendar_edge_offsets_round_trip_without_utc_materialization(self) -> None:
         cases = (
@@ -795,6 +862,39 @@ class CurrentStoreTests(unittest.TestCase):
             connection.execute(
                 f"""
                 CREATE UNIQUE INDEX current_hidden_single_head
+                ON {CURRENT_STATE_TABLE}(namespace, owner_id, key)
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.list_states_for_audit()
+
+    def test_sqliteX_named_user_objects_are_not_hidden_from_schema_audit(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                f"""
+                CREATE TRIGGER sqliteXhidden
+                AFTER INSERT ON {CURRENT_STATE_TABLE}
+                BEGIN SELECT 1; END
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.list_states_for_audit()
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TRIGGER sqliteXhidden")
+            connection.execute(
+                f"""
+                CREATE UNIQUE INDEX sqliteXsingle_head
                 ON {CURRENT_STATE_TABLE}(namespace, owner_id, key)
                 """
             )
