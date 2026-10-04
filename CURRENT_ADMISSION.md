@@ -157,6 +157,48 @@ Lesson:
 The #25 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #26 — leased database binding
+
+Independent review #26 returned **FAIL / NO-GO** on exact head
+`18881898853e78e498e259ff85d57d577b5c3c43`.
+
+Fresh discovery found that Current admission verified same-database binding only
+when the authority was opened, then retained caller-owned `CurrentStore` and
+`CurrentAdmissionStore` objects as later connection targets. Because their
+`db_path` configuration is mutable and may also be relative, the operational
+Current effect could drift away from the database protected by the Room
+authority's host lease.
+
+The independent proof demonstrated both:
+- explicit public `db_path` mutation from leased database A to unleased clone B;
+- unchanged relative `Path("home.db")` configuration whose meaning changed
+  only because process cwd moved from A's directory to B's directory.
+
+In both cases the Room grant still revalidated against A while the supported
+Current admission operation wrote effect + admission audit to B and minted a
+live receipt there.
+
+The remediation makes the host lease identity's canonical database path the
+operational trust root. A Current admission authority now:
+- records that exact canonical path when opened;
+- keeps caller-owned Current/admission stores only as binding evidence;
+- uses internally owned stores pinned to the canonical leased path for every
+  operational connection;
+- revalidates caller-store path resolution before each public admission or
+  live-receipt operation, so later configuration/cwd drift fails closed;
+- keeps internal connection targets pinned even if cwd changes after the check.
+
+This preserves the authority/effect rule:
+
+> **The authority that authorizes an effect and the database that receives the
+> effect must share one immutable trust root.**
+
+A route, grant, or lease attached to database A cannot authorize an effect in a
+structurally identical database B.
+
+The #26 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Deliberate non-claims
 
 This slice does not provide:
