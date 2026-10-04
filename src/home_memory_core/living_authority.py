@@ -1007,7 +1007,7 @@ class RoomParticipationAuthority:
         """
 
         with self._guard:
-            with self._lease.hold_active():
+            with self._lease._hold_active_for_authority():
                 self.require_grant(
                     grant=grant,
                     session_id=session_id,
