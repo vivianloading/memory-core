@@ -457,9 +457,14 @@ class CurrentPresentUseTests(unittest.TestCase):
                 "source_suppressions_no_delete",
             ):
                 connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            connection.execute(
+                "ALTER TABLE source_suppressions "
+                "RENAME TO source_suppressions_new_shape"
+            )
             connection.execute(
                 """
-                CREATE TABLE source_suppressions_legacy_build (
+                CREATE TABLE source_suppressions (
                     suppression_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL UNIQUE,
                     requested_by TEXT NOT NULL,
@@ -472,17 +477,14 @@ class CurrentPresentUseTests(unittest.TestCase):
             )
             connection.execute(
                 """
-                INSERT INTO source_suppressions_legacy_build (
+                INSERT INTO source_suppressions (
                     suppression_id,source_id,requested_by,reason
                 ) VALUES ('legacy-malformed', ?, '   ', 'reason')
                 """,
                 (source.source_id,),
             )
-            connection.execute("DROP TABLE source_suppressions")
-            connection.execute(
-                "ALTER TABLE source_suppressions_legacy_build "
-                "RENAME TO source_suppressions"
-            )
+            connection.execute("DROP TABLE source_suppressions_new_shape")
+            connection.execute("PRAGMA legacy_alter_table=OFF")
             connection.commit()
         finally:
             connection.close()
@@ -527,9 +529,14 @@ class CurrentPresentUseTests(unittest.TestCase):
                 "source_suppressions_no_delete",
             ):
                 connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            connection.execute(
+                "ALTER TABLE source_suppressions "
+                "RENAME TO source_suppressions_new_shape"
+            )
             connection.execute(
                 """
-                CREATE TABLE source_suppressions_legacy_build (
+                CREATE TABLE source_suppressions (
                     suppression_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL UNIQUE,
                     requested_by TEXT NOT NULL,
@@ -542,18 +549,15 @@ class CurrentPresentUseTests(unittest.TestCase):
             )
             connection.execute(
                 """
-                INSERT INTO source_suppressions_legacy_build (
+                INSERT INTO source_suppressions (
                     suppression_id,source_id,requested_by,reason
                 )
                 SELECT suppression_id,source_id,requested_by,reason
-                FROM source_suppressions
+                FROM source_suppressions_new_shape
                 """
             )
-            connection.execute("DROP TABLE source_suppressions")
-            connection.execute(
-                "ALTER TABLE source_suppressions_legacy_build "
-                "RENAME TO source_suppressions"
-            )
+            connection.execute("DROP TABLE source_suppressions_new_shape")
+            connection.execute("PRAGMA legacy_alter_table=OFF")
             connection.commit()
         finally:
             connection.close()
