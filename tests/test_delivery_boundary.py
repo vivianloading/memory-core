@@ -444,7 +444,7 @@ class RequestBoundDeliveryBoundaryTest(unittest.TestCase):
             "supersessions",
             "supersession_evidence",
         )
-        connection = self.store._connect()
+        connection = sqlite3.connect(self.store.db_path)
         try:
             return {
                 table: connection.execute(
