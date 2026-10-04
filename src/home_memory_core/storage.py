@@ -2366,27 +2366,46 @@ class MemoryStore:
         *,
         connection: sqlite3.Connection,
     ) -> tuple[SuppressionRecord, ...]:
+        assert_source_suppression_ledger(connection)
         rows = connection.execute(
-            """
+            f"""
             SELECT
-                suppression_id,
-                source_id,
-                requested_by,
-                reason
-            FROM source_suppressions
-            ORDER BY suppression_id
+                suppressions.suppression_id,
+                suppressions.source_id,
+                suppressions.requested_by,
+                suppressions.reason,
+                timing.effective_at_iso,
+                timing.recorded_at_iso
+            FROM source_suppressions AS suppressions
+            LEFT JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+              ON timing.suppression_id=suppressions.suppression_id
+            ORDER BY suppressions.suppression_id
             """
         ).fetchall()
 
-        return tuple(
-            SuppressionRecord(
-                suppression_id=row["suppression_id"],
-                source_id=row["source_id"],
-                requested_by=row["requested_by"],
-                reason=row["reason"],
+        result: list[SuppressionRecord] = []
+        for row in rows:
+            effective_at = (
+                None
+                if row["effective_at_iso"] is None
+                else suppression_datetime_from_iso(row["effective_at_iso"])
             )
-            for row in rows
-        )
+            recorded_at = (
+                None
+                if row["recorded_at_iso"] is None
+                else suppression_datetime_from_iso(row["recorded_at_iso"])
+            )
+            result.append(
+                SuppressionRecord(
+                    suppression_id=row["suppression_id"],
+                    source_id=row["source_id"],
+                    requested_by=row["requested_by"],
+                    reason=row["reason"],
+                    effective_at=effective_at,
+                    recorded_at=recorded_at,
+                )
+            )
+        return tuple(result)
 
     def _get_suppressed_source_ids_from_connection(
         self,
