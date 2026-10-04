@@ -54,12 +54,19 @@ class CurrentSuppressionBlock:
     source_ref: str
     source_id: str
     suppression_id: str
+    origin_effect_kind: CurrentUseEffectKind
+    origin_effect_id: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.origin_effect_kind, CurrentUseEffectKind):
+            raise CurrentPresentUseIntegrityError(
+                "origin_effect_kind must use CurrentUseEffectKind"
+            )
         for field_name, value in {
             "source_ref": self.source_ref,
             "source_id": self.source_id,
             "suppression_id": self.suppression_id,
+            "origin_effect_id": self.origin_effect_id,
         }.items():
             if not isinstance(value, str) or not value.strip():
                 raise CurrentPresentUseIntegrityError(
@@ -193,8 +200,13 @@ def _current_effect_use_decision(
     connection: sqlite3.Connection,
     effect_kind: CurrentUseEffectKind,
     effect_id: str,
+    state_memo: dict[str, CurrentPresentUseDecision] | None = None,
 ) -> CurrentPresentUseDecision:
-    """Derive one exact effect eligibility decision without mutating history."""
+    """Derive one exact effect eligibility decision without mutating history.
+
+    Suppression propagates forward through semantic dependency:
+    state -> superseding state descendants, and state -> targeting end events.
+    """
 
     if not isinstance(connection, sqlite3.Connection):
         raise TypeError("connection must be sqlite3.Connection")
@@ -203,22 +215,118 @@ def _current_effect_use_decision(
     if not isinstance(effect_id, str) or not effect_id.strip():
         raise ValueError("effect_id cannot be empty")
 
+    memo = state_memo if state_memo is not None else {}
     if effect_kind is CurrentUseEffectKind.STATE:
-        parent_table = CURRENT_STATE_TABLE
-        id_column = "state_id"
-        evidence_table = CURRENT_STATE_EVIDENCE_TABLE
-    else:
-        parent_table = CURRENT_END_TABLE
-        id_column = "end_event_id"
-        evidence_table = CURRENT_END_EVIDENCE_TABLE
+        return _state_use_decision(
+            connection=connection,
+            state_id=effect_id,
+            memo=memo,
+            visiting=set(),
+        )
+    return _end_event_use_decision(
+        connection=connection,
+        end_event_id=effect_id,
+        memo=memo,
+    )
 
-    exists = connection.execute(
-        f"SELECT 1 FROM {parent_table} WHERE {id_column}=?",
-        (effect_id,),
+
+def _state_use_decision(
+    *,
+    connection: sqlite3.Connection,
+    state_id: str,
+    memo: dict[str, CurrentPresentUseDecision],
+    visiting: set[str],
+) -> CurrentPresentUseDecision:
+    cached = memo.get(state_id)
+    if cached is not None:
+        return cached
+    if state_id in visiting:
+        raise CurrentPresentUseIntegrityError(
+            "Current suppression lineage contains a cycle"
+        )
+
+    row = connection.execute(
+        f"SELECT supersedes_state_id FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+        (state_id,),
     ).fetchone()
-    if exists is None:
-        raise KeyError(effect_id)
+    if row is None:
+        raise KeyError(state_id)
 
+    visiting.add(state_id)
+    try:
+        blocks = list(
+            _direct_suppression_blocks(
+                connection=connection,
+                evidence_table=CURRENT_STATE_EVIDENCE_TABLE,
+                id_column="state_id",
+                effect_id=state_id,
+                origin_effect_kind=CurrentUseEffectKind.STATE,
+            )
+        )
+        parent_id = row["supersedes_state_id"]
+        if parent_id is not None:
+            parent = _state_use_decision(
+                connection=connection,
+                state_id=parent_id,
+                memo=memo,
+                visiting=visiting,
+            )
+            blocks.extend(parent.blocks)
+        decision = _decision(
+            effect_kind=CurrentUseEffectKind.STATE,
+            effect_id=state_id,
+            blocks=_dedupe_blocks(tuple(blocks)),
+        )
+        memo[state_id] = decision
+        return decision
+    finally:
+        visiting.remove(state_id)
+
+
+def _end_event_use_decision(
+    *,
+    connection: sqlite3.Connection,
+    end_event_id: str,
+    memo: dict[str, CurrentPresentUseDecision],
+) -> CurrentPresentUseDecision:
+    row = connection.execute(
+        f"SELECT state_id FROM {CURRENT_END_TABLE} WHERE end_event_id=?",
+        (end_event_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(end_event_id)
+
+    blocks = list(
+        _direct_suppression_blocks(
+            connection=connection,
+            evidence_table=CURRENT_END_EVIDENCE_TABLE,
+            id_column="end_event_id",
+            effect_id=end_event_id,
+            origin_effect_kind=CurrentUseEffectKind.END_EVENT,
+        )
+    )
+    target = _state_use_decision(
+        connection=connection,
+        state_id=row["state_id"],
+        memo=memo,
+        visiting=set(),
+    )
+    blocks.extend(target.blocks)
+    return _decision(
+        effect_kind=CurrentUseEffectKind.END_EVENT,
+        effect_id=end_event_id,
+        blocks=_dedupe_blocks(tuple(blocks)),
+    )
+
+
+def _direct_suppression_blocks(
+    *,
+    connection: sqlite3.Connection,
+    evidence_table: str,
+    id_column: str,
+    effect_id: str,
+    origin_effect_kind: CurrentUseEffectKind,
+) -> tuple[CurrentSuppressionBlock, ...]:
     rows = connection.execute(
         f"""
         SELECT
@@ -237,16 +345,45 @@ def _current_effect_use_decision(
         raise CurrentPresentUseIntegrityError(
             "Current effect has no exact evidence bindings"
         )
-
-    blocks = tuple(
+    return tuple(
         CurrentSuppressionBlock(
             source_ref=row["source_ref"],
             source_id=row["source_id"],
             suppression_id=row["suppression_id"],
+            origin_effect_kind=origin_effect_kind,
+            origin_effect_id=effect_id,
         )
         for row in rows
         if row["suppression_id"] is not None
     )
+
+
+def _dedupe_blocks(
+    blocks: tuple[CurrentSuppressionBlock, ...],
+) -> tuple[CurrentSuppressionBlock, ...]:
+    seen: set[tuple[str, str, str, CurrentUseEffectKind, str]] = set()
+    result: list[CurrentSuppressionBlock] = []
+    for block in blocks:
+        key = (
+            block.source_ref,
+            block.source_id,
+            block.suppression_id,
+            block.origin_effect_kind,
+            block.origin_effect_id,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(block)
+    return tuple(result)
+
+
+def _decision(
+    *,
+    effect_kind: CurrentUseEffectKind,
+    effect_id: str,
+    blocks: tuple[CurrentSuppressionBlock, ...],
+) -> CurrentPresentUseDecision:
     return CurrentPresentUseDecision(
         effect_kind=effect_kind,
         effect_id=effect_id,
