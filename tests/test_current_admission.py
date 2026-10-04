@@ -28,6 +28,7 @@ from home_memory_core.current_admission import (
 from home_memory_core.current_store import (
     CurrentSourceBinding,
     CurrentStore,
+    CurrentStoreIntegrityError,
 )
 from home_memory_core.current_view import (
     CurrentNamespace,
@@ -454,6 +455,32 @@ class CurrentAdmissionTests(unittest.TestCase):
         with self.assertRaises(CurrentAdmissionAuthorizationError):
             self.admission.require_live_receipt(
                 receipt=forged,
+                effect_kind=CurrentAdmissionEffectKind.STATE,
+                effect_id=record.state_id,
+            )
+
+    def test_live_receipt_rejects_corrupted_source_provenance(self) -> None:
+        record = self.room_state("state-a")
+        binding = self.binding(record.source_refs[0])
+        receipt = self.admission.admit_room_state(
+            record=record,
+            source_bindings=(binding,),
+            grant=self.grant(),
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                "UPDATE sources SET content=? WHERE source_id=?",
+                ("tampered evidence", binding.evidence.source_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.admission.require_live_receipt(
+                receipt=receipt,
                 effect_kind=CurrentAdmissionEffectKind.STATE,
                 effect_id=record.state_id,
             )
