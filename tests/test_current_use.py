@@ -407,6 +407,122 @@ class CurrentPresentUseTests(unittest.TestCase):
             ("child", "parent"),
         )
 
+    def test_suppression_ledger_has_no_rowid_replace_channel(self) -> None:
+        record = self.state("no-rowid-stop")
+        binding = self.binding(record.source_refs[0])
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+        self.suppress(binding, "stop-no-rowid")
+
+        connection = sqlite3.connect(self.db)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    "SELECT rowid FROM source_suppressions"
+                ).fetchall()
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO source_suppressions (
+                        rowid,suppression_id,source_id,requested_by,reason
+                    ) VALUES (1,'replacement','other','other','replace')
+                    """
+                )
+        finally:
+            connection.close()
+
+        decision = self.use.state_decision(record.state_id)
+        self.assertEqual(
+            decision.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(decision.blocks[0].suppression_id, "stop-no-rowid")
+
+    def test_known_legacy_suppression_table_migrates_without_resurrection(self) -> None:
+        record = self.state("legacy-stop")
+        binding = self.binding(record.source_refs[0])
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+        self.suppress(binding, "stop-legacy")
+
+        connection = sqlite3.connect(self.db)
+        try:
+            for trigger in (
+                "source_suppressions_no_replace",
+                "source_suppressions_no_update",
+                "source_suppressions_no_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute(
+                "ALTER TABLE source_suppressions "
+                "RENAME TO source_suppressions_new_shape"
+            )
+            connection.execute(
+                """
+                CREATE TABLE source_suppressions (
+                    suppression_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL UNIQUE,
+                    requested_by TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    FOREIGN KEY (source_id)
+                        REFERENCES sources(source_id)
+                        ON DELETE RESTRICT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO source_suppressions (
+                    suppression_id,source_id,requested_by,reason
+                )
+                SELECT suppression_id,source_id,requested_by,reason
+                FROM source_suppressions_new_shape
+                """
+            )
+            connection.execute("DROP TABLE source_suppressions_new_shape")
+            connection.commit()
+        finally:
+            connection.close()
+
+        MemoryStore(self.db).initialize()
+
+        migrated = sqlite3.connect(self.db)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                migrated.execute(
+                    "SELECT rowid FROM source_suppressions"
+                ).fetchall()
+            row = migrated.execute(
+                """
+                SELECT suppression_id,source_id,requested_by,reason
+                FROM source_suppressions
+                """
+            ).fetchone()
+        finally:
+            migrated.close()
+
+        self.assertEqual(
+            row,
+            (
+                "stop-legacy",
+                binding.evidence.source_id,
+                "synthetic-test",
+                "stop present use",
+            ),
+        )
+        self.assertEqual(
+            self.use.state_decision(record.state_id).status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(
+            self.current.get_state_for_audit(record.state_id).record,
+            record,
+        )
+
     def test_source_suppression_ledger_blocks_update_delete_and_replace(self) -> None:
         record = self.state("immutable-stop")
         binding = self.binding(record.source_refs[0])
