@@ -5,6 +5,8 @@ adversarial tests construct capabilities that production request data cannot
 mint through supported runtime APIs.
 """
 
+from datetime import datetime, timezone
+
 from home_memory_core import operation_identity as identity
 from home_memory_core import real_ingress
 from home_memory_core import real_discovery
@@ -16,6 +18,38 @@ from home_memory_core import real_source_origin
 from home_memory_core import living_authority
 from home_memory_core import source_origin
 from home_memory_core import store_domain
+from home_memory_core.suppression import (
+    SuppressionRecord,
+    create_timed_suppression_record,
+)
+
+
+
+
+_TEST_SUPPRESSION_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def create_test_suppression_record(
+    *,
+    suppression_id: str,
+    source_id: str,
+    requested_by: str,
+    reason: str,
+) -> SuppressionRecord:
+    """Create ordinary synthetic stop-use with explicit deterministic timing.
+
+    Tests that need pre-3B1 legacy/unknown timing must construct an explicit
+    migration fixture instead of using this helper.
+    """
+
+    return create_timed_suppression_record(
+        suppression_id=suppression_id,
+        source_id=source_id,
+        requested_by=requested_by,
+        reason=reason,
+        effective_at=_TEST_SUPPRESSION_TIME,
+        recorded_at=_TEST_SUPPRESSION_TIME,
+    )
 
 
 def trusted_test_principal_issuer(
