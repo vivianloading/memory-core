@@ -315,6 +315,48 @@ boundary.
 The #36 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #41 — present-use must establish suppression trust before permission
+
+Independent re-review #41 returned **FAIL / NO-GO** on exact head
+`d866684b1e59df26cf4b4589020f823f3af84113`.
+
+The review confirmed the Slice 3B1 timing-index remediation, then found an
+older Slice 3A boundary defect: `MemoryStore.get_source()` and
+`MemoryStore.is_source_usable()` read the surviving
+`source_suppressions` rows directly without first establishing that the
+suppression ledger was still trustworthy.
+
+That meant a visibly damaged synthetic store could lose a stop-use row while
+also retaining evidence of damage such as a missing delete guard and orphaned
+timing row. Audited paths correctly rejected the same store, but the two
+source-use APIs interpreted the missing row as permission and could revive a
+previously stopped source.
+
+The remediation makes the trust dependency explicit:
+
+- the shared present-use suppression-id lookup now audits the full suppression
+  ledger before deriving permission from its rows;
+- source-use reads run inside one explicit read snapshot, so source evidence,
+  ledger trust and the resulting use decision belong to one database reality;
+- lineage resolution input also establishes suppression-ledger trust before
+  treating missing suppression joins as usable evidence;
+- audit-only source reads remain distinct and can still expose persisted source
+  history even when suppression integrity is damaged.
+
+Regression coverage preserves the exact #41 class: after a supported stop,
+remove the ledger delete guard and suppression row while leaving the damage
+detectable. Supported source-use and derived-use paths must raise
+`SuppressionLedgerIntegrityError`; they must not reinterpret corruption as
+permission.
+
+The broader rule is:
+
+> **Absence can authorize use only after the structure that gives absence
+> meaning has itself been trusted. Corruption is not permission.**
+
+The #41 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
