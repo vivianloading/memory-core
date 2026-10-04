@@ -111,7 +111,7 @@ class CurrentPresentUseStore:
     def state_decision(self, state_id: str) -> CurrentPresentUseDecision:
         connection = self._read_connection()
         try:
-            return current_effect_use_decision(
+            return _current_effect_use_decision(
                 connection=connection,
                 effect_kind=CurrentUseEffectKind.STATE,
                 effect_id=state_id,
@@ -122,7 +122,7 @@ class CurrentPresentUseStore:
     def end_event_decision(self, end_event_id: str) -> CurrentPresentUseDecision:
         connection = self._read_connection()
         try:
-            return current_effect_use_decision(
+            return _current_effect_use_decision(
                 connection=connection,
                 effect_kind=CurrentUseEffectKind.END_EVENT,
                 effect_id=end_event_id,
@@ -138,7 +138,7 @@ class CurrentPresentUseStore:
                 f"SELECT state_id FROM {CURRENT_STATE_TABLE} ORDER BY state_id"
             ).fetchall():
                 decisions.append(
-                    current_effect_use_decision(
+                    _current_effect_use_decision(
                         connection=connection,
                         effect_kind=CurrentUseEffectKind.STATE,
                         effect_id=row["state_id"],
@@ -148,7 +148,7 @@ class CurrentPresentUseStore:
                 f"SELECT end_event_id FROM {CURRENT_END_TABLE} ORDER BY end_event_id"
             ).fetchall():
                 decisions.append(
-                    current_effect_use_decision(
+                    _current_effect_use_decision(
                         connection=connection,
                         effect_kind=CurrentUseEffectKind.END_EVENT,
                         effect_id=row["end_event_id"],
@@ -178,7 +178,7 @@ def require_current_effect_usable(
     """Require present usability inside an already-established DB snapshot."""
 
     assert_source_suppression_ledger(connection)
-    decision = current_effect_use_decision(
+    decision = _current_effect_use_decision(
         connection=connection,
         effect_kind=effect_kind,
         effect_id=effect_id,
@@ -188,7 +188,7 @@ def require_current_effect_usable(
     return decision
 
 
-def current_effect_use_decision(
+def _current_effect_use_decision(
     *,
     connection: sqlite3.Connection,
     effect_kind: CurrentUseEffectKind,
