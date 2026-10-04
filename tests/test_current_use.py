@@ -302,6 +302,35 @@ class CurrentPresentUseTests(unittest.TestCase):
             finally:
                 read.close()
 
+    def test_present_use_rejects_rebuilt_suppression_table_without_constraints(self) -> None:
+        record = self.state("table-drift")
+        binding = self.binding(record.source_refs[0])
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("DROP TABLE source_suppressions")
+            connection.execute(
+                """
+                CREATE TABLE source_suppressions (
+                    suppression_id TEXT,
+                    source_id TEXT,
+                    requested_by TEXT,
+                    reason TEXT
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.use.state_decision(record.state_id)
+
     def test_present_use_fails_closed_if_suppression_guard_is_removed(self) -> None:
         record = self.state("guard-drift")
         binding = self.binding(record.source_refs[0])
