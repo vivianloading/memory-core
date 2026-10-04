@@ -719,6 +719,68 @@ class CurrentPresentUseTests(unittest.TestCase):
             check.close()
         self.assertIsNone(restored)
 
+    def test_initialize_rejects_missing_trusted_suppression_ledger_without_resurrection(self) -> None:
+        record = self.state("missing-ledger")
+        binding = self.binding(record.source_refs[0])
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+        self.suppress(binding, "stop-missing-ledger")
+        before = self.use.state_decision(record.state_id)
+        audit_before = self.current.get_state_for_audit(record.state_id)
+        self.assertEqual(
+            before.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TABLE source_suppressions")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(Exception):
+            self.use.state_decision(record.state_id)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
+        connection = sqlite3.connect(self.db)
+        try:
+            exists = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='source_suppressions'
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+
+        self.assertIsNone(exists)
+        self.assertEqual(
+            self.current.get_state_for_audit(record.state_id),
+            audit_before,
+        )
+
+    def test_fresh_memory_store_can_create_initial_suppression_ledger(self) -> None:
+        fresh_db = self.root / "fresh-bootstrap.db"
+        MemoryStore(fresh_db).initialize()
+
+        connection = sqlite3.connect(fresh_db)
+        try:
+            row = connection.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type='table' AND name='source_suppressions'
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+
+        self.assertIsNotNone(row)
+        self.assertIn("WITHOUT ROWID", row[0].upper())
+
     def test_present_use_fails_closed_if_suppression_guard_is_removed(self) -> None:
         record = self.state("guard-drift")
         binding = self.binding(record.source_refs[0])
