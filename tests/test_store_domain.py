@@ -307,87 +307,31 @@ class StoreDomainBoundaryTest(unittest.TestCase):
         db_path = self.root / "sqlite-internal-prefix.sqlite3"
         connection = sqlite3.connect(db_path)
         try:
-            # AUTOINCREMENT creates SQLite's internal sqlite_sequence table.
             connection.execute(
-                "CREATE TABLE sources ("
-                "source_id TEXT PRIMARY KEY,"
-                "content TEXT,"
-                "authored_by TEXT,"
-                "scope TEXT,"
-                "content_sha256 TEXT"
-                ")"
+                """
+                CREATE TABLE sources (
+                    source_id TEXT,
+                    content TEXT,
+                    authored_by TEXT,
+                    scope TEXT,
+                    content_sha256 TEXT
+                )
+                """
             )
             connection.execute(
-                "CREATE TABLE interpretations ("
-                "interpretation_id TEXT PRIMARY KEY,"
-                "text TEXT,"
-                "perspective_owner TEXT,"
-                "perspective_instance_id TEXT,"
-                "about_subject TEXT,"
-                "scope TEXT"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE interpretation_evidence ("
-                "interpretation_id TEXT,"
-                "position INTEGER,"
-                "source_id TEXT,"
-                "source_sha256 TEXT,"
-                "start_char INTEGER,"
-                "end_char INTEGER"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE interpretation_threads ("
-                "thread_id TEXT PRIMARY KEY,"
-                "question TEXT,"
-                "perspective_owner TEXT,"
-                "perspective_instance_id TEXT,"
-                "about_subject TEXT,"
-                "scope TEXT"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE interpretation_thread_memberships ("
-                "admission_id TEXT PRIMARY KEY,"
-                "interpretation_id TEXT,"
-                "thread_id TEXT,"
-                "perspective_instance_id TEXT,"
-                "admitted_by_instance_id TEXT"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE supersessions ("
-                "previous_interpretation_id TEXT,"
-                "new_interpretation_id TEXT"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE supersession_evidence ("
-                "previous_interpretation_id TEXT,"
-                "new_interpretation_id TEXT,"
-                "position INTEGER,"
-                "source_id TEXT,"
-                "source_sha256 TEXT,"
-                "start_char INTEGER,"
-                "end_char INTEGER"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE source_suppressions ("
-                "suppression_id TEXT PRIMARY KEY,"
-                "source_id TEXT NOT NULL UNIQUE,"
-                "requested_by TEXT NOT NULL,"
-                "reason TEXT NOT NULL,"
-                "FOREIGN KEY(source_id) REFERENCES sources(source_id)"
-                ")"
-            )
-            connection.execute(
-                "CREATE TABLE legacy_autoincrement("
+                "CREATE TABLE temp_autoincrement("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT)"
             )
-            connection.execute("DROP TABLE legacy_autoincrement")
+            connection.execute("DROP TABLE temp_autoincrement")
             connection.commit()
+            self.assertIsNotNone(
+                connection.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type='table' AND name='sqlite_sequence'
+                    """
+                ).fetchone()
+            )
         finally:
             connection.close()
 
