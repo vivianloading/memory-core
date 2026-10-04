@@ -467,12 +467,26 @@ def _assert_missing_suppression_ledger_is_bootstrap_safe(
         )
 
 
+def _source_suppression_timing_exists(
+    connection: sqlite3.Connection,
+) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name=?
+            """,
+            (SOURCE_SUPPRESSION_TIMING_TABLE,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _prepare_source_suppression_table(
     connection: sqlite3.Connection,
 ) -> None:
-    marker_exists = _suppression_schema_marker_exists(connection)
-    if marker_exists:
-        _assert_source_suppression_schema_marker(connection)
+    marker_version = _source_suppression_schema_marker_version(connection)
+    timing_exists = _source_suppression_timing_exists(connection)
 
     row = connection.execute(
         """
@@ -482,26 +496,38 @@ def _prepare_source_suppression_table(
         """
     ).fetchone()
     if row is None:
+        if marker_version is not None or timing_exists:
+            raise SuppressionLedgerIntegrityError(
+                "suppression schema evidence exists without the suppression ledger"
+            )
         return
 
     actual = _normalize_schema_sql(row["sql"])
     target = _normalize_schema_sql(_source_suppression_table_sql())
     if actual == target:
-        if not marker_exists:
+        if marker_version is None:
             raise SuppressionLedgerIntegrityError(
                 "canonical source suppression ledger lacks completed-upgrade marker"
             )
-        # An already-upgraded ledger must arrive with intact guards.
-        # Initialization does not silently heal drift in a trusted stop-use
-        # boundary, because that could conceal a prior resurrection window.
-        assert_source_suppression_ledger(connection)
-        return
+        if marker_version == LEGACY_SUPPRESSION_SCHEMA_VERSION:
+            if timing_exists:
+                raise SuppressionLedgerIntegrityError(
+                    "legacy suppression marker cannot coexist with timing sidecar"
+                )
+            _assert_source_suppression_ledger_core(connection)
+            return
+        if marker_version == SUPPRESSION_SCHEMA_VERSION:
+            assert_source_suppression_ledger(connection)
+            return
+        raise SuppressionLedgerIntegrityError(
+            "unsupported source suppression schema marker version"
+        )
     legacy = _normalize_schema_sql(_legacy_source_suppression_table_sql())
     if actual != legacy:
         raise SuppressionLedgerIntegrityError(
             "source suppression table is not a recognized migratable schema"
         )
-    if marker_exists:
+    if marker_version is not None or timing_exists:
         raise SuppressionLedgerIntegrityError(
             "completed source suppression schema cannot re-enter legacy migration"
         )
@@ -591,10 +617,10 @@ def _normalize_schema_sql(value: str | None) -> str:
     return " ".join(value.replace("\n", " ").replace("\t", " ").split()).lower()
 
 
-def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
-    """Fail closed if the synthetic stop-use ledger is mutable or malformed."""
-
-    _assert_source_suppression_schema_marker(connection)
+def _assert_source_suppression_ledger_core(
+    connection: sqlite3.Connection,
+) -> None:
+    """Audit the immutable stop-use ledger independent of lifecycle version."""
 
     columns = tuple(
         row[1]
@@ -668,6 +694,14 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
         )
 
     _assert_source_suppression_rows(connection)
+
+
+def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
+    """Fail closed unless stop-use ledger and lifecycle timing are fully current."""
+
+    _assert_source_suppression_schema_marker(connection)
+    _assert_source_suppression_ledger_core(connection)
+    _assert_source_suppression_timing(connection)
 
 
 def _assert_source_suppression_rows(
