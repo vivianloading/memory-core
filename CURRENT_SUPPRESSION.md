@@ -137,6 +137,42 @@ control are transformed into authorized HOME callers. It ensures the supported
 HOME boundary can mechanically detect when its stop-use ledger is no longer a
 trustworthy basis for use decisions.
 
+## Issue #33 — missing trusted ledger must not look fresh
+
+Independent review #33 returned **FAIL / NO-GO** on exact head
+`94dd9bb1fad1e6797b0cc1d811081e4a9bc7e489`.
+
+Fresh discovery found that `MemoryStore.initialize()` treated an absent
+`source_suppressions` table as a bootstrap condition even when the database
+already carried HOME's trusted synthetic-domain marker.
+
+That meant a damaged initialized store could lose its suppression table,
+re-run the supported initializer, receive a new empty ledger and guards, and
+silently make previously suppressed Current history usable again. The Current
+history itself remained unchanged, so this was an unauthorized present-use
+resurrection rather than a historical rewrite.
+
+The remediation makes the distinction **before** synthetic-domain
+initialization can create or adopt a marker:
+
+- an unmarked fresh database may create its first suppression ledger;
+- an unmarked recognized legacy synthetic database may enter the exact legacy
+  compatibility path;
+- a database that already arrives with one valid synthetic HOME domain marker
+  but lacks `source_suppressions` fails closed;
+- real or malformed domain markers remain classified by the existing
+  store-domain boundary rather than being misreported as suppression damage.
+
+The important lesson is:
+
+> **Absence is not bootstrap once trust has already been established.**
+
+A trusted stop-use ledger disappearing is evidence of integrity loss, not
+permission to manufacture an empty replacement.
+
+The #33 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
