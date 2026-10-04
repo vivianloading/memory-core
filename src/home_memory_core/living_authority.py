@@ -572,7 +572,10 @@ class RoomParticipationAuthority:
                 "RoomParticipationAuthority must be opened from a HOME host lease"
             )
         self._lease = lease
-        self._store = store
+        self._canonical_db_path = Path(lease.identity.db_path).resolve()
+        # The caller-owned LivingStore proves the open-time binding only.
+        # Operational Room authority reads are pinned to the lease-rooted DB.
+        self._store = LivingStore(self._canonical_db_path)
         self._home_process_instance_id = current_home_process_instance_id()
         self._guard = RLock()
         self._sessions: dict[str, _SessionState] = {}
