@@ -1007,15 +1007,16 @@ class RoomParticipationAuthority:
         """
 
         with self._guard:
-            self.require_grant(
-                grant=grant,
-                session_id=session_id,
-                episode_id=episode_id,
-                perspective_instance_id=perspective_instance_id,
-                room_id=room_id,
-                required_scope=required_scope,
-            )
-            yield
+            with self._lease.hold_active():
+                self.require_grant(
+                    grant=grant,
+                    session_id=session_id,
+                    episode_id=episode_id,
+                    perspective_instance_id=perspective_instance_id,
+                    room_id=room_id,
+                    required_scope=required_scope,
+                )
+                yield
 
     @_guarded
     def suspend_policy(self, *, policy_id: str) -> None:
