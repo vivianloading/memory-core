@@ -16,6 +16,7 @@ sys.path.insert(0, str(SRC_ROOT))
 
 
 import home_memory_core.delivery_boundary as delivery_module
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.delivery_boundary import (
     DeliveryBoundaryError,
     ExactSourceSpan,
@@ -27,7 +28,6 @@ from home_memory_core.delivery_boundary import (
 )
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
-from home_memory_core.suppression import create_suppression_record
 from home_memory_core.thread import create_interpretation_thread
 
 
