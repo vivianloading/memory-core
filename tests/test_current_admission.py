@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event, Thread
 from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -535,6 +536,39 @@ class CurrentAdmissionTests(unittest.TestCase):
             ("first",),
         )
         self.assertEqual(len(self.admission_store.list_for_audit()), 1)
+
+    def test_grant_operation_holds_host_lease_until_effect_boundary_exits(self) -> None:
+        grant = self.grant()
+        release_started = Event()
+        release_finished = Event()
+
+        def release_lease() -> None:
+            release_started.set()
+            self.lease.release()
+            release_finished.set()
+
+        thread = Thread(target=release_lease)
+        with self.room_authority.hold_grant_for_operation(
+            grant=grant,
+            session_id=grant.session_id,
+            episode_id=grant.episode_id,
+            perspective_instance_id=grant.perspective_instance_id,
+            room_id=grant.room_id,
+            required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
+        ):
+            thread.start()
+            self.assertTrue(release_started.wait(1.0))
+            thread.join(timeout=0.1)
+            self.assertTrue(
+                thread.is_alive(),
+                "lease.release() must block while the authorized effect holds the host lease",
+            )
+            self.assertFalse(self.lease.released)
+
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(release_finished.is_set())
+        self.assertTrue(self.lease.released)
 
     def test_admission_rows_are_append_only_and_schema_audited(self) -> None:
         record, _ = self.admit_state("state-a")
