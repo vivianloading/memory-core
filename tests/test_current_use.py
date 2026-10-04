@@ -528,12 +528,8 @@ class CurrentPresentUseTests(unittest.TestCase):
             ):
                 connection.execute(f"DROP TRIGGER {trigger}")
             connection.execute(
-                "ALTER TABLE source_suppressions "
-                "RENAME TO source_suppressions_new_shape"
-            )
-            connection.execute(
                 """
-                CREATE TABLE source_suppressions (
+                CREATE TABLE source_suppressions_legacy_build (
                     suppression_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL UNIQUE,
                     requested_by TEXT NOT NULL,
@@ -546,14 +542,18 @@ class CurrentPresentUseTests(unittest.TestCase):
             )
             connection.execute(
                 """
-                INSERT INTO source_suppressions (
+                INSERT INTO source_suppressions_legacy_build (
                     suppression_id,source_id,requested_by,reason
                 )
                 SELECT suppression_id,source_id,requested_by,reason
-                FROM source_suppressions_new_shape
+                FROM source_suppressions
                 """
             )
-            connection.execute("DROP TABLE source_suppressions_new_shape")
+            connection.execute("DROP TABLE source_suppressions")
+            connection.execute(
+                "ALTER TABLE source_suppressions_legacy_build "
+                "RENAME TO source_suppressions"
+            )
             connection.commit()
         finally:
             connection.close()
