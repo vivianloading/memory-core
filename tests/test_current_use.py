@@ -440,6 +440,76 @@ class CurrentPresentUseTests(unittest.TestCase):
         )
         self.assertEqual(decision.blocks[0].suppression_id, "stop-no-rowid")
 
+    def test_malformed_legacy_suppression_rows_are_rejected_before_migration(self) -> None:
+        source = create_source_record(
+            source_id="legacy-malformed-source",
+            content="synthetic legacy evidence",
+            authored_by="current-use-test",
+            scope="room-r",
+        )
+        self.memory.add_source(source)
+
+        connection = sqlite3.connect(self.db)
+        try:
+            for trigger in (
+                "source_suppressions_no_replace",
+                "source_suppressions_no_update",
+                "source_suppressions_no_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute(
+                "ALTER TABLE source_suppressions "
+                "RENAME TO source_suppressions_new_shape"
+            )
+            connection.execute(
+                """
+                CREATE TABLE source_suppressions (
+                    suppression_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL UNIQUE,
+                    requested_by TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    FOREIGN KEY (source_id)
+                        REFERENCES sources(source_id)
+                        ON DELETE RESTRICT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO source_suppressions (
+                    suppression_id,source_id,requested_by,reason
+                ) VALUES ('legacy-malformed', ?, '   ', 'reason')
+                """,
+                (source.source_id,),
+            )
+            connection.execute("DROP TABLE source_suppressions_new_shape")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
+        check = sqlite3.connect(self.db)
+        try:
+            sql = check.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type='table' AND name='source_suppressions'
+                """
+            ).fetchone()[0]
+            row = check.execute(
+                """
+                SELECT suppression_id,requested_by
+                FROM source_suppressions
+                """
+            ).fetchone()
+        finally:
+            check.close()
+
+        self.assertNotIn("WITHOUT ROWID", sql.upper())
+        self.assertEqual(row, ("legacy-malformed", "   "))
+
     def test_known_legacy_suppression_table_migrates_without_resurrection(self) -> None:
         record = self.state("legacy-stop")
         binding = self.binding(record.source_refs[0])
