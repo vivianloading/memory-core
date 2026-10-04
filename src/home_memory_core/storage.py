@@ -53,6 +53,20 @@ SOURCE_SUPPRESSION_TRIGGERS = frozenset(
 )
 
 
+def _source_suppression_table_sql() -> str:
+    return """
+        CREATE TABLE source_suppressions (
+            suppression_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL UNIQUE,
+            requested_by TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            FOREIGN KEY (source_id)
+                REFERENCES sources(source_id)
+                ON DELETE RESTRICT
+        )
+    """
+
+
 def _source_suppression_guard_sql() -> dict[str, str]:
     return {
         "source_suppressions_no_replace": """
@@ -107,6 +121,22 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
     ):
         raise SuppressionLedgerIntegrityError(
             "source suppression ledger schema is unavailable"
+        )
+
+    table_row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='table' AND name='source_suppressions'
+        """
+    ).fetchone()
+    if (
+        table_row is None
+        or _normalize_schema_sql(table_row["sql"])
+        != _normalize_schema_sql(_source_suppression_table_sql())
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression table definition was altered"
         )
 
     rows = connection.execute(
