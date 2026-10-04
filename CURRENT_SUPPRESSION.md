@@ -173,6 +173,60 @@ permission to manufacture an empty replacement.
 The #33 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #34 — one-way migration needs durable completion evidence
+
+Independent review #34 returned **FAIL / NO-GO** on exact head
+`eef0afdb474ffd5227770b02ae01f66da7bc7e03`.
+
+Issue #33 had fixed the case where a trusted suppression ledger disappeared
+entirely. #34 found the deeper version: an already-upgraded store could have its
+ledger replaced with the **exact** pre-Slice-3A legacy table. Because
+initialization looked only at the ledger's current SQL shape, it could not tell
+that this store had already completed the one-way upgrade.
+
+That allowed a damaged store to re-enter the legacy migration path. If a
+suppression row had been lost while the legacy-shaped replacement lacked
+guards, supported initialization would bless the remaining empty ledger by
+migrating it back to the canonical shape.
+
+The remediation adds an independent durable completion marker:
+
+`source_suppression_schema_marker`
+
+with version:
+
+`source-suppression-v0.1`
+
+The marker is separate from the ledger, `WITHOUT ROWID`, exact-audited, and
+protected from UPDATE/DELETE.
+
+The migration state machine is now:
+
+- no completion marker + exact pre-Slice-3A legacy ledger → one admitted
+  migration, then install the completion marker;
+- completion marker + canonical ledger → normal trusted reopen, with full
+  marker/ledger/guard audit;
+- completion marker + legacy-shaped ledger → fail closed; a completed upgrade
+  cannot re-enter legacy migration;
+- canonical ledger + missing completion marker → fail closed rather than
+  silently manufacturing migration history;
+- fresh/unmarked bootstrap creates the canonical ledger and then records
+  completion.
+
+This preserves a broader rule:
+
+> **A one-way migration needs durable evidence that the one-way boundary has
+> already been crossed. Current shape alone is not historical provenance.**
+
+The marker is an integrity signal inside HOME's supported local-store trust
+model, not a claim that arbitrary filesystem/database rewriting can be made
+cryptographically impossible. If all durable evidence is externally rewritten
+to an indistinguishable historical snapshot, the local database alone cannot
+prove that erased history.
+
+The #34 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
