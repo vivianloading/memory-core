@@ -321,7 +321,7 @@ def expected_current_schema_sql() -> dict[tuple[str, str], str]:
         """)
         connection.executescript(current_schema_script())
         rows = connection.execute(
-            "SELECT type,name,sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE 'sqlite_%'"
+            "SELECT type,name,sql FROM sqlite_master WHERE type IN ('table','trigger')"
         ).fetchall()
         return {
             (row["type"], row["name"]): normalize_sql(row["sql"])
