@@ -126,6 +126,37 @@ v0.1 refuses to infer Shared authority from:
 Shared Current admission must wait for a concrete Shared-governance decision
 primitive with an exact effect-binding contract.
 
+## Issue #25 — fork-inherited live authority
+
+Independent review #25 returned **FAIL / NO-GO** on exact head
+`6d1f25cc94255c3d564456359953125ca985cf92`.
+
+Fresh discovery found that `CurrentAdmissionReceipt` validation relied on the
+live authority's in-memory registry, receipt object identity, marker identity,
+fingerprint, and durable audit binding, but did not separately assert the HOME
+process incarnation. Under POSIX `fork()`, a child inherits that entire memory
+world. The inherited Current admission authority therefore accepted the
+inherited original receipt even though HOME's process-boundary contract says a
+fork child does not inherit valid process-local authority.
+
+Room participation authority already failed closed in the same child because
+its live-host path checks the HOME process boundary.
+
+The remediation binds each `CurrentAdmissionAuthority` to the exact HOME
+process incarnation in which it was created and checks that boundary before
+admission work or live-receipt validation, including internal predecessor
+receipt checks. The durable admission row remains unchanged: process identity
+belongs to live operational authority, not historical audit provenance.
+
+Lesson:
+
+> **Process-local is not established by object identity alone.**
+> Any capability registry that can survive memory inheritance must also bind
+> itself to the process incarnation that is allowed to interpret that registry.
+
+The #25 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Deliberate non-claims
 
 This slice does not provide:
