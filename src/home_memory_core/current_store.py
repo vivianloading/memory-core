@@ -66,6 +66,7 @@ class CurrentSourceBinding:
         _text("source_ref", self.source_ref)
         if not isinstance(self.evidence, EvidenceRef):
             raise TypeError("evidence must be EvidenceRef")
+        _validate_evidence_coordinates(self.evidence)
 
 
 @dataclass(frozen=True)
@@ -146,14 +147,15 @@ class CurrentStore:
                 f"""INSERT INTO {CURRENT_STATE_TABLE} (
                   state_id,namespace,owner_id,key,state_kind,recorded_instant_us,
                   semantic_change_authority,episode_id,perspective_instance_id,
-                  room_attachment_event_id,supersedes_state_id,payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  room_attachment_event_id,supersedes_state_id,source_ref_count,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record.state_id, record.namespace.value, record.owner_id,
                     record.key, record.state_kind.value, _instant(record.recorded_at),
                     record.semantic_change_authority.value, record.episode_id,
                     record.perspective_instance_id, room_attachment_event_id,
-                    record.supersedes_state_id, _state_payload(record),
+                    record.supersedes_state_id, len(record.source_refs),
+                    _state_payload(record),
                 ),
             )
             _insert_bindings(
@@ -201,13 +203,14 @@ class CurrentStore:
             connection.execute(
                 f"""INSERT INTO {CURRENT_END_TABLE} (
                   end_event_id,state_id,recorded_instant_us,semantic_change_authority,
-                  episode_id,perspective_instance_id,room_attachment_event_id,payload_json
-                ) VALUES (?,?,?,?,?,?,?,?)""",
+                  episode_id,perspective_instance_id,room_attachment_event_id,
+                  source_ref_count,payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     event.end_event_id, event.state_id, _instant(event.recorded_at),
                     event.semantic_change_authority.value, event.episode_id,
                     event.perspective_instance_id, room_attachment_event_id,
-                    _end_payload(event),
+                    len(event.source_refs), _end_payload(event),
                 ),
             )
             _insert_bindings(
@@ -249,7 +252,7 @@ class CurrentStore:
         try:
             result = []
             for row in connection.execute(
-                f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY rowid"
+                f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY state_id"
             ).fetchall():
                 bindings = _read_bindings(
                     connection, CURRENT_STATE_EVIDENCE_TABLE, "state_id", row["state_id"]
@@ -376,6 +379,21 @@ def assert_current_schema(connection: sqlite3.Connection) -> None:
 
 def assert_current_data_integrity(connection: sqlite3.Connection) -> None:
     try:
+        _assert_binding_table_integrity(
+            connection,
+            child_table=CURRENT_STATE_EVIDENCE_TABLE,
+            parent_table=CURRENT_STATE_TABLE,
+            parent_column="state_id",
+            declared_count_column="source_ref_count",
+        )
+        _assert_binding_table_integrity(
+            connection,
+            child_table=CURRENT_END_EVIDENCE_TABLE,
+            parent_table=CURRENT_END_TABLE,
+            parent_column="end_event_id",
+            declared_count_column="source_ref_count",
+        )
+
         states = []
         for row in connection.execute(
             f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY rowid"
@@ -395,7 +413,7 @@ def assert_current_data_integrity(connection: sqlite3.Connection) -> None:
 
         seen = set()
         for row in connection.execute(
-            f"SELECT * FROM {CURRENT_END_TABLE} ORDER BY rowid"
+            f"SELECT * FROM {CURRENT_END_TABLE} ORDER BY end_event_id"
         ).fetchall():
             bindings = _read_bindings(
                 connection, CURRENT_END_EVIDENCE_TABLE, "end_event_id", row["end_event_id"]
@@ -437,6 +455,7 @@ def _validate_new_bindings(
 ) -> None:
     for binding in bindings:
         evidence = binding.evidence
+        _validate_evidence_coordinates(evidence)
         row = connection.execute(
             "SELECT content,content_sha256 FROM sources WHERE source_id=?",
             (evidence.source_id,),
@@ -465,6 +484,7 @@ def _persisted_bindings(
         raise CurrentStoreIntegrityError("persisted Current history is missing evidence")
     for binding in bindings:
         evidence = binding.evidence
+        _validate_evidence_coordinates(evidence)
         row = connection.execute(
             "SELECT content,content_sha256 FROM sources WHERE source_id=?", (evidence.source_id,)
         ).fetchone()
@@ -515,12 +535,14 @@ def _state_index(row: sqlite3.Row, record: CurrentStateRecord) -> None:
         row["state_kind"], row["recorded_instant_us"],
         row["semantic_change_authority"], row["episode_id"],
         row["perspective_instance_id"], row["supersedes_state_id"],
+        row["source_ref_count"],
     )
     expected = (
         record.state_id, record.namespace.value, record.owner_id, record.key,
         record.state_kind.value, _instant(record.recorded_at),
         record.semantic_change_authority.value, record.episode_id,
         record.perspective_instance_id, record.supersedes_state_id,
+        len(record.source_refs),
     )
     if indexed != expected:
         raise CurrentStoreIntegrityError("Current state index differs from payload")
@@ -530,10 +552,12 @@ def _end_index(row: sqlite3.Row, event: CurrentStateEndEvent) -> None:
     indexed = (
         row["end_event_id"], row["state_id"], row["recorded_instant_us"],
         row["semantic_change_authority"], row["episode_id"], row["perspective_instance_id"],
+        row["source_ref_count"],
     )
     expected = (
         event.end_event_id, event.state_id, _instant(event.recorded_at),
         event.semantic_change_authority.value, event.episode_id, event.perspective_instance_id,
+        len(event.source_refs),
     )
     if indexed != expected:
         raise CurrentStoreIntegrityError("Current end-event index differs from payload")
@@ -543,6 +567,17 @@ def _state_graph(records: tuple[CurrentStateRecord, ...]) -> None:
     by_id = {record.state_id: record for record in records}
     if len(by_id) != len(records):
         raise CurrentStoreIntegrityError("duplicate Current state id")
+    kinds_by_key: dict[tuple[CurrentNamespace, str, str], set[CurrentStateKind]] = {}
+    for record in records:
+        kinds_by_key.setdefault(
+            (record.namespace, record.owner_id, record.key),
+            set(),
+        ).add(record.state_kind)
+    if any(len(kinds) > 1 for kinds in kinds_by_key.values()):
+        raise CurrentStoreIntegrityError(
+            "one Current key cannot change state_kind across history"
+        )
+
     for record in records:
         parent_id = record.supersedes_state_id
         if parent_id is None:
@@ -750,6 +785,7 @@ def _state_payload(record: CurrentStateRecord) -> str:
             "downgrade_rule": record.downgrade_rule.value,
             "valid_until": None if record.valid_until is None else record.valid_until.isoformat(),
             "stale_after_us": None if record.stale_after is None else str(_duration_us(record.stale_after)),
+            "source_refs": list(record.source_refs),
         },
         sort_keys=True, separators=(",", ":"),
     )
@@ -762,6 +798,7 @@ def _end_payload(event: CurrentStateEndEvent) -> str:
             "recorded_at": event.recorded_at.isoformat(),
             "end_kind": event.end_kind.value,
             "reason": event.reason,
+            "source_refs": list(event.source_refs),
         },
         sort_keys=True, separators=(",", ":"),
     )
@@ -774,6 +811,7 @@ def _state_from_row(
     required = {
         "value", "event_time", "recorded_at", "valid_from",
         "validity_rule", "downgrade_rule", "valid_until", "stale_after_us",
+        "source_refs",
     }
     if set(payload) != required:
         raise CurrentStoreIntegrityError("Current state payload shape is invalid")
@@ -790,7 +828,7 @@ def _state_from_row(
         valid_until=None if payload["valid_until"] is None else _dt(payload["valid_until"]),
         stale_after=None if payload["stale_after_us"] is None else _td(payload["stale_after_us"]),
         supersedes_state_id=row["supersedes_state_id"],
-        source_refs=tuple(binding.source_ref for binding in bindings),
+        source_refs=_sealed_source_refs(payload["source_refs"], bindings),
     )
 
 
@@ -798,7 +836,7 @@ def _end_from_row(
     row: sqlite3.Row, bindings: tuple[CurrentSourceBinding, ...]
 ) -> CurrentStateEndEvent:
     payload = json.loads(row["payload_json"])
-    if set(payload) != {"ended_at", "recorded_at", "end_kind", "reason"}:
+    if set(payload) != {"ended_at", "recorded_at", "end_kind", "reason", "source_refs"}:
         raise CurrentStoreIntegrityError("Current end-event payload shape is invalid")
     return CurrentStateEndEvent(
         end_event_id=row["end_event_id"], state_id=row["state_id"],
@@ -806,8 +844,82 @@ def _end_from_row(
         end_kind=EndKind(payload["end_kind"]), reason=payload["reason"],
         semantic_change_authority=SemanticChangeAuthority(row["semantic_change_authority"]),
         episode_id=row["episode_id"], perspective_instance_id=row["perspective_instance_id"],
-        source_refs=tuple(binding.source_ref for binding in bindings),
+        source_refs=_sealed_source_refs(payload["source_refs"], bindings),
     )
+
+
+def _assert_binding_table_integrity(
+    connection: sqlite3.Connection,
+    *,
+    child_table: str,
+    parent_table: str,
+    parent_column: str,
+    declared_count_column: str,
+) -> None:
+    orphan = connection.execute(
+        f"""
+        SELECT 1
+        FROM {child_table} AS child
+        LEFT JOIN {parent_table} AS parent
+          ON parent.{parent_column}=child.{parent_column}
+        WHERE parent.{parent_column} IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if orphan is not None:
+        raise CurrentStoreIntegrityError(
+            "Current evidence binding has no parent record"
+        )
+
+    mismatch = connection.execute(
+        f"""
+        SELECT 1
+        FROM {parent_table} AS parent
+        LEFT JOIN {child_table} AS child
+          ON child.{parent_column}=parent.{parent_column}
+        GROUP BY parent.{parent_column}, parent.{declared_count_column}
+        HAVING COUNT(child.position)<>parent.{declared_count_column}
+        LIMIT 1
+        """
+    ).fetchone()
+    if mismatch is not None:
+        raise CurrentStoreIntegrityError(
+            "Current evidence binding count differs from sealed parent declaration"
+        )
+
+
+def _validate_evidence_coordinates(evidence: EvidenceRef) -> None:
+    if (
+        type(evidence.start_char) is not int
+        or type(evidence.end_char) is not int
+    ):
+        raise CurrentStoreIntegrityError(
+            "Current evidence coordinates must be integer Python str indices"
+        )
+
+
+def _sealed_source_refs(
+    payload_value: object,
+    bindings: tuple[CurrentSourceBinding, ...],
+) -> tuple[str, ...]:
+    if (
+        not isinstance(payload_value, list)
+        or not payload_value
+        or any(
+            not isinstance(item, str) or not item.strip()
+            for item in payload_value
+        )
+    ):
+        raise CurrentStoreIntegrityError(
+            "Current payload source_refs declaration is invalid"
+        )
+    declared = tuple(payload_value)
+    actual = tuple(binding.source_ref for binding in bindings)
+    if declared != actual:
+        raise CurrentStoreIntegrityError(
+            "Current payload source_refs differ from sealed evidence bindings"
+        )
+    return declared
 
 
 def _dt(value: object) -> datetime:
