@@ -10,7 +10,7 @@ from home_memory_core.current_use import (
     CurrentPresentUseStatus,
     CurrentPresentUseStore,
     CurrentUseEffectKind,
-    require_current_effect_usable,
+    _require_current_effect_usable,
 )
 from home_memory_core.current_view import (
     CurrentNamespace,
@@ -389,7 +389,7 @@ class CurrentPresentUseTests(unittest.TestCase):
         with self.assertRaises(CurrentEffectSuppressedError):
             read = self.current._read_connection()
             try:
-                require_current_effect_usable(
+                _require_current_effect_usable(
                     connection=read,
                     effect_kind=CurrentUseEffectKind.STATE,
                     effect_id=record.state_id,
