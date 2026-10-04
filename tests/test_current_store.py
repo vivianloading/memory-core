@@ -434,12 +434,37 @@ class CurrentStoreTests(unittest.TestCase):
         with self.assertRaises(CurrentStoreIntegrityError):
             CurrentSourceBinding("fractional", fractional)
 
+        template = self.room_state("fractional-template")
+        template_binding = self.binding(template.source_refs[0])
+        self.store.add_state_record(
+            record=template,
+            source_bindings=(template_binding,),
+        )
+
         connection = sqlite3.connect(self.db)
         try:
             connection.execute("PRAGMA foreign_keys=ON")
-            record = self.room_state("fractional-raw")
-            binding = self.binding(record.source_refs[0])
-            self.store.add_state_record(record=record, source_bindings=(binding,))
+            connection.execute("BEGIN")
+            connection.execute(
+                f"""
+                INSERT INTO {CURRENT_STATE_TABLE} (
+                    state_id,namespace,owner_id,key,state_kind,
+                    recorded_instant_us,semantic_change_authority,
+                    episode_id,perspective_instance_id,
+                    room_attachment_event_id,supersedes_state_id,
+                    source_ref_count,payload_json
+                )
+                SELECT
+                    'fractional-raw-parent',namespace,owner_id,key,state_kind,
+                    recorded_instant_us,semantic_change_authority,
+                    episode_id,perspective_instance_id,
+                    room_attachment_event_id,NULL,
+                    source_ref_count,payload_json
+                FROM {CURRENT_STATE_TABLE}
+                WHERE state_id=?
+                """,
+                (template.state_id,),
+            )
             with self.assertRaises(sqlite3.DatabaseError):
                 connection.execute(
                     f"""
@@ -449,8 +474,13 @@ class CurrentStoreTests(unittest.TestCase):
                     ) VALUES (?,?,?,?,?,?,?)
                     """,
                     (
-                        record.state_id, 1, "fractional-raw-extra",
-                        source.source_id, source.content_sha256, 0.5, 1.5,
+                        "fractional-raw-parent",
+                        0,
+                        template.source_refs[0],
+                        source.source_id,
+                        source.content_sha256,
+                        0.5,
+                        1.5,
                     ),
                 )
             connection.rollback()
@@ -515,6 +545,28 @@ class CurrentStoreTests(unittest.TestCase):
             read_evidence(source=source, evidence=audited.source_bindings[0].evidence),
             "😀",
         )
+        event = CurrentStateEndEvent(
+            end_event_id="nul-unicode-end",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(hours=1),
+            recorded_at=self.t0 + timedelta(hours=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=("nul-unicode-end",),
+        )
+        end_binding = CurrentSourceBinding("nul-unicode-end", evidence)
+        self.store.add_end_event(event=event, source_bindings=(end_binding,))
+        audited_end = self.store.get_end_event_for_audit(event.end_event_id)
+        self.assertEqual(
+            read_evidence(
+                source=source,
+                evidence=audited_end.source_bindings[0].evidence,
+            ),
+            "😀",
+        )
 
     def test_orphan_evidence_is_blocked_without_foreign_keys_and_detected_by_audit(self) -> None:
         record = self.room_state("orphan-parent")
@@ -570,6 +622,77 @@ class CurrentStoreTests(unittest.TestCase):
 
         with self.assertRaises(CurrentStoreIntegrityError):
             self.store.get_state_for_audit(record.state_id)
+
+    def test_orphan_end_evidence_is_blocked_and_detected_by_audit(self) -> None:
+        record = self.room_state("orphan-end-parent")
+        self.store.add_state_record(
+            record=record,
+            source_bindings=(self.binding(record.source_refs[0]),),
+        )
+        event = CurrentStateEndEvent(
+            end_event_id="orphan-end-event",
+            state_id=record.state_id,
+            ended_at=self.t0 + timedelta(hours=1),
+            recorded_at=self.t0 + timedelta(hours=1),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=("orphan-end-ref",),
+        )
+        binding = self.binding("orphan-end-ref")
+        self.store.add_end_event(event=event, source_bindings=(binding,))
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute(
+                    f"""
+                    INSERT INTO {CURRENT_END_EVIDENCE_TABLE} (
+                        end_event_id,position,source_ref,source_id,
+                        source_sha256,start_char,end_char
+                    ) VALUES ('absent',0,'orphan-end-extra',?,?,?,?)
+                    """,
+                    (
+                        binding.evidence.source_id,
+                        binding.evidence.source_sha256,
+                        binding.evidence.start_char,
+                        binding.evidence.end_char,
+                    ),
+                )
+            connection.rollback()
+
+            trigger_sql = connection.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type='trigger'
+                  AND name='current_end_evidence_parent_exists'
+                """
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER current_end_evidence_parent_exists")
+            connection.execute(
+                f"""
+                INSERT INTO {CURRENT_END_EVIDENCE_TABLE} (
+                    end_event_id,position,source_ref,source_id,
+                    source_sha256,start_char,end_char
+                ) VALUES ('absent',0,'orphan-end-extra',?,?,?,?)
+                """,
+                (
+                    binding.evidence.source_id,
+                    binding.evidence.source_sha256,
+                    binding.evidence.start_char,
+                    binding.evidence.end_char,
+                ),
+            )
+            connection.execute(trigger_sql)
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.store.get_end_event_for_audit(event.end_event_id)
 
     def test_same_name_empty_trigger_is_detected_not_trusted(self) -> None:
         connection = sqlite3.connect(self.db)
