@@ -4,7 +4,15 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from home_memory_core.current_store import CurrentSourceBinding, CurrentStore
+from home_memory_core.current_store import (
+    CurrentSourceBinding,
+    CurrentStore,
+    CurrentStoreIntegrityError,
+)
+from home_memory_core.current_store_schema import (
+    CURRENT_STATE_EVIDENCE_TABLE,
+    CURRENT_STATE_TABLE,
+)
 from home_memory_core.current_use import (
     CurrentEffectSuppressedError,
     CurrentPresentUseStatus,
@@ -736,15 +744,32 @@ class CurrentPresentUseTests(unittest.TestCase):
 
         connection = sqlite3.connect(self.db)
         try:
+            raw_state_before = connection.execute(
+                f"SELECT * FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+                (record.state_id,),
+            ).fetchone()
+            raw_evidence_before = connection.execute(
+                f"""
+                SELECT * FROM {CURRENT_STATE_EVIDENCE_TABLE}
+                WHERE state_id=? ORDER BY position
+                """,
+                (record.state_id,),
+            ).fetchall()
             connection.execute("DROP TABLE source_suppressions")
             connection.commit()
         finally:
             connection.close()
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(CurrentStoreIntegrityError):
             self.use.state_decision(record.state_id)
         with self.assertRaises(SuppressionLedgerIntegrityError):
             MemoryStore(self.db).initialize()
+
+        # Supported Current reads remain fail-closed while the upstream
+        # stop-use ledger is missing. Raw reads here are test-only proof that
+        # the failed initializer did not rewrite immutable Current history.
+        with self.assertRaises(CurrentStoreIntegrityError):
+            self.current.get_state_for_audit(record.state_id)
 
         connection = sqlite3.connect(self.db)
         try:
@@ -754,14 +779,24 @@ class CurrentPresentUseTests(unittest.TestCase):
                 WHERE type='table' AND name='source_suppressions'
                 """
             ).fetchone()
+            raw_state_after = connection.execute(
+                f"SELECT * FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+                (record.state_id,),
+            ).fetchone()
+            raw_evidence_after = connection.execute(
+                f"""
+                SELECT * FROM {CURRENT_STATE_EVIDENCE_TABLE}
+                WHERE state_id=? ORDER BY position
+                """,
+                (record.state_id,),
+            ).fetchall()
         finally:
             connection.close()
 
         self.assertIsNone(exists)
-        self.assertEqual(
-            self.current.get_state_for_audit(record.state_id),
-            audit_before,
-        )
+        self.assertEqual(raw_state_after, raw_state_before)
+        self.assertEqual(raw_evidence_after, raw_evidence_before)
+        self.assertEqual(audit_before.record, record)
 
     def test_fresh_memory_store_can_create_initial_suppression_ledger(self) -> None:
         fresh_db = self.root / "fresh-bootstrap.db"
