@@ -187,6 +187,115 @@ class SuppressionStorageTest(unittest.TestCase):
                 interpretation.interpretation_id
             )
 
+    def test_interpretation_write_holds_lock_across_suppression_decision(
+        self,
+    ) -> None:
+        source = create_source_record(
+            source_id="stored-message-interpretation-race",
+            content="这段 source 已经停止使用。",
+            authored_by="vivi",
+            scope="shared",
+        )
+        self.store.add_source(source)
+        suppression = create_suppression_record(
+            suppression_id="stored-suppression-interpretation-race",
+            source_id=source.source_id,
+            requested_by="vivi",
+            reason="derived write 必须和 stop-use 决策属于同一个数据库现实。",
+        )
+        self.store.suppress_source(suppression)
+
+        evidence = create_evidence_ref(
+            source=source,
+            start_char=0,
+            end_char=len(source.content),
+        )
+        interpretation = create_interpretation_record(
+            interpretation_id="stored-interpretation-race",
+            text="这条 derived memory 不应该被写入。",
+            perspective_owner="lior",
+            perspective_instance_id="lior-window-test",
+            about_subject="vivi",
+            scope="shared",
+            evidence=(evidence,),
+        )
+
+        observed_transactions = []
+        concurrent_damage_errors = []
+        db_path = self.db_path
+
+        class InspectingStore(MemoryStore):
+            def _get_suppressed_source_ids_from_connection(
+                nested_self,
+                *,
+                connection,
+            ):
+                observed_transactions.append(connection.in_transaction)
+                damage = sqlite3.connect(db_path, timeout=0)
+                try:
+                    damage.execute("PRAGMA foreign_keys=OFF")
+                    damage.execute(
+                        "DROP TRIGGER source_suppressions_no_delete"
+                    )
+                    damage.execute(
+                        """
+                        DELETE FROM source_suppressions
+                        WHERE suppression_id=?
+                        """,
+                        (suppression.suppression_id,),
+                    )
+                    damage.commit()
+                except Exception as error:
+                    concurrent_damage_errors.append(error)
+                    damage.rollback()
+                finally:
+                    damage.close()
+
+                return super()._get_suppressed_source_ids_from_connection(
+                    connection=connection,
+                )
+
+        inspecting = InspectingStore(self.db_path)
+        with self.assertRaises(SuppressedMemoryError):
+            inspecting.add_interpretation(interpretation)
+
+        self.assertEqual(observed_transactions, [True])
+        self.assertEqual(len(concurrent_damage_errors), 1)
+        self.assertIsInstance(
+            concurrent_damage_errors[0],
+            sqlite3.OperationalError,
+        )
+
+        check = sqlite3.connect(self.db_path)
+        try:
+            suppression_count = check.execute(
+                """
+                SELECT count(*) FROM source_suppressions
+                WHERE suppression_id=?
+                """,
+                (suppression.suppression_id,),
+            ).fetchone()[0]
+            guard_count = check.execute(
+                """
+                SELECT count(*) FROM sqlite_master
+                WHERE type='trigger'
+                  AND name='source_suppressions_no_delete'
+                """
+            ).fetchone()[0]
+            interpretation_count = check.execute(
+                """
+                SELECT count(*) FROM interpretations
+                WHERE interpretation_id=?
+                """,
+                (interpretation.interpretation_id,),
+            ).fetchone()[0]
+        finally:
+            check.close()
+
+        self.assertEqual(suppression_count, 1)
+        self.assertEqual(guard_count, 1)
+        self.assertEqual(interpretation_count, 0)
+
     def test_existing_supersession_becomes_unusable_after_suppression(
         self,
     ) -> None:
