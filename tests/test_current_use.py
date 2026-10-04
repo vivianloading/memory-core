@@ -5,6 +5,7 @@ from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.current_store import (
     CurrentSourceBinding,
     CurrentStore,
@@ -47,7 +48,6 @@ from home_memory_core.storage import (
 )
 from home_memory_core.suppression import (
     SuppressionLedgerIntegrityError,
-    create_suppression_record,
 )
 
 
