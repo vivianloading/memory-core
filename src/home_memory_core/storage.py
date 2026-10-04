@@ -437,6 +437,7 @@ class MemoryStore:
         suppression: SuppressionRecord,
     ) -> None:
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             assert_source_suppression_ledger(connection)
             self._get_source_from_connection(
                 connection=connection,
