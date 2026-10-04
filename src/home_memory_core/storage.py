@@ -82,15 +82,32 @@ def _source_suppression_timing_table_sql() -> str:
     return f"""
         CREATE TABLE {SOURCE_SUPPRESSION_TIMING_TABLE} (
             suppression_id TEXT PRIMARY KEY,
-            effective_instant_us INTEGER NOT NULL
-                CHECK(typeof(effective_instant_us)='integer'),
-            recorded_instant_us INTEGER NOT NULL
-                CHECK(typeof(recorded_instant_us)='integer'),
-            effective_at_iso TEXT NOT NULL
-                CHECK(length(trim(effective_at_iso))>0),
-            recorded_at_iso TEXT NOT NULL
-                CHECK(length(trim(recorded_at_iso))>0),
-            CHECK(effective_instant_us<=recorded_instant_us),
+            timing_status TEXT NOT NULL
+                CHECK(timing_status IN ('timed','timing_unknown')),
+            effective_instant_us INTEGER,
+            recorded_instant_us INTEGER,
+            effective_at_iso TEXT,
+            recorded_at_iso TEXT,
+            CHECK(
+                (
+                    timing_status='timed'
+                    AND typeof(effective_instant_us)='integer'
+                    AND typeof(recorded_instant_us)='integer'
+                    AND effective_instant_us<=recorded_instant_us
+                    AND effective_at_iso IS NOT NULL
+                    AND length(trim(effective_at_iso))>0
+                    AND recorded_at_iso IS NOT NULL
+                    AND length(trim(recorded_at_iso))>0
+                )
+                OR
+                (
+                    timing_status='timing_unknown'
+                    AND effective_instant_us IS NULL
+                    AND recorded_instant_us IS NULL
+                    AND effective_at_iso IS NULL
+                    AND recorded_at_iso IS NULL
+                )
+            ),
             FOREIGN KEY(suppression_id)
                 REFERENCES source_suppressions(suppression_id)
                 ON UPDATE RESTRICT ON DELETE RESTRICT
@@ -166,10 +183,26 @@ def _assert_source_suppression_timing(connection: sqlite3.Connection) -> None:
             "source suppression timing guards were altered"
         )
 
+    missing = connection.execute(
+        f"""
+        SELECT 1
+        FROM source_suppressions AS suppressions
+        LEFT JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+          ON timing.suppression_id=suppressions.suppression_id
+        WHERE timing.suppression_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if missing is not None:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression is missing explicit timing status"
+        )
+
     rows = connection.execute(
         f"""
         SELECT
             timing.suppression_id,
+            timing.timing_status,
             timing.effective_instant_us,
             timing.recorded_instant_us,
             timing.effective_at_iso,
@@ -185,6 +218,24 @@ def _assert_source_suppression_timing(connection: sqlite3.Connection) -> None:
         if item["parent_id"] is None:
             raise SuppressionLedgerIntegrityError(
                 "source suppression timing has no suppression parent"
+            )
+        if item["timing_status"] == "timing_unknown":
+            if any(
+                item[field] is not None
+                for field in (
+                    "effective_instant_us",
+                    "recorded_instant_us",
+                    "effective_at_iso",
+                    "recorded_at_iso",
+                )
+            ):
+                raise SuppressionLedgerIntegrityError(
+                    "timing_unknown suppression cannot claim exact timing"
+                )
+            continue
+        if item["timing_status"] != "timed":
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing status is invalid"
             )
         try:
             effective_at = suppression_datetime_from_iso(
@@ -854,15 +905,32 @@ class MemoryStore:
 
                 CREATE TABLE IF NOT EXISTS source_suppression_timing (
                     suppression_id TEXT PRIMARY KEY,
-                    effective_instant_us INTEGER NOT NULL
-                        CHECK(typeof(effective_instant_us)='integer'),
-                    recorded_instant_us INTEGER NOT NULL
-                        CHECK(typeof(recorded_instant_us)='integer'),
-                    effective_at_iso TEXT NOT NULL
-                        CHECK(length(trim(effective_at_iso))>0),
-                    recorded_at_iso TEXT NOT NULL
-                        CHECK(length(trim(recorded_at_iso))>0),
-                    CHECK(effective_instant_us<=recorded_instant_us),
+                    timing_status TEXT NOT NULL
+                        CHECK(timing_status IN ('timed','timing_unknown')),
+                    effective_instant_us INTEGER,
+                    recorded_instant_us INTEGER,
+                    effective_at_iso TEXT,
+                    recorded_at_iso TEXT,
+                    CHECK(
+                        (
+                            timing_status='timed'
+                            AND typeof(effective_instant_us)='integer'
+                            AND typeof(recorded_instant_us)='integer'
+                            AND effective_instant_us<=recorded_instant_us
+                            AND effective_at_iso IS NOT NULL
+                            AND length(trim(effective_at_iso))>0
+                            AND recorded_at_iso IS NOT NULL
+                            AND length(trim(recorded_at_iso))>0
+                        )
+                        OR
+                        (
+                            timing_status='timing_unknown'
+                            AND effective_instant_us IS NULL
+                            AND recorded_instant_us IS NULL
+                            AND effective_at_iso IS NULL
+                            AND recorded_at_iso IS NULL
+                        )
+                    ),
                     FOREIGN KEY(suppression_id)
                         REFERENCES source_suppressions(suppression_id)
                         ON UPDATE RESTRICT ON DELETE RESTRICT
@@ -1012,6 +1080,30 @@ class MemoryStore:
                 );
                 """
             )
+            connection.execute(
+                f"""
+                INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                    suppression_id,
+                    timing_status,
+                    effective_instant_us,
+                    recorded_instant_us,
+                    effective_at_iso,
+                    recorded_at_iso
+                )
+                SELECT
+                    suppressions.suppression_id,
+                    'timing_unknown',
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL
+                FROM source_suppressions AS suppressions
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+                    WHERE timing.suppression_id=suppressions.suppression_id
+                )
+                """
+            )
             _install_or_upgrade_source_suppression_schema_marker(connection)
             assert_source_suppression_ledger(connection)
             if not connection.in_transaction:
@@ -1112,12 +1204,13 @@ class MemoryStore:
                         f"""
                         INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
                             suppression_id,
+                            timing_status,
                             effective_instant_us,
                             recorded_instant_us,
                             effective_at_iso,
                             recorded_at_iso
                         )
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (?, 'timed', ?, ?, ?, ?)
                         """,
                         (
                             suppression.suppression_id,
@@ -1130,6 +1223,21 @@ class MemoryStore:
                                 suppression.recorded_at
                             ),
                         ),
+                    )
+                else:
+                    connection.execute(
+                        f"""
+                        INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                            suppression_id,
+                            timing_status,
+                            effective_instant_us,
+                            recorded_instant_us,
+                            effective_at_iso,
+                            recorded_at_iso
+                        )
+                        VALUES (?, 'timing_unknown', NULL, NULL, NULL, NULL)
+                        """,
+                        (suppression.suppression_id,),
                     )
                 assert_source_suppression_ledger(connection)
             except sqlite3.IntegrityError as error:
