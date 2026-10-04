@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -821,6 +822,91 @@ class CurrentPresentUseTests(unittest.TestCase):
         )
         with self.assertRaises(KeyError):
             self.current.get_state_for_audit(new_record.state_id)
+
+    def test_initialize_holds_write_lock_across_audit_and_guard_installation(self) -> None:
+        record = self.state("initialize-lock")
+        binding = self.binding(record.source_refs[0])
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+        self.suppress(binding, "stop-initialize-lock")
+        self.assertEqual(
+            self.use.state_decision(record.state_id).status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+
+        observed_transactions: list[bool] = []
+        concurrent_damage_errors: list[Exception] = []
+        original_connect = MemoryStore._connect_raw
+
+        def traced_connect(store: MemoryStore):
+            connection = original_connect(store)
+            injected = False
+
+            def on_statement(sql: str) -> None:
+                nonlocal injected
+                if injected:
+                    return
+                if not sql.lstrip().startswith(
+                    "CREATE TABLE IF NOT EXISTS sources"
+                ):
+                    return
+                injected = True
+                observed_transactions.append(connection.in_transaction)
+                damage = sqlite3.connect(self.db, timeout=0)
+                try:
+                    damage.execute(
+                        "DROP TRIGGER source_suppressions_no_delete"
+                    )
+                    damage.execute(
+                        "DELETE FROM source_suppressions "
+                        "WHERE suppression_id='stop-initialize-lock'"
+                    )
+                    damage.commit()
+                except Exception as error:
+                    concurrent_damage_errors.append(error)
+                    damage.rollback()
+                finally:
+                    damage.close()
+
+            connection.set_trace_callback(on_statement)
+            return connection
+
+        with patch.object(MemoryStore, "_connect_raw", traced_connect):
+            MemoryStore(self.db).initialize()
+
+        self.assertEqual(observed_transactions, [True])
+        self.assertEqual(len(concurrent_damage_errors), 1)
+        self.assertIsInstance(
+            concurrent_damage_errors[0],
+            sqlite3.OperationalError,
+        )
+
+        check = sqlite3.connect(self.db)
+        try:
+            suppression_count = check.execute(
+                """
+                SELECT count(*) FROM source_suppressions
+                WHERE suppression_id='stop-initialize-lock'
+                """
+            ).fetchone()[0]
+            guard_count = check.execute(
+                """
+                SELECT count(*) FROM sqlite_master
+                WHERE type='trigger'
+                  AND name='source_suppressions_no_delete'
+                """
+            ).fetchone()[0]
+        finally:
+            check.close()
+
+        self.assertEqual(suppression_count, 1)
+        self.assertEqual(guard_count, 1)
+        self.assertEqual(
+            self.use.state_decision(record.state_id).status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
 
     def test_initialize_does_not_silently_repair_upgraded_ledger_guard_drift(self) -> None:
         connection = sqlite3.connect(self.db)
