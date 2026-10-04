@@ -986,7 +986,7 @@ class RoomParticipationAuthority:
         )
 
     @contextmanager
-    def hold_grant_for_operation(
+    def _hold_grant_for_operation(
         self,
         *,
         grant: RoomParticipationGrant,
