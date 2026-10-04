@@ -43,6 +43,130 @@ _AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
 _AUTHORITY_LOCKS: dict[str, RLock] = {}
 
 
+SOURCE_SUPPRESSION_TRIGGERS = frozenset(
+    {
+        "source_suppressions_no_replace",
+        "source_suppressions_no_update",
+        "source_suppressions_no_delete",
+    }
+)
+
+
+def _source_suppression_guard_sql() -> dict[str, str]:
+    return {
+        "source_suppressions_no_replace": """
+            CREATE TRIGGER source_suppressions_no_replace
+            BEFORE INSERT ON source_suppressions
+            WHEN EXISTS (
+                SELECT 1 FROM source_suppressions
+                WHERE suppression_id=NEW.suppression_id
+                   OR source_id=NEW.source_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression is append-only');
+            END
+        """,
+        "source_suppressions_no_update": """
+            CREATE TRIGGER source_suppressions_no_update
+            BEFORE UPDATE ON source_suppressions
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression is append-only');
+            END
+        """,
+        "source_suppressions_no_delete": """
+            CREATE TRIGGER source_suppressions_no_delete
+            BEFORE DELETE ON source_suppressions
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression is append-only');
+            END
+        """,
+    }
+
+
+def _normalize_schema_sql(value: str | None) -> str:
+    if value is None:
+        return ""
+    return " ".join(value.replace("\n", " ").replace("\t", " ").split()).lower()
+
+
+def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
+    """Fail closed if the synthetic stop-use ledger is mutable or malformed."""
+
+    columns = tuple(
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(source_suppressions)"
+        ).fetchall()
+    )
+    if columns != (
+        "suppression_id",
+        "source_id",
+        "requested_by",
+        "reason",
+    ):
+        raise SuppressedMemoryError(
+            "source suppression ledger schema is unavailable"
+        )
+
+    rows = connection.execute(
+        """
+        SELECT type,name,tbl_name,sql
+        FROM sqlite_master
+        WHERE tbl_name='source_suppressions'
+          AND type IN ('trigger','index')
+        """
+    ).fetchall()
+    unexpected = tuple(
+        (row["type"], row["name"])
+        for row in rows
+        if (
+            row["type"] == "trigger"
+            and row["name"] not in SOURCE_SUPPRESSION_TRIGGERS
+        )
+        or (
+            row["type"] == "index"
+            and row["sql"] is not None
+        )
+    )
+    if unexpected:
+        raise SuppressedMemoryError(
+            "source suppression ledger has unexpected mutation behavior"
+        )
+
+    actual_triggers = {
+        row["name"]: _normalize_schema_sql(row["sql"])
+        for row in rows
+        if row["type"] == "trigger"
+    }
+    expected_triggers = {
+        name: _normalize_schema_sql(sql)
+        for name, sql in _source_suppression_guard_sql().items()
+    }
+    if actual_triggers != expected_triggers:
+        raise SuppressedMemoryError(
+            "source suppression append-only guards were altered"
+        )
+
+    invalid = connection.execute(
+        """
+        SELECT 1
+        FROM source_suppressions AS suppressions
+        LEFT JOIN sources
+          ON sources.source_id=suppressions.source_id
+        WHERE sources.source_id IS NULL
+           OR length(trim(suppressions.suppression_id))=0
+           OR length(trim(suppressions.source_id))=0
+           OR length(trim(suppressions.requested_by))=0
+           OR length(trim(suppressions.reason))=0
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid is not None:
+        raise SuppressedMemoryError(
+            "source suppression ledger contains invalid provenance"
+        )
+
+
 def _authority_lock_for_path(db_path: Path) -> RLock:
     key = str(db_path.expanduser().resolve())
     with _AUTHORITY_LOCK_REGISTRY_GUARD:
@@ -103,6 +227,29 @@ class MemoryStore:
                         REFERENCES sources(source_id)
                         ON DELETE RESTRICT
                 );
+
+                CREATE TRIGGER IF NOT EXISTS source_suppressions_no_replace
+                BEFORE INSERT ON source_suppressions
+                WHEN EXISTS (
+                    SELECT 1 FROM source_suppressions
+                    WHERE suppression_id=NEW.suppression_id
+                       OR source_id=NEW.source_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppressions_no_update
+                BEFORE UPDATE ON source_suppressions
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppressions_no_delete
+                BEFORE DELETE ON source_suppressions
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression is append-only');
+                END;
 
                 CREATE TABLE IF NOT EXISTS interpretations (
                     interpretation_id TEXT PRIMARY KEY
@@ -226,6 +373,7 @@ class MemoryStore:
                 );
                 """
             )
+            assert_source_suppression_ledger(connection)
 
     @_authority_ordered_write
     def add_source(self, source: SourceRecord) -> None:
@@ -288,6 +436,7 @@ class MemoryStore:
         suppression: SuppressionRecord,
     ) -> None:
         with self._connection() as connection:
+            assert_source_suppression_ledger(connection)
             self._get_source_from_connection(
                 connection=connection,
                 source_id=suppression.source_id,
