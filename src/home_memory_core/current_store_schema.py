@@ -7,7 +7,7 @@ from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.living_store import ATTACHMENT_TABLE, EPISODE_TABLE, ROOM_TABLE
 
 
-CURRENT_SCHEMA_VERSION = "current-persistence-v0.1"
+CURRENT_SCHEMA_VERSION = "current-persistence-v0.1.1"
 CURRENT_SCHEMA_MARKER_TABLE = "current_schema_marker"
 CURRENT_STATE_TABLE = "current_state_records"
 CURRENT_STATE_EVIDENCE_TABLE = "current_state_evidence_bindings"
