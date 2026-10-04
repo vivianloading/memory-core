@@ -44,6 +44,20 @@ A suppressed decision exposes the exact blocking provenance:
 
 The projection is snapshot-scoped and read-only.
 
+Suppression propagates **forward through already-persisted Current dependency**:
+
+- a state's direct evidence can block that state;
+- a blocked state also blocks every persisted superseding descendant that
+  semantically depends on it;
+- a blocked target state also blocks persisted end events that depend on that
+  target;
+- an end event's own suppression does not propagate backward into its target
+  state.
+
+Inherited blocks retain the exact source_ref/source_id/suppression_id and the
+origin effect id/kind that introduced the blocked evidence. This makes the
+reason inspectable instead of reducing lineage stop-use to one opaque boolean.
+
 It does not silently drop effects from history.
 
 ## Suppression is not resurrection
