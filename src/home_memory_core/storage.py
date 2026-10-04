@@ -1171,6 +1171,13 @@ class MemoryStore:
         self,
         suppression: SuppressionRecord,
     ) -> None:
+        if not isinstance(suppression, SuppressionRecord):
+            raise TypeError("suppression must be SuppressionRecord")
+        if not suppression.timing_known:
+            raise ValueError(
+                "new source suppression writes require explicit effective_at and recorded_at"
+            )
+
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             assert_source_suppression_ledger(connection)
@@ -1197,48 +1204,32 @@ class MemoryStore:
                         suppression.reason,
                     ),
                 )
-                if suppression.timing_known:
-                    assert suppression.effective_at is not None
-                    assert suppression.recorded_at is not None
-                    connection.execute(
-                        f"""
-                        INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
-                            suppression_id,
-                            timing_status,
-                            effective_instant_us,
-                            recorded_instant_us,
-                            effective_at_iso,
-                            recorded_at_iso
-                        )
-                        VALUES (?, 'timed', ?, ?, ?, ?)
-                        """,
-                        (
-                            suppression.suppression_id,
-                            suppression_instant(suppression.effective_at),
-                            suppression_instant(suppression.recorded_at),
-                            suppression_datetime_to_iso(
-                                suppression.effective_at
-                            ),
-                            suppression_datetime_to_iso(
-                                suppression.recorded_at
-                            ),
+                assert suppression.effective_at is not None
+                assert suppression.recorded_at is not None
+                connection.execute(
+                    f"""
+                    INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                        suppression_id,
+                        timing_status,
+                        effective_instant_us,
+                        recorded_instant_us,
+                        effective_at_iso,
+                        recorded_at_iso
+                    )
+                    VALUES (?, 'timed', ?, ?, ?, ?)
+                    """,
+                    (
+                        suppression.suppression_id,
+                        suppression_instant(suppression.effective_at),
+                        suppression_instant(suppression.recorded_at),
+                        suppression_datetime_to_iso(
+                            suppression.effective_at
                         ),
-                    )
-                else:
-                    connection.execute(
-                        f"""
-                        INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
-                            suppression_id,
-                            timing_status,
-                            effective_instant_us,
-                            recorded_instant_us,
-                            effective_at_iso,
-                            recorded_at_iso
-                        )
-                        VALUES (?, 'timing_unknown', NULL, NULL, NULL, NULL)
-                        """,
-                        (suppression.suppression_id,),
-                    )
+                        suppression_datetime_to_iso(
+                            suppression.recorded_at
+                        ),
+                    ),
+                )
                 assert_source_suppression_ledger(connection)
             except sqlite3.IntegrityError as error:
                 raise ValueError(
