@@ -18,6 +18,7 @@ from _trusted_test_support import (
     trusted_test_runtime_launch_issuer,
 )
 from home_memory_core.current_admission import (
+    CURRENT_END_ADMISSION_TABLE,
     CURRENT_STATE_ADMISSION_TABLE,
     CurrentAdmissionAuthorizationError,
     CurrentAdmissionConflictError,
@@ -30,6 +31,10 @@ from home_memory_core.current_store import (
     CurrentSourceBinding,
     CurrentStore,
     CurrentStoreIntegrityError,
+)
+from home_memory_core.current_store_schema import (
+    CURRENT_END_TABLE,
+    CURRENT_STATE_TABLE,
 )
 from home_memory_core.current_view import (
     CurrentNamespace,
@@ -171,6 +176,15 @@ class CurrentAdmissionTests(unittest.TestCase):
                 end_char=len(source.content),
             ),
         )
+
+    def clone_database(self, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.db) as source, sqlite3.connect(target) as clone:
+            source.backup(clone)
+
+    def table_count(self, path: Path, table: str) -> int:
+        with sqlite3.connect(path) as connection:
+            return int(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
 
     def room_state(self, state_id: str, **changes) -> CurrentStateRecord:
         values = dict(
@@ -498,6 +512,121 @@ class CurrentAdmissionTests(unittest.TestCase):
                 effect_kind=CurrentAdmissionEffectKind.STATE,
                 effect_id=record.state_id,
             )
+
+    def test_public_store_path_drift_cannot_redirect_admitted_effect(self) -> None:
+        grant = self.grant()
+        record = self.room_state("absolute-db-drift")
+        binding = self.binding(record.source_refs[0])
+        other_db = self.root / "other" / "home.db"
+        self.clone_database(other_db)
+
+        original_current_path = self.current.db_path
+        original_admission_path = self.admission_store.db_path
+        try:
+            self.current.db_path = other_db
+            self.admission_store.db_path = other_db
+            with self.assertRaises(CurrentAdmissionAuthorizationError):
+                self.admission.admit_room_state(
+                    record=record,
+                    source_bindings=(binding,),
+                    grant=grant,
+                )
+        finally:
+            self.current.db_path = original_current_path
+            self.admission_store.db_path = original_admission_path
+
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_TABLE), 0)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_ADMISSION_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_ADMISSION_TABLE), 0)
+
+    def test_relative_store_path_cwd_drift_cannot_redirect_admitted_effect(self) -> None:
+        grant = self.grant()
+        record = self.room_state("relative-db-drift")
+        binding = self.binding(record.source_refs[0])
+        other_db = self.root / "relative-other" / "home.db"
+        self.clone_database(other_db)
+
+        original_cwd = Path.cwd()
+        original_current_path = self.current.db_path
+        original_admission_path = self.admission_store.db_path
+        try:
+            os.chdir(self.db.parent)
+            self.current.db_path = Path("home.db")
+            self.admission_store.db_path = Path("home.db")
+            # The relative configuration still resolves to the leased DB here.
+            os.chdir(other_db.parent)
+            with self.assertRaises(CurrentAdmissionAuthorizationError):
+                self.admission.admit_room_state(
+                    record=record,
+                    source_bindings=(binding,),
+                    grant=grant,
+                )
+        finally:
+            os.chdir(original_cwd)
+            self.current.db_path = original_current_path
+            self.admission_store.db_path = original_admission_path
+
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_TABLE), 0)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_ADMISSION_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_ADMISSION_TABLE), 0)
+
+    def test_database_binding_drift_blocks_supersession_and_end_event(self) -> None:
+        grant = self.grant()
+        parent, parent_receipt = self.admit_state("binding-parent", grant=grant)
+        child = self.room_state(
+            "binding-child",
+            supersedes_state_id=parent.state_id,
+        )
+        child_binding = self.binding(child.source_refs[0])
+        event = CurrentStateEndEvent(
+            end_event_id="binding-end",
+            state_id=parent.state_id,
+            ended_at=self.t0 + timedelta(minutes=5),
+            recorded_at=self.t0 + timedelta(minutes=5),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic binding drift",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            source_refs=("ref-binding-end",),
+        )
+        end_binding = self.binding(event.source_refs[0])
+        other_db = self.root / "lineage-other" / "home.db"
+        self.clone_database(other_db)
+
+        original_current_path = self.current.db_path
+        original_admission_path = self.admission_store.db_path
+        try:
+            self.current.db_path = other_db
+            self.admission_store.db_path = other_db
+            with self.assertRaises(CurrentAdmissionAuthorizationError):
+                self.admission.admit_room_state(
+                    record=child,
+                    source_bindings=(child_binding,),
+                    grant=grant,
+                    supersedes_receipt=parent_receipt,
+                )
+            with self.assertRaises(CurrentAdmissionAuthorizationError):
+                self.admission.admit_room_end_event(
+                    event=event,
+                    source_bindings=(end_binding,),
+                    grant=grant,
+                    target_state_receipt=parent_receipt,
+                )
+        finally:
+            self.current.db_path = original_current_path
+            self.admission_store.db_path = original_admission_path
+
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_TABLE), 1)
+        self.assertEqual(self.table_count(self.db, CURRENT_END_TABLE), 0)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_ADMISSION_TABLE), 1)
+        self.assertEqual(self.table_count(self.db, CURRENT_END_ADMISSION_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_TABLE), 1)
+        self.assertEqual(self.table_count(other_db, CURRENT_END_TABLE), 0)
+        self.assertEqual(self.table_count(other_db, CURRENT_STATE_ADMISSION_TABLE), 1)
+        self.assertEqual(self.table_count(other_db, CURRENT_END_ADMISSION_TABLE), 0)
 
     @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork semantics")
     def test_fork_child_cannot_reuse_live_current_admission_receipt(self) -> None:
