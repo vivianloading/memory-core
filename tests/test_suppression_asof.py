@@ -651,6 +651,36 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
 
         self.assertEqual(self.memory.get_suppressions(), (record,))
 
+    def test_timing_sidecar_user_defined_index_fails_closed(self) -> None:
+        binding = self.binding("unexpected-index")
+        stop_time = self.t0 + timedelta(hours=1)
+        self.timed_suppress(
+            binding,
+            suppression_id="stop-unexpected-index",
+            effective_at=stop_time,
+            recorded_at=stop_time,
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                f"""
+                CREATE UNIQUE INDEX unexpected_timing_recorded_at
+                ON {SOURCE_SUPPRESSION_TIMING_TABLE}(recorded_instant_us)
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.source_history.source_decision(
+                source_id=binding.evidence.source_id,
+                as_of=stop_time,
+            )
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
     def test_timing_sidecar_blocks_update_delete_and_replace(self) -> None:
         binding = self.binding("immutable-timing")
         stop_time = self.t0 + timedelta(hours=1)
