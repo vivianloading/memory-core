@@ -126,6 +126,12 @@ migrates that exact shape to `WITHOUT ROWID` while preserving every suppression
 record. Unknown or modified look-alike schemas are not normalized or repaired;
 they fail closed.
 
+An already-upgraded `WITHOUT ROWID` ledger must also arrive at
+`MemoryStore.initialize()` with all append-only guards intact. Initialization
+does not silently recreate a missing/altered guard, because doing so could hide
+a prior window in which stop-use history was mutable. Fresh databases and the
+one exact legacy migration are the only paths that install these guards.
+
 This does not claim that arbitrary programs with direct filesystem/SQLite
 control are transformed into authorized HOME callers. It ensures the supported
 HOME boundary can mechanically detect when its stop-use ledger is no longer a
