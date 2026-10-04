@@ -1,3 +1,4 @@
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from home_memory_core.thread import (
 )
 from home_memory_core.suppression import (
     SuppressedMemoryError,
+    SuppressionLedgerIntegrityError,
 )
 
 
@@ -280,6 +282,62 @@ class SuppressionStorageTest(unittest.TestCase):
             self.store.get_supersessions(),
             (),
         )
+
+    def test_damaged_suppression_ledger_fails_closed_at_source_use(self) -> None:
+        source = create_source_record(
+            source_id="stored-message-damaged-ledger",
+            content="这段 source 已经停止使用，损坏后也不能复活。",
+            authored_by="vivi",
+            scope="shared",
+        )
+        self.store.add_source(source)
+        suppression = create_suppression_record(
+            suppression_id="stored-suppression-damaged-ledger",
+            source_id=source.source_id,
+            requested_by="vivi",
+            reason="损坏的 stop-use ledger 不能变成使用许可。",
+        )
+        self.store.suppress_source(suppression)
+
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                "DROP TRIGGER source_suppressions_no_delete"
+            )
+            connection.execute(
+                """
+                DELETE FROM source_suppressions
+                WHERE suppression_id=?
+                """,
+                (suppression.suppression_id,),
+            )
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.is_source_usable(source.source_id)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.get_source(source.source_id)
+
+        self.assertEqual(
+            self.store.get_source_for_audit(source.source_id),
+            source,
+        )
+
+        evidence = create_evidence_ref(
+            source=source,
+            start_char=0,
+            end_char=len(source.content),
+        )
+        interpretation = create_interpretation_record(
+            interpretation_id="stored-interpretation-damaged-ledger",
+            text="损坏的 suppression ledger 不能授权新的 derived memory。",
+            perspective_owner="lior",
+            perspective_instance_id="lior-window-test",
+            about_subject="vivi",
+            scope="shared",
+            evidence=(evidence,),
+        )
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.add_interpretation(interpretation)
 
     def test_suppression_survives_store_reopen(self) -> None:
         source = create_source_record(
