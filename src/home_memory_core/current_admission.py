@@ -455,6 +455,10 @@ class CurrentAdmissionAuthority:
         try:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
+            assert_synthetic_store_domain(connection)
+            self._current_store._assert_upstream(connection)
+            assert_current_schema(connection)
+            assert_current_data_integrity(connection)
             assert_current_admission_schema(connection)
             assert_current_admission_data_integrity(connection)
             self._require_live_receipt(
