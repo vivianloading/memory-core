@@ -1,4 +1,5 @@
 import dataclasses
+import sqlite3
 import inspect
 import tempfile
 import threading
@@ -153,7 +154,7 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
         )
         self.store.add_thread(incompatible_thread)
 
-        with self.store._connection() as connection:
+        with sqlite3.connect(self.db_path) as connection:
             connection.execute(
                 """
                 UPDATE interpretation_thread_memberships
@@ -304,7 +305,7 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
         self._thread_with_single_evidence(
             interpretation_id="i-tamper", content="needle", start=0, end=6
         )
-        with self.store._connection() as connection:
+        with sqlite3.connect(self.db_path) as connection:
             connection.execute(
                 "UPDATE sources SET content = ? WHERE source_id = ?",
                 ("changed", "s-i-tamper"),
@@ -455,7 +456,7 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
             "supersession_evidence",
         )
         counts = {}
-        with self.store._connection() as connection:
+        with sqlite3.connect(self.db_path) as connection:
             for table in tables:
                 counts[table] = connection.execute(
                     f"SELECT COUNT(*) FROM {table}"
