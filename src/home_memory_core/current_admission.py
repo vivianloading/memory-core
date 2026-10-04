@@ -397,7 +397,7 @@ class CurrentAdmissionAuthority:
                     "Slice 2 v0.1 admits Room Current only; Shared admission is closed"
                 )
             room_id = target["owner_id"]
-            with self._room_authority.hold_grant_for_operation(
+            with self._room_authority._hold_grant_for_operation(
                 grant=grant,
                 session_id=grant.session_id,
                 episode_id=event.episode_id,
