@@ -151,7 +151,8 @@ For a timed suppression recorded after T, the historical answer is
 `not_suppressed_as_of` even if its `effective_at` is earlier than T,
 because HOME did not know that stop-use evidence at T.
 
-For legacy untimed suppression, the answer is `timing_unknown`.
+For legacy untimed suppression, the answer is `timing_unknown` because the
+persisted sidecar explicitly says timing was not recorded.
 
 ## Historical Current-use projection
 
@@ -196,7 +197,12 @@ Exact block provenance remains inspectable.
 3B1 does not weaken Slice 3A.
 
 Present-use code continues to treat **every** persisted suppression row as
-blocking, whether its timing is known or legacy/unknown.
+blocking.
+
+New supported suppression writes require explicit `effective_at` and
+`recorded_at`; they cannot manufacture a new `timing_unknown` record.
+The untimed `SuppressionRecord` shape remains only so migrated historical
+evidence can be represented faithfully when read back.
 
 Historical as-of is a read-only explanatory projection. It is not an
 operational permission credential and cannot revive a present-use receipt.
@@ -215,7 +221,10 @@ Slice 3B1 does not define:
 - identity continuity;
 - real personal-data use.
 
-The governing principle is:
+The governing principles are:
 
 > Later knowledge may enrich the history HOME can explain now.
 > It must not be smuggled backward into what HOME would have known then.
+
+> Unknown is not absence. If HOME claims timing is unknown, that uncertainty
+> must itself be represented by durable evidence.
