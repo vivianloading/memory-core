@@ -430,6 +430,35 @@ class CurrentAdmissionTests(unittest.TestCase):
                 effect_id=record.state_id,
             )
 
+    def test_durable_audit_does_not_recreate_live_receipt(self) -> None:
+        record, receipt = self.admit_state("state-a")
+        restarted_authority = admission_module.CurrentAdmissionAuthority(
+            current_store=self.current,
+            admission_store=self.admission_store,
+            room_authority=self.room_authority,
+            _marker=admission_module._ADMISSION_AUTHORITY_MARKER,
+        )
+
+        self.assertEqual(len(self.admission_store.list_for_audit()), 1)
+        with self.assertRaises(CurrentAdmissionAuthorizationError):
+            restarted_authority.require_live_receipt(
+                receipt=receipt,
+                effect_kind=CurrentAdmissionEffectKind.STATE,
+                effect_id=record.state_id,
+            )
+
+    def test_admission_audit_rejects_upstream_living_schema_drift(self) -> None:
+        self.admit_state("state-a")
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("DROP TRIGGER living_rooms_no_delete")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(Exception):
+            self.admission_store.list_for_audit()
+
     def test_suspended_grant_rolls_back_current_effect(self) -> None:
         grant = self.grant()
         self.room_authority.suspend_policy(policy_id=self.policy.policy_id)
