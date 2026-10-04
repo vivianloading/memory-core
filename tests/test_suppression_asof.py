@@ -37,6 +37,7 @@ from home_memory_core.storage import (
     MemoryStore,
 )
 from home_memory_core.suppression import (
+    SuppressionLedgerIntegrityError,
     create_suppression_record,
     create_timed_suppression_record,
 )
@@ -496,6 +497,117 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
             as_of=stop_plus8,
         )
         self.assertEqual(utc_decision, plus8_decision)
+
+    def test_timed_suppression_round_trip_preserves_exact_temporal_record(self) -> None:
+        binding = self.binding("roundtrip")
+        effective_at = self.t0 + timedelta(hours=1, microseconds=7)
+        recorded_at = self.t0 + timedelta(hours=2, microseconds=11)
+        record = create_timed_suppression_record(
+            suppression_id="stop-roundtrip",
+            source_id=binding.evidence.source_id,
+            requested_by="asof-test",
+            reason="round-trip exact timing",
+            effective_at=effective_at,
+            recorded_at=recorded_at,
+        )
+        self.memory.suppress_source(record)
+
+        self.assertEqual(self.memory.get_suppressions(), (record,))
+
+    def test_timing_sidecar_blocks_update_delete_and_replace(self) -> None:
+        binding = self.binding("immutable-timing")
+        stop_time = self.t0 + timedelta(hours=1)
+        self.timed_suppress(
+            binding,
+            suppression_id="stop-immutable-timing",
+            effective_at=stop_time,
+            recorded_at=stop_time,
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            for sql in (
+                f"""
+                UPDATE {SOURCE_SUPPRESSION_TIMING_TABLE}
+                SET recorded_instant_us=recorded_instant_us+1
+                WHERE suppression_id='stop-immutable-timing'
+                """,
+                f"""
+                DELETE FROM {SOURCE_SUPPRESSION_TIMING_TABLE}
+                WHERE suppression_id='stop-immutable-timing'
+                """,
+                f"""
+                INSERT OR REPLACE INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                    suppression_id,effective_instant_us,recorded_instant_us,
+                    effective_at_iso,recorded_at_iso
+                ) VALUES (
+                    'stop-immutable-timing',1,1,
+                    '2026-01-01T00:00:00+00:00',
+                    '2026-01-01T00:00:00+00:00'
+                )
+                """,
+            ):
+                with self.assertRaises(sqlite3.DatabaseError):
+                    connection.execute(sql)
+                connection.rollback()
+        finally:
+            connection.close()
+
+    def test_missing_timing_sidecar_fails_closed_and_initializer_does_not_heal(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                f"DROP TABLE {SOURCE_SUPPRESSION_TIMING_TABLE}"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.history.list_decisions(as_of=self.t0)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
+        check = sqlite3.connect(self.db)
+        try:
+            exists = check.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name=?
+                """,
+                (SOURCE_SUPPRESSION_TIMING_TABLE,),
+            ).fetchone()
+        finally:
+            check.close()
+        self.assertIsNone(exists)
+
+    def test_missing_v02_completion_marker_fails_closed_without_recreation(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                f"DROP TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE}"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.history.list_decisions(as_of=self.t0)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
+        check = sqlite3.connect(self.db)
+        try:
+            marker = check.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name=?
+                """,
+                (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+            ).fetchone()
+        finally:
+            check.close()
+        self.assertIsNone(marker)
 
     def test_v01_marker_upgrade_preserves_legacy_suppression_as_timing_unknown(self) -> None:
         binding = self.binding("upgrade")
