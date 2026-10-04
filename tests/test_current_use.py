@@ -33,7 +33,7 @@ from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
 from home_memory_core.suppression import (
-    SuppressedMemoryError,
+    SuppressionLedgerIntegrityError,
     create_suppression_record,
 )
 
@@ -317,7 +317,7 @@ class CurrentPresentUseTests(unittest.TestCase):
         finally:
             connection.close()
 
-        with self.assertRaises(SuppressedMemoryError):
+        with self.assertRaises(SuppressionLedgerIntegrityError):
             self.use.state_decision(record.state_id)
 
 
