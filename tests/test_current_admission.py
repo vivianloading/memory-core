@@ -285,6 +285,18 @@ class CurrentAdmissionTests(unittest.TestCase):
             receipt.admission_binding_digest,
         )
 
+    def test_non_grant_object_is_rejected_before_current_write(self) -> None:
+        record = self.room_state("not-a-grant")
+        with self.assertRaises(CurrentAdmissionAuthorizationError):
+            self.admission.admit_room_state(
+                record=record,
+                source_bindings=(self.binding(record.source_refs[0]),),
+                grant=object(),
+            )
+
+        self.assertEqual(self.current.list_states_for_audit(), ())
+        self.assertEqual(self.admission_store.list_for_audit(), ())
+
     def test_room_grant_without_change_current_scope_cannot_admit(self) -> None:
         grant = self.grant(
             scopes={RoomParticipationScope.APPEND_FIRST_PERSON}
