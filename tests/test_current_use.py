@@ -224,6 +224,101 @@ class CurrentPresentUseTests(unittest.TestCase):
         self.assertEqual(decision.blocks[0].source_ref, "ref-multi-b")
         self.assertEqual(decision.blocks[0].source_id, second.evidence.source_id)
 
+    def test_parent_suppression_propagates_to_existing_superseding_child(self) -> None:
+        parent = self.state("lineage-parent")
+        parent_binding = self.binding(parent.source_refs[0])
+        self.current.add_state_record(
+            record=parent,
+            source_bindings=(parent_binding,),
+        )
+        child = self.state(
+            "lineage-child",
+            supersedes_state_id=parent.state_id,
+        )
+        child_binding = self.binding(child.source_refs[0])
+        self.current.add_state_record(
+            record=child,
+            source_bindings=(child_binding,),
+        )
+
+        self.suppress(parent_binding, "stop-lineage-parent")
+        parent_decision = self.use.state_decision(parent.state_id)
+        child_decision = self.use.state_decision(child.state_id)
+
+        self.assertEqual(
+            parent_decision.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(
+            child_decision.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(len(child_decision.blocks), 1)
+        inherited = child_decision.blocks[0]
+        self.assertEqual(inherited.source_ref, parent.source_refs[0])
+        self.assertEqual(inherited.source_id, parent_binding.evidence.source_id)
+        self.assertEqual(inherited.suppression_id, "stop-lineage-parent")
+        self.assertEqual(
+            inherited.origin_effect_kind,
+            CurrentUseEffectKind.STATE,
+        )
+        self.assertEqual(inherited.origin_effect_id, parent.state_id)
+
+        self.assertEqual(
+            tuple(item.record.state_id for item in self.current.list_states_for_audit()),
+            ("lineage-child", "lineage-parent"),
+        )
+
+    def test_target_state_suppression_propagates_to_existing_end_event(self) -> None:
+        state = self.state("target-state")
+        state_binding = self.binding(state.source_refs[0])
+        self.current.add_state_record(
+            record=state,
+            source_bindings=(state_binding,),
+        )
+        event = CurrentStateEndEvent(
+            end_event_id="target-end",
+            state_id=state.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic target end",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-a",
+            perspective_instance_id="perspective-a",
+            source_refs=("ref-target-end",),
+        )
+        event_binding = self.binding(event.source_refs[0])
+        self.current.add_end_event(
+            event=event,
+            source_bindings=(event_binding,),
+        )
+
+        self.suppress(state_binding, "stop-target-state")
+        state_decision = self.use.state_decision(state.state_id)
+        end_decision = self.use.end_event_decision(event.end_event_id)
+
+        self.assertEqual(
+            state_decision.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(
+            end_decision.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+        self.assertEqual(len(end_decision.blocks), 1)
+        inherited = end_decision.blocks[0]
+        self.assertEqual(inherited.source_ref, state.source_refs[0])
+        self.assertEqual(
+            inherited.origin_effect_kind,
+            CurrentUseEffectKind.STATE,
+        )
+        self.assertEqual(inherited.origin_effect_id, state.state_id)
+        self.assertEqual(
+            self.current.get_end_event_for_audit(event.end_event_id).event,
+            event,
+        )
+
     def test_suppression_does_not_implicitly_resurrect_superseded_parent(self) -> None:
         parent = self.state("parent")
         parent_binding = self.binding(parent.source_refs[0])
