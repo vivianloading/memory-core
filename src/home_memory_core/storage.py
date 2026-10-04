@@ -30,6 +30,9 @@ from home_memory_core.suppression import (
     SuppressedMemoryError,
     SuppressionLedgerIntegrityError,
     SuppressionRecord,
+    suppression_datetime_from_iso,
+    suppression_datetime_to_iso,
+    suppression_instant,
     is_interpretation_usable as interpretation_is_usable,
     is_supersession_usable as supersession_is_usable,
 )
@@ -45,7 +48,8 @@ _AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
 _AUTHORITY_LOCKS: dict[str, RLock] = {}
 
 
-SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
+LEGACY_SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
+SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.2"
 SUPPRESSION_SCHEMA_MARKER_TABLE = "source_suppression_schema_marker"
 SUPPRESSION_SCHEMA_MARKER_TRIGGERS = frozenset(
     {
@@ -62,6 +66,147 @@ SOURCE_SUPPRESSION_TRIGGERS = frozenset(
         "source_suppressions_no_delete",
     }
 )
+
+
+SOURCE_SUPPRESSION_TIMING_TABLE = "source_suppression_timing"
+SOURCE_SUPPRESSION_TIMING_TRIGGERS = frozenset(
+    {
+        "source_suppression_timing_no_replace",
+        "source_suppression_timing_no_update",
+        "source_suppression_timing_no_delete",
+    }
+)
+
+
+def _source_suppression_timing_table_sql() -> str:
+    return f"""
+        CREATE TABLE {SOURCE_SUPPRESSION_TIMING_TABLE} (
+            suppression_id TEXT PRIMARY KEY,
+            effective_instant_us INTEGER NOT NULL
+                CHECK(typeof(effective_instant_us)='integer'),
+            recorded_instant_us INTEGER NOT NULL
+                CHECK(typeof(recorded_instant_us)='integer'),
+            effective_at_iso TEXT NOT NULL
+                CHECK(length(trim(effective_at_iso))>0),
+            recorded_at_iso TEXT NOT NULL
+                CHECK(length(trim(recorded_at_iso))>0),
+            CHECK(effective_instant_us<=recorded_instant_us),
+            FOREIGN KEY(suppression_id)
+                REFERENCES source_suppressions(suppression_id)
+                ON UPDATE RESTRICT ON DELETE RESTRICT
+        ) WITHOUT ROWID
+    """
+
+
+def _source_suppression_timing_trigger_sql() -> dict[str, str]:
+    return {
+        "source_suppression_timing_no_replace": f"""
+            CREATE TRIGGER source_suppression_timing_no_replace
+            BEFORE INSERT ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+            WHEN EXISTS(
+                SELECT 1 FROM {SOURCE_SUPPRESSION_TIMING_TABLE}
+                WHERE suppression_id=NEW.suppression_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression timing already exists');
+            END
+        """,
+        "source_suppression_timing_no_update": f"""
+            CREATE TRIGGER source_suppression_timing_no_update
+            BEFORE UPDATE ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression timing is append-only');
+            END
+        """,
+        "source_suppression_timing_no_delete": f"""
+            CREATE TRIGGER source_suppression_timing_no_delete
+            BEFORE DELETE ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression timing is append-only');
+            END
+        """,
+    }
+
+
+def _assert_source_suppression_timing(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type='table' AND name=?
+        """,
+        (SOURCE_SUPPRESSION_TIMING_TABLE,),
+    ).fetchone()
+    if (
+        row is None
+        or _normalize_schema_sql(row["sql"])
+        != _normalize_schema_sql(_source_suppression_timing_table_sql())
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression timing table is missing or altered"
+        )
+
+    trigger_rows = connection.execute(
+        """
+        SELECT name,sql
+        FROM sqlite_master
+        WHERE type='trigger' AND tbl_name=?
+        """,
+        (SOURCE_SUPPRESSION_TIMING_TABLE,),
+    ).fetchall()
+    actual = {
+        item["name"]: _normalize_schema_sql(item["sql"])
+        for item in trigger_rows
+    }
+    expected = {
+        name: _normalize_schema_sql(sql)
+        for name, sql in _source_suppression_timing_trigger_sql().items()
+    }
+    if actual != expected:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression timing guards were altered"
+        )
+
+    rows = connection.execute(
+        f"""
+        SELECT
+            timing.suppression_id,
+            timing.effective_instant_us,
+            timing.recorded_instant_us,
+            timing.effective_at_iso,
+            timing.recorded_at_iso,
+            suppressions.suppression_id AS parent_id
+        FROM {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+        LEFT JOIN source_suppressions AS suppressions
+          ON suppressions.suppression_id=timing.suppression_id
+        ORDER BY timing.suppression_id
+        """
+    ).fetchall()
+    for item in rows:
+        if item["parent_id"] is None:
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing has no suppression parent"
+            )
+        try:
+            effective_at = suppression_datetime_from_iso(
+                item["effective_at_iso"]
+            )
+            recorded_at = suppression_datetime_from_iso(
+                item["recorded_at_iso"]
+            )
+            effective_us = suppression_instant(effective_at)
+            recorded_us = suppression_instant(recorded_at)
+        except ValueError as error:
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing contains invalid datetime encoding"
+            ) from error
+        if (
+            effective_us != item["effective_instant_us"]
+            or recorded_us != item["recorded_instant_us"]
+            or effective_us > recorded_us
+        ):
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing scalar does not match encoded datetime"
+            )
 
 
 def _source_suppression_marker_table_sql() -> str:
