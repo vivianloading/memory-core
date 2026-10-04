@@ -5,6 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.evidence import create_evidence_ref
 from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.revision import create_supersession_record
@@ -17,7 +18,6 @@ from home_memory_core.source_discovery import (
     SourceLinkedReadOnlyDiscovery,
 )
 from home_memory_core.storage import MemoryStore
-from home_memory_core.suppression import create_suppression_record
 from home_memory_core.thread import (
     create_interpretation_thread,
     create_thread_admission,
