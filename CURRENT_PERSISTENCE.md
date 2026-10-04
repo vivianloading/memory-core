@@ -2,6 +2,8 @@
 
 **Status:** implementation slice; synthetic-only; no model delivery; real personal data CLOSED.
 
+**Physical schema marker:** `current-persistence-v0.1.1` after the Issue #16 remediation. The logical Slice 1 design remains v0.1; the marker changed because the persisted layout is intentionally incompatible with the reviewed failed draft.
+
 ## Purpose
 
 Persist the immutable historical inputs consumed by `Current View` without turning persistence into a new source of present truth.
