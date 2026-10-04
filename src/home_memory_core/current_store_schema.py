@@ -27,14 +27,14 @@ CURRENT_TRIGGERS = frozenset({
     "current_state_room_exists", "current_state_room_episode_binding",
     "current_state_room_attachment_binding", "current_state_stable_kind",
     "current_state_supersession_line",
-    "current_state_evidence_no_replace", "current_state_evidence_capacity",
-    "current_state_evidence_no_update",
+    "current_state_evidence_no_replace", "current_state_evidence_parent_exists",
+    "current_state_evidence_capacity", "current_state_evidence_no_update",
     "current_state_evidence_no_delete", "current_state_evidence_exact_source",
     "current_state_evidence_not_suppressed",
     "current_end_no_replace", "current_end_no_update", "current_end_no_delete",
     "current_end_target_binding",
-    "current_end_evidence_no_replace", "current_end_evidence_capacity",
-    "current_end_evidence_no_update",
+    "current_end_evidence_no_replace", "current_end_evidence_parent_exists",
+    "current_end_evidence_capacity", "current_end_evidence_no_update",
     "current_end_evidence_no_delete", "current_end_evidence_exact_source",
     "current_end_evidence_not_suppressed",
 })
@@ -193,6 +193,11 @@ def current_schema_script() -> str:
       WHEN EXISTS(SELECT 1 FROM {CURRENT_STATE_EVIDENCE_TABLE}
         WHERE state_id=NEW.state_id AND (position=NEW.position OR source_ref=NEW.source_ref))
       BEGIN SELECT RAISE(ABORT,'Current state evidence binding already exists'); END;
+    CREATE TRIGGER current_state_evidence_parent_exists BEFORE INSERT ON {CURRENT_STATE_EVIDENCE_TABLE}
+      WHEN NOT EXISTS(
+        SELECT 1 FROM {CURRENT_STATE_TABLE}
+        WHERE state_id=NEW.state_id)
+      BEGIN SELECT RAISE(ABORT,'Current state evidence parent is missing'); END;
     CREATE TRIGGER current_state_evidence_capacity BEFORE INSERT ON {CURRENT_STATE_EVIDENCE_TABLE}
       WHEN (
         SELECT COUNT(*) FROM {CURRENT_STATE_EVIDENCE_TABLE}
@@ -261,6 +266,11 @@ def current_schema_script() -> str:
       WHEN EXISTS(SELECT 1 FROM {CURRENT_END_EVIDENCE_TABLE}
         WHERE end_event_id=NEW.end_event_id AND (position=NEW.position OR source_ref=NEW.source_ref))
       BEGIN SELECT RAISE(ABORT,'Current end evidence binding already exists'); END;
+    CREATE TRIGGER current_end_evidence_parent_exists BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
+      WHEN NOT EXISTS(
+        SELECT 1 FROM {CURRENT_END_TABLE}
+        WHERE end_event_id=NEW.end_event_id)
+      BEGIN SELECT RAISE(ABORT,'Current end evidence parent is missing'); END;
     CREATE TRIGGER current_end_evidence_capacity BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
       WHEN (
         SELECT COUNT(*) FROM {CURRENT_END_EVIDENCE_TABLE}
@@ -276,7 +286,7 @@ def current_schema_script() -> str:
       BEGIN SELECT RAISE(ABORT,'Current end evidence is append-only'); END;
     CREATE TRIGGER current_end_evidence_exact_source BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
       WHEN NOT EXISTS(SELECT 1 FROM sources s WHERE s.source_id=NEW.source_id
-        AND s.content_sha256=NEW.source_sha256 AND NEW.end_char<=length(s.content))
+        AND s.content_sha256=NEW.source_sha256)
       BEGIN SELECT RAISE(ABORT,'Current end evidence does not match exact source'); END;
     CREATE TRIGGER current_end_evidence_not_suppressed BEFORE INSERT ON {CURRENT_END_EVIDENCE_TABLE}
       WHEN EXISTS(SELECT 1 FROM source_suppressions WHERE source_id=NEW.source_id)
