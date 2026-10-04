@@ -6,6 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
 import home_memory_core.current_admission as admission_module
 from _trusted_test_support import (
     trusted_test_room_continuation_policy,
