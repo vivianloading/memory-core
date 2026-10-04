@@ -22,6 +22,7 @@ from home_memory_core.revision import SupersessionRecord
 from home_memory_core.source import SourceRecord
 from home_memory_core.state import validate_supersession_graph
 from home_memory_core.store_domain import (
+    SYNTHETIC_STORE_DOMAIN,
     assert_synthetic_store_domain,
     ensure_synthetic_store_domain,
 )
@@ -114,9 +115,24 @@ def _assert_missing_suppression_ledger_is_bootstrap_safe(
         WHERE type='table' AND name='home_store_domain'
         """
     ).fetchone() is not None
-    if domain_table_exists:
+    if not domain_table_exists:
+        return
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT domain
+            FROM home_store_domain
+            WHERE marker_key='store_domain'
+            """
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        # Let the existing store-domain boundary classify malformed markers.
+        return
+
+    if len(rows) == 1 and rows[0][0] == SYNTHETIC_STORE_DOMAIN:
         raise SuppressionLedgerIntegrityError(
-            "trusted HOME store is missing the source suppression ledger"
+            "trusted synthetic HOME store is missing the source suppression ledger"
         )
 
 
