@@ -53,9 +53,16 @@ SOURCE_SUPPRESSION_TRIGGERS = frozenset(
 )
 
 
-def _source_suppression_table_sql() -> str:
-    return """
-        CREATE TABLE source_suppressions (
+def _source_suppression_table_sql(
+    table_name: str = "source_suppressions",
+) -> str:
+    if table_name not in {
+        "source_suppressions",
+        "source_suppressions_migration_v01",
+    }:
+        raise ValueError("unsupported suppression table name")
+    return f"""
+        CREATE TABLE {table_name} (
             suppression_id TEXT PRIMARY KEY,
             source_id TEXT NOT NULL UNIQUE,
             requested_by TEXT NOT NULL,
@@ -111,20 +118,31 @@ def _prepare_source_suppression_table(
         )
 
     _assert_source_suppression_rows(connection)
+    temp_name = "source_suppressions_migration_v01"
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (temp_name,),
+    ).fetchone() is not None:
+        raise SuppressionLedgerIntegrityError(
+            "suppression migration staging table already exists"
+        )
+    connection.execute(_source_suppression_table_sql(temp_name))
     connection.execute(
-        "ALTER TABLE source_suppressions RENAME TO source_suppressions_legacy_v01"
-    )
-    connection.execute(_source_suppression_table_sql())
-    connection.execute(
-        """
-        INSERT INTO source_suppressions (
+        f"""
+        INSERT INTO {temp_name} (
             suppression_id,source_id,requested_by,reason
         )
         SELECT suppression_id,source_id,requested_by,reason
-        FROM source_suppressions_legacy_v01
+        FROM source_suppressions
         """
     )
-    connection.execute("DROP TABLE source_suppressions_legacy_v01")
+    # Keep the canonical table name out of ALTER TABLE RENAME until the end.
+    # SQLite rewrites cross-table trigger SQL during rename; creating/copying
+    # first prevents Current triggers from being rebound to a temporary name.
+    connection.execute("DROP TABLE source_suppressions")
+    connection.execute(
+        f"ALTER TABLE {temp_name} RENAME TO source_suppressions"
+    )
 
 
 def _source_suppression_guard_sql() -> dict[str, str]:
