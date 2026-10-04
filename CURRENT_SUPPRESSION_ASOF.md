@@ -154,6 +154,15 @@ because HOME did not know that stop-use evidence at T.
 For legacy untimed suppression, the answer is `timing_unknown` because the
 persisted sidecar explicitly says timing was not recorded.
 
+The source-level projection does **not** claim that the source itself was known
+to HOME at T. The existing synthetic `sources` table has no persisted
+`recorded_at`, so 3B1 has no evidence from which to reconstruct source
+existence/visibility history. Given a currently persisted source id, this API
+answers only the historical standing of its stop-use evidence.
+
+That limitation is deliberate. Source-existence time must not be invented from
+suppression time.
+
 ## Historical Current-use projection
 
 `HistoricalCurrentUseStore` maps the same source-level time semantics onto
