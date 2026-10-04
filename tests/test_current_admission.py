@@ -36,6 +36,7 @@ from home_memory_core.current_store_schema import (
     CURRENT_END_TABLE,
     CURRENT_STATE_TABLE,
 )
+from home_memory_core.current_use import CurrentEffectSuppressedError
 from home_memory_core.current_view import (
     CurrentNamespace,
     CurrentStateEndEvent,
@@ -66,6 +67,7 @@ from home_memory_core.living_continuity import (
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
+from home_memory_core.suppression import create_suppression_record
 
 
 UTC = timezone.utc
@@ -512,6 +514,118 @@ class CurrentAdmissionTests(unittest.TestCase):
                 effect_kind=CurrentAdmissionEffectKind.STATE,
                 effect_id=record.state_id,
             )
+
+    def test_source_suppression_revokes_live_receipt_without_rewriting_audit(self) -> None:
+        record = self.room_state("suppressed-receipt")
+        binding = self.binding(record.source_refs[0])
+        receipt = self.admission.admit_room_state(
+            record=record,
+            source_bindings=(binding,),
+            grant=self.grant(),
+        )
+
+        self.admission.require_live_receipt(
+            receipt=receipt,
+            effect_kind=CurrentAdmissionEffectKind.STATE,
+            effect_id=record.state_id,
+        )
+        self.memory.suppress_source(
+            create_suppression_record(
+                suppression_id="stop-suppressed-receipt",
+                source_id=binding.evidence.source_id,
+                requested_by="synthetic-test",
+                reason="stop operational Current use",
+            )
+        )
+
+        with self.assertRaises(CurrentEffectSuppressedError):
+            self.admission.require_live_receipt(
+                receipt=receipt,
+                effect_kind=CurrentAdmissionEffectKind.STATE,
+                effect_id=record.state_id,
+            )
+
+        audited = self.current.get_state_for_audit(record.state_id)
+        self.assertEqual(audited.record, record)
+        admission_audit = self.admission_store.list_for_audit()
+        self.assertEqual(len(admission_audit), 1)
+        self.assertEqual(admission_audit[0].admission_id, receipt.admission_id)
+
+    def test_suppressed_parent_receipt_cannot_authorize_supersession(self) -> None:
+        grant = self.grant()
+        parent = self.room_state("suppressed-parent")
+        parent_binding = self.binding(parent.source_refs[0])
+        parent_receipt = self.admission.admit_room_state(
+            record=parent,
+            source_bindings=(parent_binding,),
+            grant=grant,
+        )
+        self.memory.suppress_source(
+            create_suppression_record(
+                suppression_id="stop-parent",
+                source_id=parent_binding.evidence.source_id,
+                requested_by="synthetic-test",
+                reason="stop parent use",
+            )
+        )
+        child = self.room_state(
+            "blocked-child",
+            supersedes_state_id=parent.state_id,
+        )
+        child_binding = self.binding(child.source_refs[0])
+
+        with self.assertRaises(CurrentEffectSuppressedError):
+            self.admission.admit_room_state(
+                record=child,
+                source_bindings=(child_binding,),
+                grant=grant,
+                supersedes_receipt=parent_receipt,
+            )
+
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_TABLE), 1)
+        self.assertEqual(self.table_count(self.db, CURRENT_STATE_ADMISSION_TABLE), 1)
+
+    def test_suppressed_target_receipt_cannot_authorize_end_event(self) -> None:
+        grant = self.grant()
+        state = self.room_state("suppressed-target")
+        state_binding = self.binding(state.source_refs[0])
+        state_receipt = self.admission.admit_room_state(
+            record=state,
+            source_bindings=(state_binding,),
+            grant=grant,
+        )
+        self.memory.suppress_source(
+            create_suppression_record(
+                suppression_id="stop-target",
+                source_id=state_binding.evidence.source_id,
+                requested_by="synthetic-test",
+                reason="stop target use",
+            )
+        )
+        event = CurrentStateEndEvent(
+            end_event_id="blocked-end",
+            state_id=state.state_id,
+            ended_at=self.t0 + timedelta(minutes=5),
+            recorded_at=self.t0 + timedelta(minutes=5),
+            end_kind=EndKind.EXPLICIT_END,
+            reason="synthetic blocked end",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id="episode-b",
+            perspective_instance_id="perspective-b",
+            source_refs=("ref-blocked-end",),
+        )
+        end_binding = self.binding(event.source_refs[0])
+
+        with self.assertRaises(CurrentEffectSuppressedError):
+            self.admission.admit_room_end_event(
+                event=event,
+                source_bindings=(end_binding,),
+                grant=grant,
+                target_state_receipt=state_receipt,
+            )
+
+        self.assertEqual(self.table_count(self.db, CURRENT_END_TABLE), 0)
+        self.assertEqual(self.table_count(self.db, CURRENT_END_ADMISSION_TABLE), 0)
 
     def test_room_authority_lineage_reader_is_pinned_to_leased_database(self) -> None:
         grant = self.grant()
