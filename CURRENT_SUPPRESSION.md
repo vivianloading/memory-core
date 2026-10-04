@@ -437,6 +437,47 @@ The broader rule is:
 The #43 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #44 — discovery eligibility requires trusted stop-use absence
+
+Independent re-review #44 returned **FAIL / NO-GO** on exact head
+`4431db8ffba16bf5ddbebf04c7c4814cc67825fd`.
+
+The review found one public present-use surface that still treated a missing
+suppression row as eligibility without first establishing that the suppression
+ledger itself was trustworthy. `SourceLinkedReadOnlyDiscovery` already used a
+coherent verified read snapshot, but its source-to-thread eligibility query
+performed a direct LEFT JOIN against `source_suppressions` without the
+canonical ledger audit.
+
+That meant a detectably damaged ledger could revive a previously stopped
+source's discovery linkage even though source use, lineage resolution,
+historical suppression reads, initialization and delivery all rejected the
+same store.
+
+The remediation keeps discovery's existing read snapshot and adds the missing
+trust prerequisite **inside that snapshot**:
+
+- `_discover_in_snapshot()` establishes the canonical
+  `assert_source_suppression_ledger()` invariant before interpreting
+  suppression-row absence as discovery eligibility;
+- a damaged append-only guard or orphaned timing record therefore fails closed
+  before any complete discovery receipt can be published;
+- audit-only source history remains separate and readable for inspection.
+
+Regression coverage preserves the exact failure class: after a supported stop,
+remove the suppression delete guard and stop row while leaving the damage
+observable; discovery must raise `SuppressionLedgerIntegrityError` rather
+than republish the source/thread locator.
+
+The broader rule is:
+
+> **Every present-use surface that derives permission from suppression-row
+> absence must first establish the same suppression-ledger trust. A coherent
+> snapshot of untrusted absence is still untrusted absence.**
+
+The #44 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.
