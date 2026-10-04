@@ -180,6 +180,7 @@ class CurrentAdmissionStore:
         connection = self._connect()
         try:
             assert_synthetic_store_domain(connection)
+            CurrentStore(self.db_path)._assert_upstream(connection)
             assert_current_schema(connection)
             assert_current_data_integrity(connection)
             existing = self._existing_tables(connection)
@@ -193,6 +194,7 @@ class CurrentAdmissionStore:
                 return
             connection.executescript(current_admission_schema_script())
             assert_synthetic_store_domain(connection)
+            CurrentStore(self.db_path)._assert_upstream(connection)
             assert_current_schema(connection)
             assert_current_data_integrity(connection)
             assert_current_admission_schema(connection)
@@ -314,7 +316,7 @@ class CurrentAdmissionAuthority:
                 record=record,
                 receipt=supersedes_receipt,
             )
-            with self._room_authority.hold_grant_for_operation(
+            with self._room_authority._hold_grant_for_operation(
                 grant=grant,
                 session_id=grant.session_id,
                 episode_id=record.episode_id,
