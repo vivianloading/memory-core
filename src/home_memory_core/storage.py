@@ -83,7 +83,7 @@ def _legacy_source_suppression_table_sql() -> str:
     """
 
 
-def _migrate_legacy_source_suppression_table(
+def _prepare_source_suppression_table(
     connection: sqlite3.Connection,
 ) -> None:
     row = connection.execute(
@@ -99,6 +99,10 @@ def _migrate_legacy_source_suppression_table(
     actual = _normalize_schema_sql(row["sql"])
     target = _normalize_schema_sql(_source_suppression_table_sql())
     if actual == target:
+        # An already-upgraded ledger must arrive with intact guards.
+        # Initialization does not silently heal drift in a trusted stop-use
+        # boundary, because that could conceal a prior resurrection window.
+        assert_source_suppression_ledger(connection)
         return
     legacy = _normalize_schema_sql(_legacy_source_suppression_table_sql())
     if actual != legacy:
@@ -293,7 +297,7 @@ class MemoryStore:
         # but a database already marked real is never downgraded or adopted.
         with self._unverified_connection() as connection:
             ensure_synthetic_store_domain(connection)
-            _migrate_legacy_source_suppression_table(connection)
+            _prepare_source_suppression_table(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
