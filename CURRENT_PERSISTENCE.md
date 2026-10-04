@@ -50,11 +50,33 @@ source_ref
 
 The source must already exist in the HOME source store, its hash/range must match, and it must not already be suppressed when the new Current history is written.
 
+Evidence coordinates are defined in the same domain as `EvidenceRef`: zero-based,
+half-open **Python `str` code-point indices**. SQLite `length(TEXT)` is not used
+as the final span authority because embedded U+0000 has different length behavior
+there. The supported writer and audit path validate the Python domain directly,
+while the SQLite schema requires integer coordinate storage.
+
 Historical rows are not deleted if a source is suppressed later. This slice exposes them only through audit readers; it intentionally does not yet expose a production consumer path that could turn suppressed history back into Current. Suppression propagation belongs to the lifecycle integration slice.
 
 ## Append-only and repair semantics
 
 State change is represented by new records and explicit supersession/end events. Existing rows cannot be updated or deleted through the supported schema, including `INSERT OR REPLACE` replacement behavior.
+
+Current history tables use `WITHOUT ROWID`. This is intentional: a hidden SQLite
+`rowid` is not allowed to become a second replacement identity that bypasses the
+declared immutable primary key when `recursive_triggers` or foreign-key settings
+differ.
+
+The parent state/end-event row also seals the evidence set it was created with:
+the ordered semantic `source_refs` are retained in the immutable payload and the
+declared binding count is stored alongside it. Child evidence rows may fill only
+those declared slots. Later insertion cannot silently make an old semantic record
+wake up with a larger or different evidence set.
+
+One `namespace + owner + key` has one stable `state_kind` across its history.
+Different kinds are not allowed to appear as independent roots under the same
+Current key. This does **not** collapse same-kind competing heads: conflict remains
+a valid representable Current result.
 
 Supersession must stay inside one semantic line:
 
@@ -86,6 +108,10 @@ The schema is fail-closed in two ways:
 
 Schema validation compares the actual SQLite table/trigger SQL against the exact expected definitions. A same-name empty trigger therefore does not satisfy the contract.
 
+The integrity audit scans evidence tables in both directions: parent records must
+have exactly their sealed number of bindings, and child bindings with no parent
+are rejected even if foreign keys were disabled when the raw row was inserted.
+
 ## Raw SQL non-claim
 
 This slice makes immutable-history rewrites and semantically invalid topology
@@ -100,6 +126,33 @@ trusted present-tense state merely because the audit reader can reconstruct it.
 Slice 2 must therefore bind every usable append to an exact admission decision
 or receipt. It must not grandfather pre-existing rows, raw-SQL rows, or
 schema-valid rows into operational authority merely because they are present.
+
+## Independent review history
+
+Issue #16 reviewed exact head
+`9408a3cbd6256298cbd9000580f9330df448f34e` and returned **FAIL / NO-GO**.
+That verdict is preserved as historical design provenance and is not rewritten
+by later fixes.
+
+The independent review confirmed four blocking defects:
+
+1. hidden `rowid` replacement paths could remove immutable history under some
+   `foreign_keys` / `recursive_triggers` combinations;
+2. evidence child rows could be appended after commit, changing an existing
+   record's reconstructed `source_refs`;
+3. fractional evidence coordinates could cross the persistence boundary and
+   later fail `read_evidence()`;
+4. the store accepted different `state_kind` roots under one Current key even
+   though Current View rejects such history.
+
+It also identified two residual integrity/input-domain findings: SQLite
+`length(TEXT)` disagrees with Python code-point length in the presence of
+U+0000, and orphan evidence rows were not reached by the original parent-driven
+audit.
+
+The remediation in subsequent heads treats these findings as changes to the
+mechanical contract, not as reasons to erase the prior FAIL. A later PASS, if
+earned, must bind to a new exact SHA.
 
 ## Deliberate sequencing
 
