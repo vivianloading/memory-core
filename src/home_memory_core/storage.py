@@ -45,6 +45,16 @@ _AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
 _AUTHORITY_LOCKS: dict[str, RLock] = {}
 
 
+SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
+SUPPRESSION_SCHEMA_MARKER_TABLE = "source_suppression_schema_marker"
+SUPPRESSION_SCHEMA_MARKER_TRIGGERS = frozenset(
+    {
+        "source_suppression_schema_marker_no_update",
+        "source_suppression_schema_marker_no_delete",
+    }
+)
+
+
 SOURCE_SUPPRESSION_TRIGGERS = frozenset(
     {
         "source_suppressions_no_replace",
@@ -52,6 +62,124 @@ SOURCE_SUPPRESSION_TRIGGERS = frozenset(
         "source_suppressions_no_delete",
     }
 )
+
+
+def _source_suppression_marker_table_sql() -> str:
+    return f"""
+        CREATE TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE} (
+            marker_key TEXT PRIMARY KEY
+                CHECK (marker_key='source_suppression_schema'),
+            schema_version TEXT NOT NULL
+                CHECK (schema_version='{SUPPRESSION_SCHEMA_VERSION}')
+        ) WITHOUT ROWID
+    """
+
+
+def _source_suppression_marker_trigger_sql() -> dict[str, str]:
+    return {
+        "source_suppression_schema_marker_no_update": f"""
+            CREATE TRIGGER source_suppression_schema_marker_no_update
+            BEFORE UPDATE ON {SUPPRESSION_SCHEMA_MARKER_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression schema marker is immutable');
+            END
+        """,
+        "source_suppression_schema_marker_no_delete": f"""
+            CREATE TRIGGER source_suppression_schema_marker_no_delete
+            BEFORE DELETE ON {SUPPRESSION_SCHEMA_MARKER_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression schema marker is immutable');
+            END
+        """,
+    }
+
+
+def _suppression_schema_marker_exists(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name=?
+            """,
+            (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _assert_source_suppression_schema_marker(
+    connection: sqlite3.Connection,
+) -> None:
+    table_row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type='table' AND name=?
+        """,
+        (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+    ).fetchone()
+    if (
+        table_row is None
+        or _normalize_schema_sql(table_row["sql"])
+        != _normalize_schema_sql(_source_suppression_marker_table_sql())
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is missing or altered"
+        )
+
+    rows = connection.execute(
+        f"""
+        SELECT marker_key,schema_version
+        FROM {SUPPRESSION_SCHEMA_MARKER_TABLE}
+        """
+    ).fetchall()
+    if len(rows) != 1 or tuple(rows[0]) != (
+        "source_suppression_schema",
+        SUPPRESSION_SCHEMA_VERSION,
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is inconsistent"
+        )
+
+    trigger_rows = connection.execute(
+        """
+        SELECT name,sql
+        FROM sqlite_master
+        WHERE type='trigger' AND tbl_name=?
+        """,
+        (SUPPRESSION_SCHEMA_MARKER_TABLE,),
+    ).fetchall()
+    actual = {
+        row["name"]: _normalize_schema_sql(row["sql"])
+        for row in trigger_rows
+    }
+    expected = {
+        name: _normalize_schema_sql(sql)
+        for name, sql in _source_suppression_marker_trigger_sql().items()
+    }
+    if actual != expected:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker guards were altered"
+        )
+
+
+def _install_source_suppression_schema_marker(
+    connection: sqlite3.Connection,
+) -> None:
+    if _suppression_schema_marker_exists(connection):
+        _assert_source_suppression_schema_marker(connection)
+        return
+    connection.execute(_source_suppression_marker_table_sql())
+    connection.execute(
+        f"""
+        INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
+            (marker_key,schema_version)
+        VALUES ('source_suppression_schema',?)
+        """,
+        (SUPPRESSION_SCHEMA_VERSION,),
+    )
+    for sql in _source_suppression_marker_trigger_sql().values():
+        connection.execute(sql)
+    _assert_source_suppression_schema_marker(connection)
 
 
 def _source_suppression_table_sql(
@@ -139,6 +267,10 @@ def _assert_missing_suppression_ledger_is_bootstrap_safe(
 def _prepare_source_suppression_table(
     connection: sqlite3.Connection,
 ) -> None:
+    marker_exists = _suppression_schema_marker_exists(connection)
+    if marker_exists:
+        _assert_source_suppression_schema_marker(connection)
+
     row = connection.execute(
         """
         SELECT sql
@@ -152,6 +284,10 @@ def _prepare_source_suppression_table(
     actual = _normalize_schema_sql(row["sql"])
     target = _normalize_schema_sql(_source_suppression_table_sql())
     if actual == target:
+        if not marker_exists:
+            raise SuppressionLedgerIntegrityError(
+                "canonical source suppression ledger lacks completed-upgrade marker"
+            )
         # An already-upgraded ledger must arrive with intact guards.
         # Initialization does not silently heal drift in a trusted stop-use
         # boundary, because that could conceal a prior resurrection window.
@@ -161,6 +297,10 @@ def _prepare_source_suppression_table(
     if actual != legacy:
         raise SuppressionLedgerIntegrityError(
             "source suppression table is not a recognized migratable schema"
+        )
+    if marker_exists:
+        raise SuppressionLedgerIntegrityError(
+            "completed source suppression schema cannot re-enter legacy migration"
         )
 
     _assert_source_suppression_rows(connection)
@@ -250,6 +390,8 @@ def _normalize_schema_sql(value: str | None) -> str:
 
 def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
     """Fail closed if the synthetic stop-use ledger is mutable or malformed."""
+
+    _assert_source_suppression_schema_marker(connection)
 
     columns = tuple(
         row[1]
@@ -556,6 +698,7 @@ class MemoryStore:
                 );
                 """
             )
+            _install_source_suppression_schema_marker(connection)
             assert_source_suppression_ledger(connection)
 
     @_authority_ordered_write
