@@ -39,7 +39,10 @@ from home_memory_core.living_continuity import (
 )
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
-from home_memory_core.storage import MemoryStore
+from home_memory_core.storage import (
+    SUPPRESSION_SCHEMA_MARKER_TABLE,
+    MemoryStore,
+)
 from home_memory_core.suppression import (
     SuppressionLedgerIntegrityError,
     create_suppression_record,
@@ -531,6 +534,9 @@ class CurrentPresentUseTests(unittest.TestCase):
 
         connection = sqlite3.connect(self.db)
         try:
+            connection.execute(
+                f"DROP TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE}"
+            )
             for trigger in (
                 "source_suppressions_no_replace",
                 "source_suppressions_no_update",
@@ -604,6 +610,119 @@ class CurrentPresentUseTests(unittest.TestCase):
             self.current.get_state_for_audit(record.state_id).record,
             record,
         )
+
+    def test_completed_upgrade_cannot_reenter_exact_legacy_migration(self) -> None:
+        record = self.state("completed-upgrade")
+        binding = self.binding(record.source_refs[0])
+        self.current.add_state_record(
+            record=record,
+            source_bindings=(binding,),
+        )
+        self.suppress(binding, "stop-completed-upgrade")
+        before = self.use.state_decision(record.state_id)
+        self.assertEqual(
+            before.status,
+            CurrentPresentUseStatus.SUPPRESSED,
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            rows = connection.execute(
+                """
+                SELECT suppression_id,source_id,requested_by,reason
+                FROM source_suppressions
+                """
+            ).fetchall()
+            for trigger in (
+                "source_suppressions_no_replace",
+                "source_suppressions_no_update",
+                "source_suppressions_no_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            connection.execute(
+                "ALTER TABLE source_suppressions "
+                "RENAME TO source_suppressions_upgraded_shape"
+            )
+            connection.execute(
+                """
+                CREATE TABLE source_suppressions (
+                    suppression_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL UNIQUE,
+                    requested_by TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    FOREIGN KEY (source_id)
+                        REFERENCES sources(source_id)
+                        ON DELETE RESTRICT
+                )
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO source_suppressions (
+                    suppression_id,source_id,requested_by,reason
+                ) VALUES (?,?,?,?)
+                """,
+                rows,
+            )
+            connection.execute("DROP TABLE source_suppressions_upgraded_shape")
+            connection.execute(
+                "DELETE FROM source_suppressions "
+                "WHERE suppression_id='stop-completed-upgrade'"
+            )
+            connection.execute("PRAGMA legacy_alter_table=OFF")
+            marker_row = connection.execute(
+                f"""
+                SELECT marker_key,schema_version
+                FROM {SUPPRESSION_SCHEMA_MARKER_TABLE}
+                """
+            ).fetchone()
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.assertIsNotNone(marker_row)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.use.state_decision(record.state_id)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
+
+        check = sqlite3.connect(self.db)
+        try:
+            ledger_sql = check.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type='table' AND name='source_suppressions'
+                """
+            ).fetchone()[0]
+            remaining = check.execute(
+                "SELECT count(*) FROM source_suppressions"
+            ).fetchone()[0]
+            marker_after = check.execute(
+                f"""
+                SELECT marker_key,schema_version
+                FROM {SUPPRESSION_SCHEMA_MARKER_TABLE}
+                """
+            ).fetchone()
+        finally:
+            check.close()
+
+        self.assertNotIn("WITHOUT ROWID", ledger_sql.upper())
+        self.assertEqual(remaining, 0)
+        self.assertEqual(marker_after, marker_row)
+
+    def test_canonical_ledger_without_completion_marker_fails_closed(self) -> None:
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                f"DROP TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE}"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
 
     def test_source_suppression_ledger_blocks_update_delete_and_replace(self) -> None:
         record = self.state("immutable-stop")
