@@ -208,6 +208,63 @@ class CurrentStoreTests(unittest.TestCase):
         with self.assertRaises(CurrentStoreIntegrityError):
             self.store.list_states_for_audit()
 
+    def test_subsecond_utc_offset_round_trip_preserves_current_semantics(self) -> None:
+        as_of = datetime(2026, 1, 1, tzinfo=UTC)
+        event_time = datetime(
+            2026, 1, 1,
+            tzinfo=timezone(timedelta(microseconds=1)),
+        )
+        record = self.room_state(
+            "subsecond-offset",
+            state_kind=CurrentStateKind.PREFERENCE,
+            event_time=event_time,
+            recorded_at=as_of,
+            valid_from=as_of,
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            downgrade_rule=DowngradeRule.TO_LAST_KNOWN,
+            stale_after=timedelta(microseconds=1),
+        )
+        self.store.add_state_record(
+            record=record,
+            source_bindings=(self.binding(record.source_refs[0]),),
+        )
+        restored = self.store.get_state_for_audit(record.state_id).record
+
+        self.assertEqual(
+            restored.event_time.isoformat(),
+            record.event_time.isoformat(),
+        )
+        self.assertEqual(
+            restored.event_time.utcoffset(),
+            timedelta(microseconds=1),
+        )
+        self.assertEqual(
+            resolve_current_state(
+                namespace=record.namespace,
+                owner_id=record.owner_id,
+                key=record.key,
+                records=(record,),
+                as_of=as_of,
+            ).standing,
+            resolve_current_state(
+                namespace=restored.namespace,
+                owner_id=restored.owner_id,
+                key=restored.key,
+                records=(restored,),
+                as_of=as_of,
+            ).standing,
+        )
+        self.assertEqual(
+            resolve_current_state(
+                namespace=restored.namespace,
+                owner_id=restored.owner_id,
+                key=restored.key,
+                records=(restored,),
+                as_of=as_of,
+            ).standing,
+            CurrentStanding.LAST_KNOWN,
+        )
+
     def test_calendar_edge_offsets_round_trip_without_utc_materialization(self) -> None:
         cases = (
             (
