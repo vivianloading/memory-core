@@ -1127,7 +1127,7 @@ class MemoryStore:
     def add_source(self, source: SourceRecord) -> None:
         self._validate_source_record_integrity(source=source)
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             try:
                 connection.execute(
                     """
@@ -1190,8 +1190,7 @@ class MemoryStore:
                 "new source suppression writes require explicit effective_at and recorded_at"
             )
 
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._write_transaction() as connection:
             assert_source_suppression_ledger(connection)
             self._get_source_from_connection(
                 connection=connection,
@@ -1278,8 +1277,7 @@ class MemoryStore:
             interpretation=interpretation,
         )
 
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._write_transaction() as connection:
             suppressed_ids = self._get_suppressed_source_ids_from_connection(
                 connection=connection,
             )
@@ -1407,7 +1405,7 @@ class MemoryStore:
     def add_thread(self, thread: InterpretationThread) -> None:
         self._validate_thread_record(thread=thread)
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             try:
                 connection.execute(
                     """
@@ -1452,7 +1450,7 @@ class MemoryStore:
     ) -> None:
         self._validate_thread_admission_record(admission=admission)
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             thread = self._get_thread_from_connection(
                 connection=connection,
                 thread_id=admission.thread_id,
@@ -1545,8 +1543,7 @@ class MemoryStore:
         if not supersession.reason_evidence:
             raise ValueError("supersession must have evidence")
 
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._write_transaction() as connection:
             previous = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=(
