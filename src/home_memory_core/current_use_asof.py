@@ -14,11 +14,12 @@ from home_memory_core.current_store_schema import (
     CURRENT_STATE_TABLE,
 )
 from home_memory_core.current_use import CurrentUseEffectKind
-from home_memory_core.storage import (
-    SOURCE_SUPPRESSION_TIMING_TABLE,
-    assert_source_suppression_ledger,
-)
+from home_memory_core.storage import assert_source_suppression_ledger
 from home_memory_core.suppression import suppression_instant
+from home_memory_core.suppression_asof import (
+    SuppressionAsOfStatus,
+    _source_decision_in_connection,
+)
 
 
 class HistoricalCurrentUseError(RuntimeError):
@@ -428,19 +429,10 @@ def _direct_historical_blocks(
 ) -> tuple[HistoricalSuppressionBlock, ...]:
     rows = connection.execute(
         f"""
-        SELECT
-            evidence.source_ref,
-            evidence.source_id,
-            suppressions.suppression_id,
-            timing.effective_instant_us,
-            timing.recorded_instant_us
-        FROM {evidence_table} AS evidence
-        LEFT JOIN source_suppressions AS suppressions
-          ON suppressions.source_id=evidence.source_id
-        LEFT JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
-          ON timing.suppression_id=suppressions.suppression_id
-        WHERE evidence.{id_column}=?
-        ORDER BY evidence.position
+        SELECT source_ref,source_id
+        FROM {evidence_table}
+        WHERE {id_column}=?
+        ORDER BY position
         """,
         (effect_id,),
     ).fetchall()
@@ -451,18 +443,24 @@ def _direct_historical_blocks(
 
     blocks: list[HistoricalSuppressionBlock] = []
     for row in rows:
-        suppression_id = row["suppression_id"]
-        if suppression_id is None:
+        source_decision = _source_decision_in_connection(
+            connection=connection,
+            source_id=row["source_id"],
+            as_of_us=as_of_us,
+        )
+        if (
+            source_decision.status
+            is SuppressionAsOfStatus.NOT_SUPPRESSED_AS_OF
+        ):
             continue
 
-        effective_us = row["effective_instant_us"]
-        recorded_us = row["recorded_instant_us"]
-        if effective_us is None and recorded_us is None:
+        if source_decision.status is SuppressionAsOfStatus.TIMING_UNKNOWN:
+            assert source_decision.suppression_id is not None
             blocks.append(
                 HistoricalSuppressionBlock(
                     source_ref=row["source_ref"],
                     source_id=row["source_id"],
-                    suppression_id=suppression_id,
+                    suppression_id=source_decision.suppression_id,
                     origin_effect_kind=origin_effect_kind,
                     origin_effect_id=effect_id,
                     status=HistoricalSuppressionBlockStatus.TIMING_UNKNOWN,
@@ -471,30 +469,26 @@ def _direct_historical_blocks(
                 )
             )
             continue
-        if (
-            not isinstance(effective_us, int)
-            or not isinstance(recorded_us, int)
-        ):
-            raise HistoricalCurrentUseIntegrityError(
-                "suppression timing sidecar is partially missing"
-            )
 
-        # Historical knowledge obeys record causality. A late-recorded stop-use
-        # does not appear in an earlier view even if its semantic effective_at
-        # belongs earlier in life.
-        if recorded_us <= as_of_us and effective_us <= as_of_us:
-            blocks.append(
-                HistoricalSuppressionBlock(
-                    source_ref=row["source_ref"],
-                    source_id=row["source_id"],
-                    suppression_id=suppression_id,
-                    origin_effect_kind=origin_effect_kind,
-                    origin_effect_id=effect_id,
-                    status=HistoricalSuppressionBlockStatus.SUPPRESSED_AS_OF,
-                    effective_instant_us=effective_us,
-                    recorded_instant_us=recorded_us,
-                )
+        assert (
+            source_decision.status
+            is SuppressionAsOfStatus.SUPPRESSED_AS_OF
+        )
+        assert source_decision.suppression_id is not None
+        assert source_decision.effective_instant_us is not None
+        assert source_decision.recorded_instant_us is not None
+        blocks.append(
+            HistoricalSuppressionBlock(
+                source_ref=row["source_ref"],
+                source_id=row["source_id"],
+                suppression_id=source_decision.suppression_id,
+                origin_effect_kind=origin_effect_kind,
+                origin_effect_id=effect_id,
+                status=HistoricalSuppressionBlockStatus.SUPPRESSED_AS_OF,
+                effective_instant_us=source_decision.effective_instant_us,
+                recorded_instant_us=source_decision.recorded_instant_us,
             )
+        )
 
     return tuple(blocks)
 
