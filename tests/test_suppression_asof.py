@@ -620,10 +620,11 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
                 """,
                 f"""
                 INSERT OR REPLACE INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
-                    suppression_id,effective_instant_us,recorded_instant_us,
+                    suppression_id,timing_status,
+                    effective_instant_us,recorded_instant_us,
                     effective_at_iso,recorded_at_iso
                 ) VALUES (
-                    'stop-immutable-timing',1,1,
+                    'stop-immutable-timing','timed',1,1,
                     '2026-01-01T00:00:00+00:00',
                     '2026-01-01T00:00:00+00:00'
                 )
@@ -634,6 +635,50 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
                 connection.rollback()
         finally:
             connection.close()
+
+    def test_missing_timing_row_cannot_degrade_known_time_to_unknown(self) -> None:
+        binding = self.binding("lost-timing-row")
+        record = self.state("lost-timing-state", binding)
+        self.current.add_state_record(record=record, source_bindings=(binding,))
+        stop_time = self.t0 + timedelta(hours=1)
+        self.timed_suppress(
+            binding,
+            suppression_id="stop-lost-timing-row",
+            effective_at=stop_time,
+            recorded_at=stop_time,
+        )
+
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute(
+                "DROP TRIGGER source_suppression_timing_no_delete"
+            )
+            connection.execute(
+                f"""
+                DELETE FROM {SOURCE_SUPPRESSION_TIMING_TABLE}
+                WHERE suppression_id='stop-lost-timing-row'
+                """
+            )
+            connection.execute(
+                f"""
+                CREATE TRIGGER source_suppression_timing_no_delete
+                BEFORE DELETE ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing is append-only');
+                END
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.history.state_decision(
+                state_id=record.state_id,
+                as_of=stop_time,
+            )
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            MemoryStore(self.db).initialize()
 
     def test_missing_timing_sidecar_fails_closed_and_initializer_does_not_heal(self) -> None:
         connection = sqlite3.connect(self.db)
@@ -757,14 +802,21 @@ class HistoricalSuppressionAsOfTests(unittest.TestCase):
                 WHERE marker_key='source_suppression_schema'
                 """
             ).fetchone()[0]
-            timing_count = check.execute(
-                f"SELECT count(*) FROM {SOURCE_SUPPRESSION_TIMING_TABLE}"
-            ).fetchone()[0]
+            timing_rows = check.execute(
+                f"""
+                SELECT suppression_id,timing_status,
+                       effective_instant_us,recorded_instant_us
+                FROM {SOURCE_SUPPRESSION_TIMING_TABLE}
+                """
+            ).fetchall()
         finally:
             check.close()
 
         self.assertEqual(marker, SUPPRESSION_SCHEMA_VERSION)
-        self.assertEqual(timing_count, 0)
+        self.assertEqual(
+            timing_rows,
+            [("stop-upgrade", "timing_unknown", None, None)],
+        )
         decision = self.history.state_decision(
             state_id=record.state_id,
             as_of=self.t0 + timedelta(days=30),
