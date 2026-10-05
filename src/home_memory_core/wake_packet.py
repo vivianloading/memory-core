@@ -1,0 +1,1390 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import StrEnum
+
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+from home_memory_core.current_resolver import (
+    CurrentResolvedView,
+    CurrentResolverDecision,
+    CurrentResolverStatus,
+)
+from home_memory_core.current_view import (
+    CurrentCandidate,
+    CurrentNamespace,
+    CurrentStanding,
+    CurrentStateKind,
+    EndKind,
+    SemanticChangeAuthority,
+    ValidityRule,
+)
+from home_memory_core.living_continuity import (
+    ContinuityEdge,
+    ContinuityStatus,
+    EpisodeRecord,
+    RoomAttachmentResolution,
+    TransferMode,
+)
+
+
+WAKE_PACKET_VERSION = "wake-packet-v0.1"
+WAKE_SELECTION_POLICY_VERSION = "wake-selection-v0.1"
+
+
+class WakePacketError(ValueError):
+    """Typed Wake assembly violated the v0.1 carriage contract."""
+
+
+class WakeLayer(StrEnum):
+    MAP = "map"
+    SHARED_NOW = "shared_now"
+    ROOM_NOW = "room_now"
+    RECENT_LIFE = "recent_life"
+    NEARBY_DOORS = "nearby_doors"
+
+
+class WakeLayerAvailability(StrEnum):
+    READY = "ready"
+    PARTIAL = "partial"
+    CLOSED = "closed"
+    UNAVAILABLE = "unavailable"
+
+
+class WakePrivacyScopeKind(StrEnum):
+    EPISODE = "episode"
+    ROOM = "room"
+    SHARED = "shared"
+
+
+class WakeAuthority(StrEnum):
+    NONE = "none"
+
+
+class WakeInputTrust(StrEnum):
+    TYPED_CALLER_INPUT = "typed_caller_input"
+
+
+class WakeRouteDecision(StrEnum):
+    ATTACHED = "attached"
+    UNATTACHED = "unattached"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class WakeUseBoundary:
+    """Authority that carriage itself does not grant.
+
+    v0.1 intentionally has no non-NONE values and rejects caller-supplied
+    lookalike strings. Carriage cannot mint any of these authorities.
+    """
+
+    instruction_authority: WakeAuthority = WakeAuthority.NONE
+    current_first_person_speech_authority: WakeAuthority = WakeAuthority.NONE
+    identity_continuity_claim_authority: WakeAuthority = WakeAuthority.NONE
+    relationship_claim_authority: WakeAuthority = WakeAuthority.NONE
+    model_delivery_authority: WakeAuthority = WakeAuthority.NONE
+    memory_write_authority: WakeAuthority = WakeAuthority.NONE
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "instruction_authority",
+            "current_first_person_speech_authority",
+            "identity_continuity_claim_authority",
+            "relationship_claim_authority",
+            "model_delivery_authority",
+            "memory_write_authority",
+        ):
+            if getattr(self, field_name) is not WakeAuthority.NONE:
+                raise WakePacketError(
+                    f"{field_name} cannot be granted by Wake v0.1"
+                )
+
+
+@dataclass(frozen=True)
+class WakePrivacyScope:
+    kind: WakePrivacyScopeKind
+    scope_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, WakePrivacyScopeKind):
+            raise WakePacketError("privacy scope kind is invalid")
+        _text("scope_id", self.scope_id)
+
+
+@dataclass(frozen=True)
+class WakeContinuityEvidence:
+    edge_id: str
+    previous_episode_id: str
+    next_episode_id: str
+    transfer_mode: TransferMode
+    continuity_status: ContinuityStatus
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "edge_id",
+            "previous_episode_id",
+            "next_episode_id",
+        ):
+            _text(field_name, getattr(self, field_name))
+        if not isinstance(self.transfer_mode, TransferMode):
+            raise WakePacketError("continuity transfer_mode is invalid")
+        if not isinstance(self.continuity_status, ContinuityStatus):
+            raise WakePacketError("continuity status is invalid")
+
+
+@dataclass(frozen=True)
+class WakeMapItem:
+    item_id: str
+    episode_id: str
+    perspective_instance_id: str
+    route_decision: WakeRouteDecision
+    room_id: str | None
+    active_attachment_event_id: str | None
+    incoming_continuity: WakeContinuityEvidence | None
+    privacy_scope: WakePrivacyScope
+    inclusion_reason: str = "ORIENT_CONCRETE_EPISODE"
+    use_boundary: WakeUseBoundary = field(default_factory=WakeUseBoundary)
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "item_id",
+            "episode_id",
+            "perspective_instance_id",
+            "inclusion_reason",
+        ):
+            _text(field_name, getattr(self, field_name))
+        if not isinstance(self.route_decision, WakeRouteDecision):
+            raise WakePacketError("Map route decision is invalid")
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Wake Map requires concrete Perspective attribution"
+            )
+        if self.room_id is not None:
+            _text("room_id", self.room_id)
+        if self.active_attachment_event_id is not None:
+            _text(
+                "active_attachment_event_id",
+                self.active_attachment_event_id,
+            )
+        if self.incoming_continuity is not None:
+            if not isinstance(
+                self.incoming_continuity,
+                WakeContinuityEvidence,
+            ):
+                raise WakePacketError(
+                    "incoming_continuity is invalid"
+                )
+            if (
+                self.incoming_continuity.next_episode_id
+                != self.episode_id
+            ):
+                raise WakePacketError(
+                    "incoming continuity does not point to Map Episode"
+                )
+        if self.route_decision is WakeRouteDecision.ATTACHED:
+            if (
+                self.room_id is None
+                or self.active_attachment_event_id is None
+            ):
+                raise WakePacketError(
+                    "attached Map route requires Room and active route event"
+                )
+        elif self.route_decision is WakeRouteDecision.UNATTACHED:
+            if self.room_id is not None:
+                raise WakePacketError(
+                    "unattached Map route cannot claim a Room"
+                )
+        elif self.route_decision is WakeRouteDecision.UNRESOLVED:
+            if (
+                self.room_id is not None
+                or self.active_attachment_event_id is not None
+            ):
+                raise WakePacketError(
+                    "unresolved Map route cannot claim active Room route"
+                )
+        if not isinstance(self.privacy_scope, WakePrivacyScope):
+            raise WakePacketError("map privacy_scope is invalid")
+        if (
+            self.privacy_scope.kind is not WakePrivacyScopeKind.EPISODE
+            or self.privacy_scope.scope_id != self.episode_id
+        ):
+            raise WakePacketError(
+                "Wake Map must remain scoped to its concrete Episode"
+            )
+        if not isinstance(self.use_boundary, WakeUseBoundary):
+            raise WakePacketError("map use boundary is invalid")
+
+
+@dataclass(frozen=True)
+class WakeEndEvidence:
+    end_event_id: str
+    state_id: str
+    ended_at: datetime
+    recorded_at: datetime
+    end_kind: EndKind
+    semantic_change_authority: SemanticChangeAuthority
+    episode_id: str | None
+    perspective_instance_id: str | None
+    source_refs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _text("end_event_id", self.end_event_id)
+        _text("state_id", self.state_id)
+        _aware("ended_at", self.ended_at)
+        _aware("recorded_at", self.recorded_at)
+        if _instant(self.ended_at) > _instant(self.recorded_at):
+            raise WakePacketError(
+                "Room end evidence cannot end after it was recorded"
+            )
+        if not isinstance(self.end_kind, EndKind):
+            raise WakePacketError("end_kind is invalid")
+        if (
+            self.semantic_change_authority
+            is not SemanticChangeAuthority.ROOM_FIRST_PERSON
+        ):
+            raise WakePacketError(
+                "Wake Room end evidence must retain Room first-person semantic ownership"
+            )
+        if self.episode_id is not None:
+            _text("episode_id", self.episode_id)
+        if self.perspective_instance_id is not None:
+            _text(
+                "perspective_instance_id",
+                self.perspective_instance_id,
+            )
+        _refs("source_refs", self.source_refs)
+        if not self.source_refs:
+            raise WakePacketError(
+                "Room end evidence requires source provenance"
+            )
+        if (
+            self.episode_id is None
+            or self.perspective_instance_id is None
+        ):
+            raise WakePacketError(
+                "Room end evidence requires Episode/Perspective attribution"
+            )
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Room end evidence requires concrete Perspective attribution"
+            )
+
+
+@dataclass(frozen=True)
+class WakeCurrentCandidate:
+    state_id: str
+    namespace: CurrentNamespace
+    owner_id: str
+    key: str
+    value: str
+    state_kind: CurrentStateKind
+    standing: CurrentStanding
+    semantic_change_authority: SemanticChangeAuthority
+    event_time: datetime
+    recorded_at: datetime
+    valid_from: datetime
+    validity_rule: ValidityRule
+    stale_after: timedelta | None
+    standing_as_of: datetime
+    episode_id: str | None
+    perspective_instance_id: str | None
+    source_refs: tuple[str, ...]
+    end_evidence: tuple[WakeEndEvidence, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "state_id",
+            "owner_id",
+            "key",
+            "value",
+        ):
+            _text(field_name, getattr(self, field_name))
+        if not isinstance(self.namespace, CurrentNamespace):
+            raise WakePacketError("candidate namespace is invalid")
+        if self.namespace is not CurrentNamespace.ROOM:
+            raise WakePacketError(
+                "Wake Room Now candidate must retain Room namespace"
+            )
+        if not isinstance(self.state_kind, CurrentStateKind):
+            raise WakePacketError("candidate state_kind is invalid")
+        if not isinstance(
+            self.semantic_change_authority,
+            SemanticChangeAuthority,
+        ):
+            raise WakePacketError(
+                "candidate semantic_change_authority is invalid"
+            )
+        if not isinstance(self.standing, CurrentStanding):
+            raise WakePacketError("candidate standing is invalid")
+        _aware("event_time", self.event_time)
+        _aware("recorded_at", self.recorded_at)
+        _aware("valid_from", self.valid_from)
+        _aware("standing_as_of", self.standing_as_of)
+        if _instant(self.event_time) > _instant(self.recorded_at):
+            raise WakePacketError(
+                "Room Now candidate event_time cannot be later than recorded_at"
+            )
+        if _instant(self.recorded_at) > _instant(self.standing_as_of):
+            raise WakePacketError(
+                "Room Now candidate cannot be unknown at standing_as_of"
+            )
+        if _instant(self.valid_from) > _instant(self.standing_as_of):
+            raise WakePacketError(
+                "Room Now candidate cannot stand before valid_from"
+            )
+        if not isinstance(self.validity_rule, ValidityRule):
+            raise WakePacketError("candidate validity_rule is invalid")
+        allowed_validity = _ROOM_VALIDITY_BY_KIND.get(self.state_kind)
+        if (
+            allowed_validity is None
+            or self.validity_rule not in allowed_validity
+        ):
+            raise WakePacketError(
+                "candidate validity_rule is invalid for Room state_kind"
+            )
+        if self.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
+            if (
+                not isinstance(self.stale_after, timedelta)
+                or self.stale_after <= timedelta(0)
+            ):
+                raise WakePacketError(
+                    "stale Room Now candidate requires positive stale_after"
+                )
+        elif self.stale_after is not None:
+            raise WakePacketError(
+                "stale_after is only valid for stale_to_last_known"
+            )
+        if (
+            self.semantic_change_authority
+            is not SemanticChangeAuthority.ROOM_FIRST_PERSON
+        ):
+            raise WakePacketError(
+                "Room Now candidate must retain Room first-person semantic ownership"
+            )
+        if self.state_kind is CurrentStateKind.SHARED_STATE:
+            raise WakePacketError(
+                "Room Now candidate cannot claim Shared state kind"
+            )
+        if (
+            self.episode_id is None
+            or self.perspective_instance_id is None
+        ):
+            raise WakePacketError(
+                "Room Now candidate requires Episode/Perspective attribution"
+            )
+        _text("episode_id", self.episode_id)
+        _text(
+            "perspective_instance_id",
+            self.perspective_instance_id,
+        )
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Room Now candidate requires concrete Perspective attribution"
+            )
+        _refs("source_refs", self.source_refs)
+        if not self.source_refs:
+            raise WakePacketError(
+                "Room Now candidate requires source provenance"
+            )
+        if (
+            not isinstance(self.end_evidence, tuple)
+            or any(
+                not isinstance(item, WakeEndEvidence)
+                for item in self.end_evidence
+            )
+        ):
+            raise WakePacketError(
+                "end_evidence must contain WakeEndEvidence values"
+            )
+        if any(
+            item.state_id != self.state_id
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence must target its carried candidate state"
+            )
+        if any(
+            item.semantic_change_authority
+            is not self.semantic_change_authority
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence semantic ownership must match its candidate"
+            )
+        if any(
+            _instant(item.recorded_at) < _instant(self.recorded_at)
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence cannot be recorded before its target state"
+            )
+        if any(
+            _instant(item.ended_at) < _instant(self.valid_from)
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence cannot end before target validity begins"
+            )
+        if any(
+            _instant(item.recorded_at) > _instant(self.standing_as_of)
+            or _instant(item.ended_at) > _instant(self.standing_as_of)
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence must be effective at candidate standing_as_of"
+            )
+        end_event_ids = tuple(
+            item.end_event_id for item in self.end_evidence
+        )
+        if len(set(end_event_ids)) != len(end_event_ids):
+            raise WakePacketError(
+                "Room Current candidate cannot repeat an end_event_id"
+            )
+        expected_standing = _derive_wake_candidate_standing(self)
+        if self.standing is not expected_standing:
+            raise WakePacketError(
+                "Room Now candidate standing contradicts its retained derivation evidence"
+            )
+
+
+@dataclass(frozen=True)
+class WakeRoomNowItem:
+    item_id: str
+    room_id: str
+    key: str
+    state_kind: CurrentStateKind
+    standing: CurrentStanding
+    candidates: tuple[WakeCurrentCandidate, ...]
+    reason_codes: tuple[str, ...]
+    privacy_scope: WakePrivacyScope
+    inclusion_reason: str = (
+        "CURRENT_RESOLVER_RESOLVED_CARRYABLE_STANDING"
+    )
+    use_boundary: WakeUseBoundary = field(default_factory=WakeUseBoundary)
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "item_id",
+            "room_id",
+            "key",
+            "inclusion_reason",
+        ):
+            _text(field_name, getattr(self, field_name))
+        if not isinstance(self.state_kind, CurrentStateKind):
+            raise WakePacketError("Room Now state_kind is invalid")
+        if not isinstance(self.standing, CurrentStanding):
+            raise WakePacketError("Room Now standing is invalid")
+        if self.standing not in _CARRYABLE_STANDINGS:
+            raise WakePacketError(
+                "Room Now item standing is not carryable in v0.1"
+            )
+        if (
+            not isinstance(self.candidates, tuple)
+            or not self.candidates
+            or any(
+                not isinstance(item, WakeCurrentCandidate)
+                for item in self.candidates
+            )
+        ):
+            raise WakePacketError(
+                "Room Now item requires a tuple of attributed WakeCurrentCandidate values"
+            )
+        if len({item.state_id for item in self.candidates}) != len(
+            self.candidates
+        ):
+            raise WakePacketError(
+                "Room Now item cannot repeat a candidate state_id"
+            )
+        if any(
+            candidate.namespace is not CurrentNamespace.ROOM
+            or candidate.owner_id != self.room_id
+            or candidate.key != self.key
+            for candidate in self.candidates
+        ):
+            raise WakePacketError(
+                "Room Now item labels must match every candidate semantic identity"
+            )
+        if len({_instant(item.standing_as_of) for item in self.candidates}) != 1:
+            raise WakePacketError(
+                "Room Now candidates must share one standing_as_of instant"
+            )
+        if len({item.state_kind for item in self.candidates}) != 1:
+            raise WakePacketError(
+                "Room Now candidates cannot mix state kinds"
+            )
+        if self.state_kind is not self.candidates[0].state_kind:
+            raise WakePacketError(
+                "Room Now item state_kind differs from candidates"
+            )
+        if len(self.candidates) == 1:
+            if self.standing is not self.candidates[0].standing:
+                raise WakePacketError(
+                    "single-candidate Room Now aggregate standing must match its candidate"
+                )
+        else:
+            if self.standing is not CurrentStanding.CONFLICTING:
+                raise WakePacketError(
+                    "multi-candidate Room Now aggregate must remain conflicting"
+                )
+            if any(
+                item.standing not in _CARRYABLE_STANDINGS
+                for item in self.candidates
+            ):
+                raise WakePacketError(
+                    "conflicting Room Now item contains non-carryable candidate standing"
+                )
+        _refs("reason_codes", self.reason_codes)
+        if not isinstance(self.privacy_scope, WakePrivacyScope):
+            raise WakePacketError("Room Now privacy_scope is invalid")
+        if (
+            self.privacy_scope.kind is not WakePrivacyScopeKind.ROOM
+            or self.privacy_scope.scope_id != self.room_id
+        ):
+            raise WakePacketError(
+                "Room Now item requires matching Room privacy scope"
+            )
+        if not isinstance(self.use_boundary, WakeUseBoundary):
+            raise WakePacketError("Room Now use boundary is invalid")
+
+
+@dataclass(frozen=True)
+class WakeMapSection:
+    availability: WakeLayerAvailability
+    item: WakeMapItem
+    reason_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.availability, WakeLayerAvailability):
+            raise WakePacketError("Map availability is invalid")
+        if self.availability is not WakeLayerAvailability.READY:
+            raise WakePacketError("Map must be ready in v0.1 assembly")
+        if not isinstance(self.item, WakeMapItem):
+            raise WakePacketError("Map section item is invalid")
+        _refs("reason_codes", self.reason_codes)
+
+
+@dataclass(frozen=True)
+class WakeRoomNowSection:
+    availability: WakeLayerAvailability
+    items: tuple[WakeRoomNowItem, ...]
+    reason_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.availability, WakeLayerAvailability):
+            raise WakePacketError(
+                "Room Now availability must use WakeLayerAvailability"
+            )
+        if self.availability not in {
+            WakeLayerAvailability.READY,
+            WakeLayerAvailability.PARTIAL,
+            WakeLayerAvailability.UNAVAILABLE,
+        }:
+            raise WakePacketError(
+                "Room Now availability is invalid"
+            )
+        if (
+            not isinstance(self.items, tuple)
+            or any(
+                not isinstance(item, WakeRoomNowItem)
+                for item in self.items
+            )
+        ):
+            raise WakePacketError(
+                "Room Now items must contain WakeRoomNowItem values"
+            )
+        item_ids = tuple(item.item_id for item in self.items)
+        if len(set(item_ids)) != len(item_ids):
+            raise WakePacketError(
+                "Room Now section cannot repeat an item_id"
+            )
+        room_keys = tuple(
+            (item.room_id, item.key)
+            for item in self.items
+        )
+        if len(set(room_keys)) != len(room_keys):
+            raise WakePacketError(
+                "Room Now section requires one aggregate item per Room/key"
+            )
+        state_ids = tuple(
+            candidate.state_id
+            for item in self.items
+            for candidate in item.candidates
+        )
+        if len(set(state_ids)) != len(state_ids):
+            raise WakePacketError(
+                "Room Now section cannot carry one state_id more than once"
+            )
+        end_event_ids = tuple(
+            evidence.end_event_id
+            for item in self.items
+            for candidate in item.candidates
+            for evidence in candidate.end_evidence
+        )
+        if len(set(end_event_ids)) != len(end_event_ids):
+            raise WakePacketError(
+                "Room Now section cannot carry one end_event_id more than once"
+            )
+        if (
+            self.availability is WakeLayerAvailability.UNAVAILABLE
+            and self.items
+        ):
+            raise WakePacketError(
+                "unavailable Room Now cannot carry items"
+            )
+        _refs("reason_codes", self.reason_codes)
+
+
+@dataclass(frozen=True)
+class WakeEmptyLayer:
+    layer: WakeLayer
+    availability: WakeLayerAvailability
+    reason_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layer, WakeLayer):
+            raise WakePacketError("empty Wake layer must use WakeLayer")
+        if not isinstance(self.availability, WakeLayerAvailability):
+            raise WakePacketError(
+                "empty Wake layer availability must use WakeLayerAvailability"
+            )
+        if self.layer in {WakeLayer.MAP, WakeLayer.ROOM_NOW}:
+            raise WakePacketError(
+                "Map/Room Now require their typed section forms"
+            )
+        if self.availability not in {
+            WakeLayerAvailability.CLOSED,
+            WakeLayerAvailability.UNAVAILABLE,
+        }:
+            raise WakePacketError(
+                "empty Wake layer must be closed or unavailable"
+            )
+        _refs("reason_codes", self.reason_codes)
+
+
+@dataclass(frozen=True)
+class WakePacket:
+    wake_id: str
+    packet_version: str
+    input_trust: WakeInputTrust
+    as_of: datetime
+    episode_id: str
+    perspective_instance_id: str
+    map: WakeMapSection
+    shared_now: WakeEmptyLayer
+    room_now: WakeRoomNowSection
+    recent_life: WakeEmptyLayer
+    nearby_doors: WakeEmptyLayer
+    use_boundary: WakeUseBoundary = field(default_factory=WakeUseBoundary)
+
+    def __post_init__(self) -> None:
+        _text("wake_id", self.wake_id)
+        if self.packet_version != WAKE_PACKET_VERSION:
+            raise WakePacketError("unexpected Wake Packet version")
+        if self.input_trust is not WakeInputTrust.TYPED_CALLER_INPUT:
+            raise WakePacketError(
+                "Wake Packet v0.1 has no operational producer proof"
+            )
+        _aware("as_of", self.as_of)
+        _text("episode_id", self.episode_id)
+        _text("perspective_instance_id", self.perspective_instance_id)
+        if not isinstance(self.map, WakeMapSection):
+            raise WakePacketError("Wake Map section is invalid")
+        if not isinstance(self.shared_now, WakeEmptyLayer):
+            raise WakePacketError("Wake Shared Now section is invalid")
+        if not isinstance(self.room_now, WakeRoomNowSection):
+            raise WakePacketError("Wake Room Now section is invalid")
+        if not isinstance(self.recent_life, WakeEmptyLayer):
+            raise WakePacketError("Wake Recent Life section is invalid")
+        if not isinstance(self.nearby_doors, WakeEmptyLayer):
+            raise WakePacketError("Wake Nearby Doors section is invalid")
+        if self.map.item.episode_id != self.episode_id:
+            raise WakePacketError(
+                "Map episode differs from Wake episode"
+            )
+        if (
+            self.map.item.perspective_instance_id
+            != self.perspective_instance_id
+        ):
+            raise WakePacketError(
+                "Map perspective differs from Wake perspective"
+            )
+        if self.map.item.route_decision is WakeRouteDecision.ATTACHED:
+            assert self.map.item.room_id is not None
+            if any(
+                item.room_id != self.map.item.room_id
+                for item in self.room_now.items
+            ):
+                raise WakePacketError(
+                    "Room Now item crosses the Map-attached Room boundary"
+                )
+            if any(
+                not _same_instant(
+                    candidate.standing_as_of,
+                    self.as_of,
+                )
+                for item in self.room_now.items
+                for candidate in item.candidates
+            ):
+                raise WakePacketError(
+                    "Room Now candidate standing_as_of differs from Wake as_of"
+                )
+        else:
+            if (
+                self.room_now.items
+                or self.room_now.availability
+                is not WakeLayerAvailability.UNAVAILABLE
+            ):
+                raise WakePacketError(
+                    "unattached/unresolved Map cannot carry Room Now content"
+                )
+        if (
+            self.shared_now.layer is not WakeLayer.SHARED_NOW
+            or self.shared_now.availability is not WakeLayerAvailability.CLOSED
+            or self.recent_life.layer is not WakeLayer.RECENT_LIFE
+            or self.recent_life.availability
+            is not WakeLayerAvailability.UNAVAILABLE
+            or self.nearby_doors.layer is not WakeLayer.NEARBY_DOORS
+            or self.nearby_doors.availability
+            is not WakeLayerAvailability.UNAVAILABLE
+        ):
+            raise WakePacketError(
+                "Wake v0.1 fixed layer availability is invalid"
+            )
+        if not isinstance(self.use_boundary, WakeUseBoundary):
+            raise WakePacketError("Wake packet use boundary is invalid")
+
+
+@dataclass(frozen=True)
+class WakeOmission:
+    layer: WakeLayer
+    subject_ref: str
+    classification: str
+    reason_codes: tuple[str, ...]
+    audit_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layer, WakeLayer):
+            raise WakePacketError("omission layer is invalid")
+        _text("subject_ref", self.subject_ref)
+        _text("classification", self.classification)
+        _refs("reason_codes", self.reason_codes)
+        _refs("audit_refs", self.audit_refs)
+
+
+@dataclass(frozen=True)
+class WakeAssemblyReceipt:
+    wake_id: str
+    packet_version: str
+    selection_policy_version: str
+    as_of: datetime
+    episode_id: str
+    included_item_ids: tuple[str, ...]
+    omissions: tuple[WakeOmission, ...]
+    layer_availability: tuple[
+        tuple[WakeLayer, WakeLayerAvailability], ...
+    ]
+
+    def __post_init__(self) -> None:
+        _text("wake_id", self.wake_id)
+        if self.packet_version != WAKE_PACKET_VERSION:
+            raise WakePacketError("receipt packet version is invalid")
+        if self.selection_policy_version != WAKE_SELECTION_POLICY_VERSION:
+            raise WakePacketError(
+                "receipt selection policy version is invalid"
+            )
+        _aware("as_of", self.as_of)
+        _text("episode_id", self.episode_id)
+        _refs("included_item_ids", self.included_item_ids)
+        if not isinstance(self.omissions, tuple) or any(
+            not isinstance(item, WakeOmission)
+            for item in self.omissions
+        ):
+            raise WakePacketError(
+                "receipt omissions must contain WakeOmission values"
+            )
+        expected_layers = (
+            WakeLayer.MAP,
+            WakeLayer.SHARED_NOW,
+            WakeLayer.ROOM_NOW,
+            WakeLayer.RECENT_LIFE,
+            WakeLayer.NEARBY_DOORS,
+        )
+        if (
+            not isinstance(self.layer_availability, tuple)
+            or tuple(
+                item[0]
+                for item in self.layer_availability
+                if isinstance(item, tuple) and len(item) == 2
+            )
+            != expected_layers
+            or len(self.layer_availability) != len(expected_layers)
+            or any(
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[0], WakeLayer)
+                or not isinstance(item[1], WakeLayerAvailability)
+                for item in self.layer_availability
+            )
+        ):
+            raise WakePacketError(
+                "receipt layer availability must preserve the five-layer order"
+            )
+
+
+_ROOM_VALIDITY_BY_KIND = {
+    CurrentStateKind.PROJECT_STATUS: frozenset(
+        {ValidityRule.DURABLE_UNTIL_CHANGED}
+    ),
+    CurrentStateKind.PREFERENCE: frozenset(
+        {
+            ValidityRule.DURABLE_UNTIL_CHANGED,
+            ValidityRule.STALE_TO_LAST_KNOWN,
+        }
+    ),
+    CurrentStateKind.COMMITMENT: frozenset(
+        {ValidityRule.OPEN_UNTIL_RESOLVED}
+    ),
+    CurrentStateKind.SELF_INTERPRETATION: frozenset(
+        {ValidityRule.DURABLE_UNTIL_CHANGED}
+    ),
+    CurrentStateKind.UNFINISHED_WORK: frozenset(
+        {ValidityRule.OPEN_UNTIL_RESOLVED}
+    ),
+}
+
+
+def _derive_wake_candidate_standing(
+    candidate: WakeCurrentCandidate,
+) -> CurrentStanding:
+    if len(candidate.end_evidence) > 1:
+        return CurrentStanding.CONFLICTING
+    if len(candidate.end_evidence) == 1:
+        return CurrentStanding.ENDED
+    if candidate.validity_rule is ValidityRule.DURABLE_UNTIL_CHANGED:
+        return CurrentStanding.CURRENT
+    if candidate.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
+        assert candidate.stale_after is not None
+        elapsed = (
+            _instant(candidate.standing_as_of)
+            - _instant(candidate.event_time)
+        )
+        if elapsed >= _timedelta_micros(candidate.stale_after):
+            return CurrentStanding.LAST_KNOWN
+        return CurrentStanding.CURRENT
+    if candidate.validity_rule is ValidityRule.OPEN_UNTIL_RESOLVED:
+        return CurrentStanding.UNRESOLVED
+    raise WakePacketError(
+        "unsupported Room candidate validity rule"
+    )
+
+
+_CARRYABLE_STANDINGS = frozenset(
+    {
+        CurrentStanding.CURRENT,
+        CurrentStanding.LAST_KNOWN,
+        CurrentStanding.UNRESOLVED,
+        CurrentStanding.CONFLICTING,
+    }
+)
+
+
+def assemble_wake_packet_v0_1(
+    *,
+    wake_id: str,
+    as_of: datetime,
+    episode: EpisodeRecord,
+    route: RoomAttachmentResolution,
+    continuity_edges: tuple[ContinuityEdge, ...] = (),
+    room_current: CurrentResolvedView | None = None,
+) -> tuple[WakePacket, WakeAssemblyReceipt]:
+    """Pure deterministic Wake assembly from already-resolved typed inputs."""
+
+    _text("wake_id", wake_id)
+    _aware("as_of", as_of)
+    if not isinstance(episode, EpisodeRecord):
+        raise WakePacketError("episode must use EpisodeRecord")
+    if not isinstance(route, RoomAttachmentResolution):
+        raise WakePacketError(
+            "route must use RoomAttachmentResolution"
+        )
+    if route.episode_id != episode.episode_id:
+        raise WakePacketError("route belongs to a different Episode")
+    if (
+        not isinstance(continuity_edges, tuple)
+        or any(
+            not isinstance(edge, ContinuityEdge)
+            for edge in continuity_edges
+        )
+    ):
+        raise WakePacketError(
+            "continuity_edges must contain ContinuityEdge values"
+        )
+
+    incoming = tuple(
+        edge
+        for edge in continuity_edges
+        if edge.next_episode_id == episode.episode_id
+    )
+    if len(incoming) > 1:
+        raise WakePacketError(
+            "Wake Map cannot accept implicit continuity merge"
+        )
+    incoming_item = (
+        None
+        if not incoming
+        else _wake_continuity_evidence(incoming[0])
+    )
+
+    if route.decision == "attached":
+        if route.room_id is None:
+            raise WakePacketError(
+                "attached route requires room_id"
+            )
+        # Map is structural orientation for this concrete Episode. The fact
+        # that the Episode routes to a Room does not widen topology into Room
+        # privacy authority.
+        privacy = WakePrivacyScope(
+            kind=WakePrivacyScopeKind.EPISODE,
+            scope_id=episode.episode_id,
+        )
+    elif route.decision in {"unattached", "unresolved"}:
+        if route.room_id is not None:
+            raise WakePacketError(
+                "non-attached route cannot claim room_id"
+            )
+        privacy = WakePrivacyScope(
+            kind=WakePrivacyScopeKind.EPISODE,
+            scope_id=episode.episode_id,
+        )
+    else:
+        raise WakePacketError("unknown Room route decision")
+
+    map_item = WakeMapItem(
+        item_id=f"map:{episode.episode_id}",
+        episode_id=episode.episode_id,
+        perspective_instance_id=episode.perspective_instance_id,
+        route_decision=WakeRouteDecision(route.decision),
+        room_id=route.room_id,
+        active_attachment_event_id=(
+            route.active_attachment_event_id
+        ),
+        incoming_continuity=incoming_item,
+        privacy_scope=privacy,
+    )
+    map_section = WakeMapSection(
+        availability=WakeLayerAvailability.READY,
+        item=map_item,
+    )
+
+    omissions: list[WakeOmission] = []
+    room_section = _assemble_room_now(
+        as_of=as_of,
+        episode=episode,
+        route=route,
+        room_current=room_current,
+        omissions=omissions,
+    )
+
+    shared = WakeEmptyLayer(
+        layer=WakeLayer.SHARED_NOW,
+        availability=WakeLayerAvailability.CLOSED,
+        reason_codes=("SHARED_OPERATIONAL_CURRENT_CLOSED",),
+    )
+    recent = WakeEmptyLayer(
+        layer=WakeLayer.RECENT_LIFE,
+        availability=WakeLayerAvailability.UNAVAILABLE,
+        reason_codes=("NO_TYPED_RECENT_LIFE_PRODUCER",),
+    )
+    doors = WakeEmptyLayer(
+        layer=WakeLayer.NEARBY_DOORS,
+        availability=WakeLayerAvailability.UNAVAILABLE,
+        reason_codes=("NO_TYPED_NEARBY_DOORS_PRODUCER",),
+    )
+
+    packet = WakePacket(
+        wake_id=wake_id,
+        packet_version=WAKE_PACKET_VERSION,
+        input_trust=WakeInputTrust.TYPED_CALLER_INPUT,
+        as_of=as_of,
+        episode_id=episode.episode_id,
+        perspective_instance_id=episode.perspective_instance_id,
+        map=map_section,
+        shared_now=shared,
+        room_now=room_section,
+        recent_life=recent,
+        nearby_doors=doors,
+    )
+    included = [map_item.item_id]
+    included.extend(item.item_id for item in room_section.items)
+    receipt = WakeAssemblyReceipt(
+        wake_id=wake_id,
+        packet_version=WAKE_PACKET_VERSION,
+        selection_policy_version=WAKE_SELECTION_POLICY_VERSION,
+        as_of=as_of,
+        episode_id=episode.episode_id,
+        included_item_ids=tuple(included),
+        omissions=tuple(omissions),
+        layer_availability=(
+            (WakeLayer.MAP, map_section.availability),
+            (WakeLayer.SHARED_NOW, shared.availability),
+            (WakeLayer.ROOM_NOW, room_section.availability),
+            (WakeLayer.RECENT_LIFE, recent.availability),
+            (WakeLayer.NEARBY_DOORS, doors.availability),
+        ),
+    )
+    return packet, receipt
+
+
+def _assemble_room_now(
+    *,
+    as_of: datetime,
+    episode: EpisodeRecord,
+    route: RoomAttachmentResolution,
+    room_current: CurrentResolvedView | None,
+    omissions: list[WakeOmission],
+) -> WakeRoomNowSection:
+    if route.decision == "unresolved":
+        return WakeRoomNowSection(
+            availability=WakeLayerAvailability.UNAVAILABLE,
+            items=(),
+            reason_codes=("ROOM_ROUTE_UNRESOLVED",),
+        )
+    if route.decision == "unattached":
+        return WakeRoomNowSection(
+            availability=WakeLayerAvailability.UNAVAILABLE,
+            items=(),
+            reason_codes=("EPISODE_NOT_ATTACHED_TO_ROOM",),
+        )
+
+    assert route.room_id is not None
+    if room_current is None:
+        return WakeRoomNowSection(
+            availability=WakeLayerAvailability.UNAVAILABLE,
+            items=(),
+            reason_codes=("ROOM_CURRENT_VIEW_NOT_PROVIDED",),
+        )
+    if not isinstance(room_current, CurrentResolvedView):
+        raise WakePacketError(
+            "room_current must use CurrentResolvedView"
+        )
+    if room_current.namespace is not CurrentNamespace.ROOM:
+        raise WakePacketError(
+            "Wake Room Now requires Room Current namespace"
+        )
+    if room_current.owner_id != route.room_id:
+        raise WakePacketError(
+            "Current owner differs from routed Room"
+        )
+    if not _same_instant(room_current.as_of, as_of):
+        raise WakePacketError(
+            "Current view as_of differs from Wake as_of"
+        )
+
+    items: list[WakeRoomNowItem] = []
+    held_back = False
+    keys = tuple(decision.key for decision in room_current.items)
+    if len(set(keys)) != len(keys):
+        raise WakePacketError(
+            "Room Current view contains duplicate operational keys"
+        )
+
+    for decision in room_current.items:
+        if (
+            decision.namespace is not CurrentNamespace.ROOM
+            or decision.owner_id != route.room_id
+            or not _same_instant(decision.as_of, as_of)
+        ):
+            raise WakePacketError(
+                "Current decision does not match Wake Room/as_of"
+            )
+
+        if decision.status is CurrentResolverStatus.BLOCKED_UNKNOWN:
+            held_back = True
+            omissions.append(
+                WakeOmission(
+                    layer=WakeLayer.ROOM_NOW,
+                    subject_ref=decision.key,
+                    classification="operationally_withheld",
+                    reason_codes=decision.reason_codes,
+                    audit_refs=tuple(
+                        f"suppression:{block.suppression_id}"
+                        for block in decision.blocks
+                    ),
+                )
+            )
+            # Deliberately do not inspect decision.semantic_resolution.
+            continue
+
+        if (
+            decision.status
+            is CurrentResolverStatus.ADMISSION_PROOF_UNAVAILABLE
+        ):
+            held_back = True
+            omissions.append(
+                WakeOmission(
+                    layer=WakeLayer.ROOM_NOW,
+                    subject_ref=decision.key,
+                    classification="operationally_withheld",
+                    reason_codes=decision.reason_codes,
+                    audit_refs=tuple(
+                        (
+                            f"effect:{effect.effect_kind.value}:"
+                            f"{effect.effect_id}"
+                        )
+                        for effect
+                        in decision.missing_live_admission_effects
+                    ),
+                )
+            )
+            continue
+
+        if decision.status is not CurrentResolverStatus.RESOLVED:
+            raise WakePacketError("unknown Current Resolver status")
+
+        semantic = decision.semantic_resolution
+        if semantic is None:
+            raise WakePacketError(
+                "resolved Current decision lacks semantic resolution"
+            )
+        if semantic.standing not in _CARRYABLE_STANDINGS:
+            omissions.append(
+                WakeOmission(
+                    layer=WakeLayer.ROOM_NOW,
+                    subject_ref=decision.key,
+                    classification="not_carried_semantic_standing",
+                    reason_codes=(
+                        f"STANDING_{semantic.standing.value.upper()}",
+                    ),
+                )
+            )
+            continue
+
+        items.append(
+            _wake_room_item(
+                room_id=route.room_id,
+                decision=decision,
+            )
+        )
+
+    availability = (
+        WakeLayerAvailability.PARTIAL
+        if held_back
+        else WakeLayerAvailability.READY
+    )
+    reason_codes = (
+        ("ROOM_CURRENT_ITEMS_WITHHELD",)
+        if held_back
+        else ()
+    )
+    return WakeRoomNowSection(
+        availability=availability,
+        items=tuple(items),
+        reason_codes=reason_codes,
+    )
+
+
+def _wake_room_item(
+    *,
+    room_id: str,
+    decision: CurrentResolverDecision,
+) -> WakeRoomNowItem:
+    semantic = decision.semantic_resolution
+    if semantic is None:
+        raise WakePacketError(
+            "Room Now conversion requires semantic resolution"
+        )
+    selected_ids = semantic.current_state_ids
+    if not selected_ids or len(set(selected_ids)) != len(selected_ids):
+        raise WakePacketError(
+            "carryable semantic standing requires exact current_state_ids"
+        )
+    candidate_by_id = {
+        candidate.state_id: candidate
+        for candidate in semantic.candidates
+    }
+    if len(candidate_by_id) != len(semantic.candidates):
+        raise WakePacketError(
+            "Current semantic candidates contain duplicate ids"
+        )
+    if any(state_id not in candidate_by_id for state_id in selected_ids):
+        raise WakePacketError(
+            "Current semantic current_state_ids lack candidate provenance"
+        )
+    selected = tuple(
+        candidate_by_id[state_id]
+        for state_id in selected_ids
+    )
+    for candidate in selected:
+        record = candidate.record
+        if (
+            record.namespace is not CurrentNamespace.ROOM
+            or record.owner_id != room_id
+            or record.key != decision.key
+        ):
+            raise WakePacketError(
+                "selected Current candidate crosses Wake Room/key boundary"
+            )
+    candidates = tuple(
+        _wake_current_candidate(
+            candidate,
+            as_of=decision.as_of,
+        )
+        for candidate in selected
+    )
+    state_kinds = {item.state_kind for item in candidates}
+    if len(state_kinds) != 1:
+        raise WakePacketError(
+            "one Current key cannot carry mixed state kinds"
+        )
+    return WakeRoomNowItem(
+        item_id=f"room-now:{room_id}:{decision.key}",
+        room_id=room_id,
+        key=decision.key,
+        state_kind=candidates[0].state_kind,
+        standing=semantic.standing,
+        candidates=candidates,
+        reason_codes=semantic.reason_codes,
+        privacy_scope=WakePrivacyScope(
+            kind=WakePrivacyScopeKind.ROOM,
+            scope_id=room_id,
+        ),
+    )
+
+
+def _wake_current_candidate(
+    candidate: CurrentCandidate,
+    *,
+    as_of: datetime,
+) -> WakeCurrentCandidate:
+    record = candidate.record
+    if record.namespace is not CurrentNamespace.ROOM:
+        raise WakePacketError(
+            "Room Now candidate is not Room Current"
+        )
+    if record.episode_id is None or record.perspective_instance_id is None:
+        raise WakePacketError(
+            "Room Now candidate lacks Episode/Perspective provenance"
+        )
+    return WakeCurrentCandidate(
+        state_id=record.state_id,
+        namespace=record.namespace,
+        owner_id=record.owner_id,
+        key=record.key,
+        value=record.value,
+        state_kind=record.state_kind,
+        standing=candidate.standing,
+        semantic_change_authority=record.semantic_change_authority,
+        event_time=record.event_time,
+        recorded_at=record.recorded_at,
+        valid_from=record.valid_from,
+        validity_rule=record.validity_rule,
+        stale_after=record.stale_after,
+        standing_as_of=as_of,
+        episode_id=record.episode_id,
+        perspective_instance_id=record.perspective_instance_id,
+        source_refs=record.source_refs,
+        end_evidence=tuple(
+            WakeEndEvidence(
+                end_event_id=event.end_event_id,
+                state_id=event.state_id,
+                ended_at=event.ended_at,
+                recorded_at=event.recorded_at,
+                end_kind=event.end_kind,
+                semantic_change_authority=event.semantic_change_authority,
+                episode_id=event.episode_id,
+                perspective_instance_id=event.perspective_instance_id,
+                source_refs=event.source_refs,
+            )
+            for event in candidate.end_events
+        ),
+    )
+
+
+def _wake_continuity_evidence(
+    edge: ContinuityEdge,
+) -> WakeContinuityEvidence:
+    return WakeContinuityEvidence(
+        edge_id=edge.edge_id,
+        previous_episode_id=edge.previous_episode_id,
+        next_episode_id=edge.next_episode_id,
+        transfer_mode=edge.transfer_mode,
+        continuity_status=edge.continuity_status,
+    )
+
+
+def _same_instant(left: datetime, right: datetime) -> bool:
+    return _instant(left) == _instant(right)
+
+
+def _instant(value: datetime) -> int:
+    _aware("timestamp", value)
+    offset = value.utcoffset()
+    assert offset is not None
+    wall_micros = (
+        (
+            (
+                (value.toordinal() * 24 + value.hour) * 60
+                + value.minute
+            )
+            * 60
+            + value.second
+        )
+        * 1_000_000
+        + value.microsecond
+    )
+    offset_micros = (
+        (offset.days * 86_400 + offset.seconds) * 1_000_000
+        + offset.microseconds
+    )
+    return wall_micros - offset_micros
+
+
+def _timedelta_micros(value: timedelta) -> int:
+    return (
+        (value.days * 86_400 + value.seconds) * 1_000_000
+        + value.microseconds
+    )
+
+
+def _text(field_name: str, value: object) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise WakePacketError(
+            f"{field_name} must be non-empty text"
+        )
+
+
+def _aware(field_name: str, value: object) -> None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise WakePacketError(
+            f"{field_name} must be timezone-aware"
+        )
+
+
+def _refs(field_name: str, values: object) -> None:
+    if not isinstance(values, tuple):
+        raise WakePacketError(f"{field_name} must be a tuple")
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in values
+    ):
+        raise WakePacketError(
+            f"{field_name} contains invalid text"
+        )
+    if len(set(values)) != len(values):
+        raise WakePacketError(
+            f"{field_name} contains duplicates"
+        )
