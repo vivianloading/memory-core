@@ -388,3 +388,48 @@ semantic identity, Room identity, or restart-safe credential.
 #65 remains permanently scoped to its failed exact SHA. A later head requires a
 fresh exact-SHA independent review, including the bounded sweep #65 did not
 reach.
+
+## 17. Independent review #66 — operation-receiver substitution NO-GO
+
+Independent review #66 returned **FAIL / NO-GO** on exact head
+`1529219d06f9217d67346a9e51b1ede7a48b014a`.
+
+The origin registry added after #65 correctly rejected ordinary shallow copies,
+manual `__dict__` aliases, and separately opened authorities.
+
+The remaining blocker was Python method dispatch at the public operation
+boundary. `issue(...)` and `require_live_issuance(...)` called
+`self._assert_live_binding()`. A non-origin alias could therefore attach the
+genuine bound checker of the original authority as its own instance attribute:
+
+`alias._assert_live_binding = original._assert_live_binding`
+
+The check then ran with the original authority as its receiver while the public
+operation continued with the alias as its receiver. The independent origin
+registry was correct; the operation checked the wrong object.
+
+The remediation removes instance-dispatch authority from this security-critical
+edge. All public issuance entry checks now call:
+
+`WakeIssuanceAuthority._assert_live_binding(self)`
+
+The operation receiver is therefore supplied explicitly to the base-class
+checker and cannot be substituted by an instance attribute or bound method.
+
+The same rule applies to the second live-binding check before receipt minting.
+
+Regression coverage includes both:
+
+- `copy.copy(authority)` plus the original bound checker;
+- `object.__new__ + __dict__` state alias plus the original bound checker.
+
+Both are invoked through the genuine base public methods with the alias
+explicitly supplied as receiver and must fail before issuance/verification can
+continue.
+
+The #66 reviewer completed substantial bounded coverage before confirming this
+supplementary blocker. That passing breadth remains evidence scoped to the failed
+SHA and does not extend automatically to a later head.
+
+#66 remains permanently scoped to its failed exact SHA. A later head requires a
+fresh exact-SHA review.
