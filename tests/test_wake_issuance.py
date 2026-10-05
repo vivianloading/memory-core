@@ -1,4 +1,5 @@
 import sqlite3
+from copy import copy
 import tempfile
 import unittest
 from dataclasses import replace
@@ -552,6 +553,33 @@ class WakeIssuanceTests(unittest.TestCase):
 
         with self.assertRaises(WakeIssuanceAuthorizationError):
             self.issuer.require_live_issuance(issued=copied)
+
+    def test_shallow_copied_authority_is_not_originating_instance(self) -> None:
+        issued = self.issuer.issue(episode_id="episode-b")
+        alias = copy(self.issuer)
+
+        self.assertIsNot(alias, self.issuer)
+        self.assertIs(alias._receipts, self.issuer._receipts)
+        self.assertEqual(alias._authority_id, self.issuer._authority_id)
+
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            alias.require_live_issuance(issued=issued)
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            alias.issue(episode_id="episode-b")
+
+    def test_manual_authority_state_alias_is_not_originating_instance(self) -> None:
+        issued = self.issuer.issue(episode_id="episode-b")
+        alias = object.__new__(issuance_module.WakeIssuanceAuthority)
+        alias.__dict__.update(self.issuer.__dict__)
+
+        self.assertIsNot(alias, self.issuer)
+        self.assertIs(alias._receipts, self.issuer._receipts)
+        self.assertIs(alias._receipt_guard, self.issuer._receipt_guard)
+
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            alias.require_live_issuance(issued=issued)
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            alias.issue(episode_id="episode-b")
 
     def test_foreign_authority_cannot_verify_receipt(self) -> None:
         issued = self.issuer.issue(episode_id="episode-b")
