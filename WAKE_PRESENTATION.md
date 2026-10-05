@@ -311,3 +311,59 @@ Before merge freeze one exact head and apply HOME #18:
 
 Independent reviewer may challenge code/evidence and issue an exact-SHA verdict.
 Reviewer has no merge authority.
+
+## 17. Independent review #70 — incomplete semantic projection NO-GO
+
+Independent review #70 returned **FAIL / NO-GO** on exact head
+`5c467fb34b7137372bfc9f6de441960d8cc67b49`.
+
+The reviewer confirmed that normal dataclass reconstruction rejected a Map block
+layer relabel, but demonstrated that forced in-place mutation of the public
+`WakeMapPresentationBlock.layer` field from `MAP` to `SHARED_NOW` was
+accepted by operational rendering.
+
+The source issuance remained valid and the typed plan differed from the freshly
+rebuilt canonical plan. However, the renderer's handwritten
+`_block_payload(...)` projection omitted the block-level `layer` field, so:
+
+- the operational projection comparison did not see the mutation;
+- rendered payload bytes were unchanged;
+- plan digest was unchanged;
+- payload digest was unchanged.
+
+The demonstrated impact was typed-plan integrity / receipt distinguishability,
+not speaker authority, Shared injection, privacy leakage, or model delivery.
+
+### Remediation
+
+Operational exact-plan identity and `plan_digest` no longer depend on the
+curated renderer payload projection.
+
+A separate complete public-semantic canonicalizer recursively binds:
+
+- dataclass type identity;
+- every public dataclass field;
+- enum type and value;
+- exact timezone-aware datetime encoding;
+- tuple structure;
+- primitive values.
+
+Private construction markers remain excluded because they are misuse guards,
+not presentation semantics or credentials.
+
+The renderer now compares:
+
+`complete_semantics(proposed_plan) == complete_semantics(rebuilt_expected_plan)`
+
+before producing output, and computes `plan_digest` from that complete semantic
+representation.
+
+The renderer payload also now explicitly includes each block's own `layer`
+field, but payload completeness is not relied upon as proof of plan identity.
+
+Author regressions cover both Map and Room forced block-layer mutation and show
+that the complete semantic representation/digest changes before operational
+render rejects the altered plan.
+
+#70 remains permanently scoped to its failed exact SHA. Its bounded sweep was
+not reached and must be completed on a later exact target.
