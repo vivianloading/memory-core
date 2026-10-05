@@ -129,9 +129,12 @@ The v0.1 map item carries:
 - structural Room route decision;
 - Room id only when the route is attached;
 - active RoomAttachmentEvent id when one exists;
-- at most one incoming ContinuityEdge;
-- transfer mode and continuity evidence status for that incoming edge;
-- opaque Living support refs.
+- at most one incoming ContinuityEdge identity;
+- transfer mode and continuity evidence status for that incoming edge.
+
+Opaque Living `support_refs` stay behind the structural/audit boundary in
+v0.1. Their existence supports the Living record; it does not make them Wake
+content.
 
 Map does not carry or derive a same-self conclusion.
 
