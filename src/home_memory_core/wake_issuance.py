@@ -185,7 +185,7 @@ class WakeIssuanceAuthority:
         if not callable(clock):
             raise TypeError("clock must be callable")
 
-        current_resolver._assert_live_binding()
+        CurrentResolver._assert_live_binding(current_resolver)
         living_path = Path(living_store.db_path).resolve()
         current_path = Path(
             current_resolver._canonical_db_path
@@ -458,7 +458,7 @@ def open_wake_issuance_authority(
         raise TypeError("current_resolver must be CurrentResolver")
     if not callable(clock):
         raise TypeError("clock must be callable")
-    current_resolver._assert_live_binding()
+    CurrentResolver._assert_live_binding(current_resolver)
 
     living_path = Path(living_store.db_path).resolve()
     current_path = Path(
