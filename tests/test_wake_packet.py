@@ -285,6 +285,10 @@ class WakePacketTests(unittest.TestCase):
                 semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
                 event_time=self.t0,
                 recorded_at=self.t0,
+                valid_from=self.t0,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                stale_after=None,
+                standing_as_of=self.t0,
                 episode_id=None,
                 perspective_instance_id=None,
                 source_refs=("ref-no-perspective",),
@@ -302,6 +306,10 @@ class WakePacketTests(unittest.TestCase):
                 semantic_change_authority=SemanticChangeAuthority.SHARED_GOVERNANCE,
                 event_time=self.t0,
                 recorded_at=self.t0,
+                valid_from=self.t0,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                stale_after=None,
+                standing_as_of=self.t0,
                 episode_id=self.episode.episode_id,
                 perspective_instance_id=self.episode.perspective_instance_id,
                 source_refs=("ref-shared-owner",),
@@ -321,6 +329,10 @@ class WakePacketTests(unittest.TestCase):
                 semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
                 event_time=self.t0,
                 recorded_at=self.t0,
+                valid_from=self.t0,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                stale_after=None,
+                standing_as_of=self.t0,
                 episode_id=self.episode.episode_id,
                 perspective_instance_id=self.episode.perspective_instance_id,
                 source_refs=(),
@@ -1124,7 +1136,10 @@ class WakePacketTests(unittest.TestCase):
         evidence = WakeEndEvidence(
             end_event_id="end-other",
             state_id="different-state",
+            ended_at=self.t0,
+            recorded_at=self.t0,
             end_kind=EndKind.COMPLETED,
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
             episode_id=self.episode.episode_id,
             perspective_instance_id=self.episode.perspective_instance_id,
             source_refs=("ref-end-other",),
@@ -1138,18 +1153,27 @@ class WakePacketTests(unittest.TestCase):
         from home_memory_core.wake_packet import WakeEndEvidence
 
         first = self._valid_room_item()
-        first_evidence = WakeEndEvidence(
+        first_shared = WakeEndEvidence(
             end_event_id="end-shared-id",
             state_id=first.candidates[0].state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
             end_kind=EndKind.COMPLETED,
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
             episode_id=self.episode.episode_id,
             perspective_instance_id=self.episode.perspective_instance_id,
             source_refs=("ref-end-a",),
         )
+        first_extra = replace(
+            first_shared,
+            end_event_id="end-first-extra",
+            end_kind=EndKind.CANCELLED,
+            source_refs=("ref-end-a-extra",),
+        )
         first_candidate = replace(
             first.candidates[0],
             standing=CurrentStanding.CONFLICTING,
-            end_evidence=(first_evidence,),
+            end_evidence=(first_shared, first_extra),
         )
         first_item = replace(
             first,
@@ -1157,24 +1181,33 @@ class WakePacketTests(unittest.TestCase):
             candidates=(first_candidate,),
         )
 
-        second_candidate = replace(
+        second_base = replace(
             first.candidates[0],
             state_id="state-second-end-owner",
             key="project.other",
             standing=CurrentStanding.CONFLICTING,
             source_refs=("ref-second-end-owner",),
         )
-        second_evidence = WakeEndEvidence(
+        second_shared = WakeEndEvidence(
             end_event_id="end-shared-id",
-            state_id=second_candidate.state_id,
+            state_id=second_base.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
             end_kind=EndKind.CANCELLED,
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
             episode_id="episode-second",
             perspective_instance_id="perspective-second",
             source_refs=("ref-end-b",),
         )
+        second_extra = replace(
+            second_shared,
+            end_event_id="end-second-extra",
+            end_kind=EndKind.COMPLETED,
+            source_refs=("ref-end-b-extra",),
+        )
         second_candidate = replace(
-            second_candidate,
-            end_evidence=(second_evidence,),
+            second_base,
+            end_evidence=(second_shared, second_extra),
         )
         second_item = replace(
             first,
@@ -1189,6 +1222,108 @@ class WakePacketTests(unittest.TestCase):
                 availability=WakeLayerAvailability.READY,
                 items=(first_item, second_item),
                 reason_codes=(),
+            )
+
+    def test_candidate_standing_cannot_contradict_end_evidence(self) -> None:
+        record = self.state("state-ended-conflict")
+        from home_memory_core.current_view import (
+            CurrentStateEndEvent,
+            EndKind,
+        )
+
+        end_one = CurrentStateEndEvent(
+            end_event_id="end-one",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.COMPLETED,
+            reason="completed",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-end-one",),
+        )
+        end_two = CurrentStateEndEvent(
+            end_event_id="end-two",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.CANCELLED,
+            reason="cancelled",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-end-two",),
+        )
+        semantic = resolve_current_state(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key=record.key,
+            records=(record,),
+            end_events=(end_one, end_two),
+            as_of=self.t0,
+        )
+        decision = self.resolved_decision(
+            standing=semantic.standing,
+            candidates=semantic.candidates,
+        )
+        packet, _ = self.assemble(room_current=self.view(decision))
+        candidate = packet.room_now.items[0].candidates[0]
+        self.assertEqual(candidate.standing, CurrentStanding.CONFLICTING)
+        self.assertEqual(len(candidate.end_evidence), 2)
+
+        with self.assertRaises(WakePacketError):
+            replace(candidate, standing=CurrentStanding.CURRENT)
+
+    def test_candidate_standing_is_derived_from_validity_rule(self) -> None:
+        base = self._valid_room_item().candidates[0]
+
+        open_candidate = replace(
+            base,
+            state_kind=CurrentStateKind.COMMITMENT,
+            validity_rule=ValidityRule.OPEN_UNTIL_RESOLVED,
+            standing=CurrentStanding.UNRESOLVED,
+        )
+        self.assertEqual(open_candidate.standing, CurrentStanding.UNRESOLVED)
+        with self.assertRaises(WakePacketError):
+            replace(open_candidate, standing=CurrentStanding.CURRENT)
+
+        stale_candidate = replace(
+            base,
+            state_kind=CurrentStateKind.PREFERENCE,
+            validity_rule=ValidityRule.STALE_TO_LAST_KNOWN,
+            stale_after=timedelta(hours=1),
+            event_time=self.t0 - timedelta(hours=2),
+            recorded_at=self.t0 - timedelta(hours=2),
+            valid_from=self.t0 - timedelta(hours=2),
+            standing_as_of=self.t0,
+            standing=CurrentStanding.LAST_KNOWN,
+        )
+        self.assertEqual(
+            stale_candidate.standing,
+            CurrentStanding.LAST_KNOWN,
+        )
+        with self.assertRaises(WakePacketError):
+            replace(stale_candidate, standing=CurrentStanding.CURRENT)
+
+    def test_candidate_standing_cut_must_match_packet_cut(self) -> None:
+        packet, _ = self.assemble(
+            room_current=self.view(self.resolved_decision())
+        )
+        item = packet.room_now.items[0]
+        candidate = replace(
+            item.candidates[0],
+            standing_as_of=self.t0 + timedelta(hours=1),
+        )
+        changed_item = replace(item, candidates=(candidate,))
+
+        with self.assertRaises(WakePacketError):
+            replace(
+                packet,
+                room_now=replace(
+                    packet.room_now,
+                    items=(changed_item,),
+                ),
             )
 
     def test_ended_result_is_not_carried_but_does_not_make_layer_partial(self) -> None:
