@@ -84,7 +84,11 @@ Living with new Current (or the reverse).
 
 ## 4. Time cut
 
-The authority is opened with an injected clock.
+The authority is opened with an injected **runtime operation clock**.
+
+This clock is an issuer dependency, not a caller-selected historical query
+parameter. `issue(...)` accepts no `as_of` argument. Wake Issuance v0.1 does
+not claim historical Living-route reconstruction.
 
 Each `issue(...)` operation calls that clock exactly once, before canonical
 reads begin.
@@ -187,7 +191,10 @@ The canonical digest representation preserves:
 - tuple structure;
 - primitive values.
 
-Private marker fields are excluded.
+Packet and AssemblyReceipt digests bind every dataclass field in those
+artifacts. The issuance-receipt registry fingerprint is built from an explicit
+receipt-field tuple; its private construction marker is not treated as semantic
+artifact content.
 
 The digest is not a cryptographic signature or external authenticity proof. Its
 purpose is exact process-local artifact binding: a receipt registered by one
