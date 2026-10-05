@@ -422,6 +422,20 @@ class WakeCurrentCandidate:
                 "Room end evidence semantic ownership must match its candidate"
             )
         if any(
+            _instant(item.recorded_at) < _instant(self.recorded_at)
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence cannot be recorded before its target state"
+            )
+        if any(
+            _instant(item.ended_at) < _instant(self.valid_from)
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence cannot end before target validity begins"
+            )
+        if any(
             _instant(item.recorded_at) > _instant(self.standing_as_of)
             or _instant(item.ended_at) > _instant(self.standing_as_of)
             for item in self.end_evidence
