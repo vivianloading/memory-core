@@ -327,7 +327,17 @@ class WakeIssuanceAuthority:
             ),
             _marker=_WAKE_ISSUANCE_RECEIPT_MARKER,
         )
-        self._register_receipt(receipt)
+        with self._receipt_guard:
+            if receipt.issuance_id in self._receipts:
+                raise WakeIssuanceIntegrityError(
+                    "Wake issuance id was already registered"
+                )
+            self._receipts[receipt.issuance_id] = _LiveReceiptState(
+                receipt=receipt,
+                fingerprint=_issuance_receipt_fingerprint(
+                    receipt
+                ),
+            )
 
         return IssuedWakePacket(
             packet=packet,
@@ -392,22 +402,6 @@ class WakeIssuanceAuthority:
                 "live Wake assembly digest no longer matches issuance"
             )
         return issued.packet
-
-    def _register_receipt(
-        self,
-        receipt: WakeIssuanceReceipt,
-    ) -> None:
-        with self._receipt_guard:
-            if receipt.issuance_id in self._receipts:
-                raise WakeIssuanceIntegrityError(
-                    "Wake issuance id was already registered"
-                )
-            self._receipts[receipt.issuance_id] = _LiveReceiptState(
-                receipt=receipt,
-                fingerprint=_issuance_receipt_fingerprint(
-                    receipt
-                ),
-            )
 
     def _assert_live_binding(self) -> None:
         current_process = current_home_process_instance_id()
@@ -497,7 +491,6 @@ def _canonical_value(value: object) -> object:
             "fields": [
                 [item.name, _canonical_value(getattr(value, item.name))]
                 for item in fields(value)
-                if not item.name.startswith("_")
             ],
         }
     if isinstance(value, Enum):
