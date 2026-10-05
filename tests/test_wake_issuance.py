@@ -62,6 +62,7 @@ from home_memory_core.wake_packet import (
     WakeLayer,
     WakeLayerAvailability,
     WakeOmission,
+    WakePacketError,
     WakePrivacyScope,
     WakePrivacyScopeKind,
 )
@@ -536,9 +537,13 @@ class WakeIssuanceTests(unittest.TestCase):
     def test_identity_and_time_rebinding_breaks_issued_wrapper(self) -> None:
         issued = self.issuer.issue(episode_id="episode-b")
 
+        # Packet-level semantic identity already rejects an isolated Episode
+        # rewrite before issuance verification is reached.
+        with self.assertRaises(WakePacketError):
+            replace(issued.packet, episode_id="episode-other")
+
         for changed in (
             replace(issued.packet, wake_id="wake-other"),
-            replace(issued.packet, episode_id="episode-other"),
             replace(
                 issued.packet,
                 as_of=datetime(2026, 10, 5, 21, tzinfo=UTC),
@@ -550,6 +555,17 @@ class WakeIssuanceTests(unittest.TestCase):
                     assembly_receipt=issued.assembly_receipt,
                     issuance_receipt=issued.issuance_receipt,
                 )
+
+        changed_receipt = replace(
+            issued.issuance_receipt,
+            episode_id="episode-other",
+        )
+        with self.assertRaises(WakeIssuanceIntegrityError):
+            IssuedWakePacket(
+                packet=issued.packet,
+                assembly_receipt=issued.assembly_receipt,
+                issuance_receipt=changed_receipt,
+            )
 
     def test_naive_clock_fails_before_canonical_read(self) -> None:
         naive = CountingClock(datetime(2026, 10, 5, 20, 30))
@@ -615,7 +631,7 @@ class WakeIssuanceTests(unittest.TestCase):
             "none",
         )
         self.assertEqual(
-            issued.packet.use_boundary.first_person_speech_authority.value,
+            issued.packet.use_boundary.current_first_person_speech_authority.value,
             "none",
         )
 
