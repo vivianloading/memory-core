@@ -231,7 +231,8 @@ Every carried Current candidate retains:
 - exact value;
 - state kind;
 - candidate standing;
-- event and record time;
+- event, record, valid-from, and standing-as-of time;
+- validity rule and any stale threshold needed to re-derive standing;
 - Episode id;
 - PerspectiveInstance id;
 - semantic change authority;
@@ -564,3 +565,53 @@ outer labels.
 
 The #60 verdict remains bound to its failed exact SHA. A later head requires
 fresh exact-SHA review and the broad regression sweep that #60 did not reach.
+
+## Independent review #61 — standing/evidence contradiction NO-GO
+
+Independent review #61 returned **FAIL / NO-GO** on exact head
+`ff495957eb14ed9e0400d351495904e3347767ff`.
+
+The #60 identity-preservation cases were independently rejected. The review then
+found a deeper internal contradiction: one correctly assembled single-state
+conflict with two effective end events could be relabelled from
+`CONFLICTING` to `CURRENT` by changing only the candidate/item standing.
+Its state identity, payload, attribution and complete end-evidence tuple remained
+unchanged, and all enclosing constructors accepted the result.
+
+The remediation makes standing an explicitly re-derivable semantic result rather
+than a free label.
+
+`WakeCurrentCandidate` now retains the minimum standing derivation witness:
+
+- `valid_from`;
+- `validity_rule`;
+- `stale_after` when applicable;
+- `standing_as_of`.
+
+`WakeEndEvidence` now also retains:
+
+- `ended_at`;
+- `recorded_at`;
+- semantic change authority.
+
+The candidate validates that all retained end evidence is effective at its
+`standing_as_of`, targets the same state, and has matching semantic ownership.
+It then re-derives the expected standing using the standing Current rules:
+
+- more than one effective end -> `CONFLICTING`;
+- one effective end -> `ENDED`;
+- durable-until-changed -> `CURRENT`;
+- stale-to-last-known -> `CURRENT` or `LAST_KNOWN` from the exact cut;
+- open-until-resolved -> `UNRESOLVED`.
+
+The declared candidate standing must exactly equal that derived result.
+
+Packet construction additionally binds every candidate's `standing_as_of` to
+the Wake packet's own `as_of` instant.
+
+This deliberately goes beyond the one #61 proof so that a no-end candidate
+cannot simply swap `CURRENT`, `LAST_KNOWN`, and `UNRESOLVED` labels while
+keeping contradictory validity evidence.
+
+The #61 verdict remains bound to its failed exact SHA. A later head requires a
+fresh exact-SHA review and the broad regression sweep #61 did not reach.
