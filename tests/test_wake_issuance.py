@@ -627,6 +627,44 @@ class WakeIssuanceTests(unittest.TestCase):
                 episode_id="episode-b",
             )
 
+    def test_originating_authority_rejects_opening_state_substitution(self) -> None:
+        issued = self.issuer.issue(episode_id="episode-b")
+        alternate_resolver = open_current_resolver(
+            admission_authority=self.admission,
+        )
+        replacements = (
+            ("_bound_living_store", LivingStore(self.db)),
+            ("_living_store", LivingStore(self.db)),
+            ("_current_resolver", alternate_resolver),
+            ("_clock", CountingClock(self.as_of)),
+            ("_receipts", dict(self.issuer._receipts)),
+        )
+
+        for field_name, replacement in replacements:
+            with self.subTest(field_name=field_name):
+                original = getattr(self.issuer, field_name)
+                setattr(self.issuer, field_name, replacement)
+                try:
+                    with self.assertRaises(
+                        WakeIssuanceAuthorizationError
+                    ):
+                        self.issuer.require_live_issuance(
+                            issued=issued
+                        )
+                    with self.assertRaises(
+                        WakeIssuanceAuthorizationError
+                    ):
+                        self.issuer.issue(
+                            episode_id="episode-b"
+                        )
+                finally:
+                    setattr(self.issuer, field_name, original)
+
+        self.assertIs(
+            self.issuer.require_live_issuance(issued=issued),
+            issued.packet,
+        )
+
     def test_foreign_authority_cannot_verify_receipt(self) -> None:
         issued = self.issuer.issue(episode_id="episode-b")
         foreign = open_wake_issuance_authority(
