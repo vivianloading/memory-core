@@ -58,7 +58,8 @@ class WakeAuthority(StrEnum):
 class WakeUseBoundary:
     """Authority that carriage itself does not grant.
 
-    v0.1 intentionally has no non-NONE values.
+    v0.1 intentionally has no non-NONE values and rejects caller-supplied
+    lookalike strings. Carriage cannot mint any of these authorities.
     """
 
     instruction_authority: WakeAuthority = WakeAuthority.NONE
@@ -66,6 +67,19 @@ class WakeUseBoundary:
     identity_continuity_claim_authority: WakeAuthority = WakeAuthority.NONE
     relationship_claim_authority: WakeAuthority = WakeAuthority.NONE
     model_delivery_authority: WakeAuthority = WakeAuthority.NONE
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "instruction_authority",
+            "current_first_person_speech_authority",
+            "identity_continuity_claim_authority",
+            "relationship_claim_authority",
+            "model_delivery_authority",
+        ):
+            if getattr(self, field_name) is not WakeAuthority.NONE:
+                raise WakePacketError(
+                    f"{field_name} cannot be granted by Wake v0.1"
+                )
 
 
 @dataclass(frozen=True)
@@ -449,9 +463,12 @@ def assemble_wake_packet_v0_1(
             raise WakePacketError(
                 "attached route requires room_id"
             )
+        # Map is structural orientation for this concrete Episode. The fact
+        # that the Episode routes to a Room does not widen topology into Room
+        # privacy authority.
         privacy = WakePrivacyScope(
-            kind=WakePrivacyScopeKind.ROOM,
-            scope_id=route.room_id,
+            kind=WakePrivacyScopeKind.EPISODE,
+            scope_id=episode.episode_id,
         )
     elif route.decision in {"unattached", "unresolved"}:
         if route.room_id is not None:
@@ -587,6 +604,11 @@ def _assemble_room_now(
 
     items: list[WakeRoomNowItem] = []
     held_back = False
+    keys = tuple(decision.key for decision in room_current.items)
+    if len(set(keys)) != len(keys):
+        raise WakePacketError(
+            "Room Current view contains duplicate operational keys"
+        )
 
     for decision in room_current.items:
         if (
@@ -725,6 +747,14 @@ def _wake_current_candidate(
     candidate: CurrentCandidate,
 ) -> WakeCurrentCandidate:
     record = candidate.record
+    if record.namespace is not CurrentNamespace.ROOM:
+        raise WakePacketError(
+            "Room Now candidate is not Room Current"
+        )
+    if record.episode_id is None or record.perspective_instance_id is None:
+        raise WakePacketError(
+            "Room Now candidate lacks Episode/Perspective provenance"
+        )
     return WakeCurrentCandidate(
         state_id=record.state_id,
         value=record.value,
