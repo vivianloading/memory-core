@@ -255,6 +255,8 @@ class WakeRoomNowItem:
                 "Room Now item state_kind differs from candidates"
             )
         _refs("reason_codes", self.reason_codes)
+        if not isinstance(self.privacy_scope, WakePrivacyScope):
+            raise WakePacketError("Room Now privacy_scope is invalid")
         if (
             self.privacy_scope.kind is not WakePrivacyScopeKind.ROOM
             or self.privacy_scope.scope_id != self.room_id
@@ -416,6 +418,40 @@ class WakeAssemblyReceipt:
         _aware("as_of", self.as_of)
         _text("episode_id", self.episode_id)
         _refs("included_item_ids", self.included_item_ids)
+        if not isinstance(self.omissions, tuple) or any(
+            not isinstance(item, WakeOmission)
+            for item in self.omissions
+        ):
+            raise WakePacketError(
+                "receipt omissions must contain WakeOmission values"
+            )
+        expected_layers = (
+            WakeLayer.MAP,
+            WakeLayer.SHARED_NOW,
+            WakeLayer.ROOM_NOW,
+            WakeLayer.RECENT_LIFE,
+            WakeLayer.NEARBY_DOORS,
+        )
+        if (
+            not isinstance(self.layer_availability, tuple)
+            or tuple(
+                item[0]
+                for item in self.layer_availability
+                if isinstance(item, tuple) and len(item) == 2
+            )
+            != expected_layers
+            or len(self.layer_availability) != len(expected_layers)
+            or any(
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[0], WakeLayer)
+                or not isinstance(item[1], WakeLayerAvailability)
+                for item in self.layer_availability
+            )
+        ):
+            raise WakePacketError(
+                "receipt layer availability must preserve the five-layer order"
+            )
 
 
 _CARRYABLE_STANDINGS = frozenset(
@@ -449,8 +485,16 @@ def assemble_wake_packet_v0_1(
         )
     if route.episode_id != episode.episode_id:
         raise WakePacketError("route belongs to a different Episode")
-    if not isinstance(continuity_edges, tuple):
-        raise WakePacketError("continuity_edges must be a tuple")
+    if (
+        not isinstance(continuity_edges, tuple)
+        or any(
+            not isinstance(edge, ContinuityEdge)
+            for edge in continuity_edges
+        )
+    ):
+        raise WakePacketError(
+            "continuity_edges must contain ContinuityEdge values"
+        )
 
     incoming = tuple(
         edge
