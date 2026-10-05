@@ -196,6 +196,10 @@ class WakeIssuanceAuthority:
             )
 
         self._bound_living_store = living_store
+        # Caller-owned store object is binding evidence only. Operational
+        # reads use a fresh canonical-path store so instance monkeypatching or
+        # mutable caller configuration cannot become producer authority.
+        self._living_store = LivingStore(current_path)
         self._current_resolver = current_resolver
         self._clock = clock
         self._canonical_db_path = current_path
@@ -234,7 +238,9 @@ class WakeIssuanceAuthority:
             )
         _require_aware("as_of", as_of)
 
-        connection = self._current_resolver._read_connection()
+        connection = CurrentResolver._read_connection(
+            self._current_resolver
+        )
         try:
             if not connection.in_transaction:
                 raise WakeIssuanceIntegrityError(
@@ -242,8 +248,9 @@ class WakeIssuanceAuthority:
                 )
             assert_living_data_integrity(connection)
 
-            episodes = self._bound_living_store._read_all_episodes(
-                connection
+            episodes = LivingStore._read_all_episodes(
+                self._living_store,
+                connection,
             )
             episode_by_id = {
                 item.episode_id: item
@@ -254,16 +261,14 @@ class WakeIssuanceAuthority:
             except KeyError as error:
                 raise KeyError(episode_id) from error
 
-            continuity_edges = (
-                self._bound_living_store
-                ._read_all_continuity_edges(connection)
+            continuity_edges = LivingStore._read_all_continuity_edges(
+                self._living_store,
+                connection,
             )
-            route_events = (
-                self._bound_living_store
-                ._read_room_attachment_events(
-                    connection,
-                    episode_id=episode_id,
-                )
+            route_events = LivingStore._read_room_attachment_events(
+                self._living_store,
+                connection,
+                episode_id=episode_id,
             )
             try:
                 route = resolve_room_attachment(
@@ -280,8 +285,8 @@ class WakeIssuanceAuthority:
                         "attached canonical route lacks room_id"
                     )
                 room_current = (
-                    self._current_resolver
-                    ._resolve_owner_in_connection(
+                    CurrentResolver._resolve_owner_in_connection(
+                        self._current_resolver,
                         connection=connection,
                         namespace=CurrentNamespace.ROOM,
                         owner_id=route.room_id,
@@ -410,7 +415,9 @@ class WakeIssuanceAuthority:
             raise WakeIssuanceAuthorizationError(
                 "Wake issuance authority belongs to another HOME process incarnation"
             )
-        self._current_resolver._assert_live_binding()
+        CurrentResolver._assert_live_binding(
+            self._current_resolver
+        )
         try:
             living_path = Path(
                 self._bound_living_store.db_path
