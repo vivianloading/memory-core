@@ -203,7 +203,7 @@ class WakePacketTests(unittest.TestCase):
         )
         self.assertEqual(
             item.incoming_continuity.continuity_status,
-            "unknown",
+            ContinuityStatus.UNKNOWN,
         )
         self.assertEqual(
             item.use_boundary.identity_continuity_claim_authority,
@@ -277,7 +277,7 @@ class WakePacketTests(unittest.TestCase):
         )
         self.assertEqual(
             item.candidates[0].semantic_change_authority,
-            "room_first_person",
+            SemanticChangeAuthority.ROOM_FIRST_PERSON,
         )
         self.assertEqual(
             item.candidates[0].source_refs,
