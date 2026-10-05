@@ -11,15 +11,16 @@ from _trusted_test_support import (
     trusted_test_room_continuation_policy,
     trusted_test_runtime_launch_issuer,
 )
+import home_memory_core.current_admission as admission_module
 from home_memory_core.current_admission import (
     CurrentAdmissionIntegrityError,
     CurrentAdmissionStore,
     open_current_admission_authority,
 )
 from home_memory_core.current_resolver import (
-    CurrentResolver,
     CurrentResolverClosedBoundaryError,
     CurrentResolverStatus,
+    open_current_resolver,
 )
 from home_memory_core.current_store import (
     CurrentSourceBinding,
@@ -147,7 +148,9 @@ class CurrentResolverTests(unittest.TestCase):
             admission_store=self.admission_store,
             room_authority=self.room_authority,
         )
-        self.resolver = CurrentResolver(self.db)
+        self.resolver = open_current_resolver(
+            admission_authority=self.admission,
+        )
         self.t0 = datetime(2026, 1, 1, 9, tzinfo=UTC)
         self.grant = self._grant()
 
@@ -313,7 +316,7 @@ class CurrentResolverTests(unittest.TestCase):
         self.assertEqual(decision.status, CurrentResolverStatus.RESOLVED)
         self.assertEqual(decision.usable_standing, CurrentStanding.UNKNOWN)
         self.assertEqual(decision.usable_current_state_ids, ())
-        self.assertEqual(decision.audit_resolution.current_state_ids, ())
+        self.assertEqual(decision.semantic_resolution.current_state_ids, ())
         self.assertEqual(
             self.current.get_state_for_audit(raw.state_id).record,
             raw,
@@ -335,7 +338,7 @@ class CurrentResolverTests(unittest.TestCase):
         )
         self.assertNotIn(
             raw_child.state_id,
-            decision.audit_resolution.current_state_ids,
+            decision.semantic_resolution.current_state_ids,
         )
 
     def test_raw_unadmitted_competing_head_cannot_manufacture_conflict(self) -> None:
@@ -350,7 +353,7 @@ class CurrentResolverTests(unittest.TestCase):
             (admitted.state_id,),
         )
         self.assertNotEqual(
-            decision.audit_resolution.standing,
+            decision.semantic_resolution.standing,
             CurrentStanding.CONFLICTING,
         )
         self.assertEqual(
@@ -370,7 +373,7 @@ class CurrentResolverTests(unittest.TestCase):
         decision = self.resolve()
 
         self.assertEqual(
-            decision.audit_resolution.current_state_ids,
+            decision.semantic_resolution.current_state_ids,
             (child.state_id,),
         )
         self.assertEqual(
@@ -401,7 +404,7 @@ class CurrentResolverTests(unittest.TestCase):
         decision = self.resolve()
 
         self.assertEqual(
-            decision.audit_resolution.current_state_ids,
+            decision.semantic_resolution.current_state_ids,
             (grandchild.state_id,),
         )
         self.assertEqual(
@@ -428,7 +431,7 @@ class CurrentResolverTests(unittest.TestCase):
         decision = self.resolve()
 
         self.assertEqual(
-            decision.audit_resolution.standing,
+            decision.semantic_resolution.standing,
             CurrentStanding.ENDED,
         )
         self.assertEqual(
@@ -445,11 +448,11 @@ class CurrentResolverTests(unittest.TestCase):
         decision = self.resolve()
 
         self.assertEqual(
-            decision.audit_resolution.standing,
+            decision.semantic_resolution.standing,
             CurrentStanding.CONFLICTING,
         )
         self.assertEqual(
-            set(decision.audit_resolution.current_state_ids),
+            set(decision.semantic_resolution.current_state_ids),
             {first.state_id, second.state_id},
         )
         self.assertEqual(
@@ -471,13 +474,13 @@ class CurrentResolverTests(unittest.TestCase):
         decision = self.resolve()
 
         self.assertEqual(
-            decision.audit_resolution.standing,
+            decision.semantic_resolution.standing,
             CurrentStanding.CONFLICTING,
         )
         self.assertEqual(
             tuple(
                 event.end_event_id
-                for event in decision.audit_resolution.candidates[0].end_events
+                for event in decision.semantic_resolution.candidates[0].end_events
             ),
             (first.end_event_id, second.end_event_id),
         )
@@ -525,7 +528,121 @@ class CurrentResolverTests(unittest.TestCase):
         )
         self.assertIn(
             future.state_id,
-            decision.audit_resolution.future_state_ids,
+            decision.semantic_resolution.future_state_ids,
+        )
+
+    def forge_state_admission_audit(
+        self,
+        state_id: str,
+        *,
+        admission_id: str = "forged-admission",
+    ) -> None:
+        """Manufacture only a self-consistent durable audit row.
+
+        This deliberately bypasses CurrentAdmissionAuthority and creates no
+        CurrentAdmissionReceipt. It preserves schema/triggers so the regression
+        matches independent review #50.
+        """
+
+        connection = sqlite3.connect(self.db)
+        connection.row_factory = sqlite3.Row
+        try:
+            effect_digest = admission_module._state_effect_digest(
+                connection,
+                state_id,
+            )
+            values = admission_module._grant_provenance(
+                grant=self.grant,
+                room_attachment_event_id="route-b",
+            )
+            binding_digest = admission_module._admission_binding_digest(
+                admission_id=admission_id,
+                effect_kind=admission_module.CurrentAdmissionEffectKind.STATE,
+                effect_id=state_id,
+                effect_digest=effect_digest,
+                predecessor_admission_id=None,
+                **values,
+            )
+            connection.execute(
+                f"""INSERT INTO {
+                    admission_module.CURRENT_STATE_ADMISSION_TABLE
+                } (
+                    state_id,admission_id,effect_digest,
+                    admission_binding_digest,grant_id,grant_binding_digest,
+                    policy_fingerprint,launch_evidence_id,policy_id,
+                    policy_issuance_id,proposal_id,approval_id,session_id,
+                    episode_id,perspective_instance_id,room_id,
+                    room_attachment_event_id,required_scope,
+                    predecessor_admission_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    state_id,
+                    admission_id,
+                    effect_digest,
+                    binding_digest,
+                    values["grant_id"],
+                    values["grant_binding_digest"],
+                    values["policy_fingerprint"],
+                    values["launch_evidence_id"],
+                    values["policy_id"],
+                    values["policy_issuance_id"],
+                    values["proposal_id"],
+                    values["approval_id"],
+                    values["session_id"],
+                    values["episode_id"],
+                    values["perspective_instance_id"],
+                    values["room_id"],
+                    values["room_attachment_event_id"],
+                    values["required_scope"].value,
+                    None,
+                ),
+            )
+            connection.commit()
+            admission_module.assert_current_admission_data_integrity(
+                connection
+            )
+        finally:
+            connection.close()
+
+    def test_manufactured_durable_admission_never_becomes_operational_current(self) -> None:
+        raw, _ = self.raw_state("forged-audit-only")
+        self.forge_state_admission_audit(raw.state_id)
+
+        decision = self.resolve()
+
+        self.assertEqual(
+            decision.status,
+            CurrentResolverStatus.ADMISSION_PROOF_UNAVAILABLE,
+        )
+        self.assertIsNone(decision.semantic_resolution)
+        self.assertIsNone(decision.usable_standing)
+        self.assertEqual(decision.usable_current_state_ids, ())
+        self.assertEqual(
+            tuple(
+                (item.effect_kind.value, item.effect_id)
+                for item in decision.missing_live_admission_effects
+            ),
+            (("state", raw.state_id),),
+        )
+
+    def test_lost_process_local_receipt_is_explicitly_unavailable_not_unknown(self) -> None:
+        record, _, _ = self.admit_state("restart-boundary")
+        with self.admission._receipt_guard:
+            self.admission._receipts.clear()
+
+        decision = self.resolve()
+
+        self.assertEqual(
+            decision.status,
+            CurrentResolverStatus.ADMISSION_PROOF_UNAVAILABLE,
+        )
+        self.assertIsNone(decision.semantic_resolution)
+        self.assertEqual(
+            tuple(
+                item.effect_id
+                for item in decision.missing_live_admission_effects
+            ),
+            (record.state_id,),
         )
 
     def test_shared_resolution_is_closed_until_shared_admission_exists(self) -> None:
