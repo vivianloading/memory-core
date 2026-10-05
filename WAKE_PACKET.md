@@ -448,3 +448,37 @@ This preserves a stronger rule:
 
 The old frozen head remains author-side pre-review history; any independent
 review target bound to it is stale once this hardening changes the branch head.
+
+## Independent review #57 — FAIL / NO-GO and remediation
+
+Independent review #57 returned **FAIL / NO-GO** on exact head
+`3cf6a41dc98ccaf15958d16604576d823c5c9447`.
+
+The review confirmed five representation/time defects using ordinary constructors
+and `dataclasses.replace`:
+
+1. nested Room Now item/candidate shapes were not recursively type-checked;
+2. direct `WakePacket` construction did not bind Room Now privacy to the Map's
+   attached Room;
+3. equality behavior of `StrEnum` allowed a plain string such as
+   `"unavailable"` to bypass typed availability guards;
+4. the explicit synthetic-unattributed Perspective sentinel could enter Wake
+   provenance;
+5. Python `datetime ==` was not a safe same-instant test across DST folds.
+
+The remediation strengthens the substrate itself rather than relying on the
+normal assembler:
+
+- nested Room Now tuples now require exact Wake dataclass element types and
+  immutable tuple containers;
+- packet-level validation binds all Room Now items to the Map-attached Room and
+  forbids Room Now content when the Map is unattached/unresolved;
+- layer/availability boundaries require actual enum instances before value
+  checks;
+- Wake Map, Room Current candidates and Room end evidence reject the established
+  unattributed Perspective sentinel;
+- same-time binding uses explicit absolute-instant arithmetic consistent with
+  Current View rather than wall-time equality.
+
+The #57 verdict remains permanently bound to its failed exact head. A later
+remediation head requires a fresh independent review and bounded coverage sweep.
