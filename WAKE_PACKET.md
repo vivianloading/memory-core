@@ -48,7 +48,36 @@ Every v0.1 carried item has a mechanically fixed use boundary:
 
 Those fields are not configurable in v0.1.
 
-## 3. Packet vs assembly receipt
+## 3. Input proof boundary
+
+Wake Packet v0.1 is a **typed semantic substrate**, not an operational issuance
+gate.
+
+Its pure assembler accepts already-constructed `EpisodeRecord`,
+`RoomAttachmentResolution`, `ContinuityEdge`, and `CurrentResolvedView`
+objects. Python callers can manually construct those dataclasses, so their type
+alone does not prove that the live Living Store / Current Resolver produced
+them.
+
+Every v0.1 packet therefore carries:
+
+`input_trust = typed_caller_input`
+
+and still has `model_delivery_authority = none`.
+
+This is deliberate rather than hidden. Before any renderer/model-delivery slice,
+HOME needs a runtime-bound Wake issuance/adapter that:
+
+- reads the Living inputs from the canonical HOME database;
+- obtains Room Current by calling the exact live authority-bound
+  CurrentResolver;
+- preserves one coherent operation boundary as required;
+- issues a packet that cannot be recreated merely by manufacturing compatible
+  dataclasses.
+
+A future adapter must not reinterpret v0.1's typed shape as producer proof.
+
+## 4. Packet vs assembly receipt
 
 Wake assembly returns two different objects.
 
@@ -76,7 +105,7 @@ explained.
 The audit receipt may retain opaque effect/suppression identifiers needed to
 explain a holdback. It does not contain blocked Current values.
 
-## 4. Layer availability
+## 5. Layer availability
 
 Each layer has one explicit availability state:
 
@@ -89,7 +118,7 @@ Each layer has one explicit availability state:
 
 An empty `ready` layer is different from an `unavailable` layer.
 
-## 5. Map
+## 6. Map
 
 Map orients one concrete Episode.
 
@@ -122,7 +151,7 @@ authority. Room-scoped carried content begins in Room Now, not in Map.
 
 Topology itself does not widen the scope.
 
-## 6. Shared Now
+## 7. Shared Now
 
 Shared Now is `closed` in v0.1.
 
@@ -136,7 +165,7 @@ Reason code:
 
 `SHARED_OPERATIONAL_CURRENT_CLOSED`
 
-## 7. Room Now
+## 8. Room Now
 
 Room Now accepts only `CurrentResolvedView` from the already-opened,
 authority-bound Current Resolver.
@@ -219,7 +248,7 @@ Room Now items are Room scoped and only accepted when:
 - owner id matches the routed Room;
 - `as_of` is the same represented instant as the Wake Packet.
 
-## 8. Recent Life
+## 9. Recent Life
 
 Recent Life is `unavailable` in v0.1.
 
@@ -238,7 +267,7 @@ That contract must keep at least **event/reference time** separate from
 Backfilled life evidence must not become recent-in-life merely because HOME
 learned it recently.
 
-## 9. Nearby Doors
+## 10. Nearby Doors
 
 Nearby Doors is `unavailable` in v0.1.
 
@@ -252,7 +281,7 @@ automatically a "door".
 A later slice must define what navigation opportunity exists, who may see it,
 and what opening it authorizes.
 
-## 10. Inclusion reason
+## 11. Inclusion reason
 
 Every carried v0.1 item contains a mechanical inclusion reason.
 
@@ -264,7 +293,7 @@ Initial reasons:
 No ranking score, emotional importance, retrieval count, or similarity score is
 allowed to become inclusion authority in this slice.
 
-## 11. Determinism and side effects
+## 12. Determinism and side effects
 
 v0.1 typed assembly is pure over already-resolved inputs.
 
@@ -281,7 +310,7 @@ v0.1 typed assembly is pure over already-resolved inputs.
 Store adapters are a later slice. This lets HOME review the semantic carriage
 contract before adding another database concurrency boundary.
 
-## 12. Privacy and fork non-claims
+## 13. Privacy and fork non-claims
 
 v0.1 does not implement cross-Room inheritance or Shared visibility.
 
@@ -295,7 +324,7 @@ Future cross-Episode/Room carry rules must preserve:
 Topology, common ancestry, or relevance will not by themselves authorize
 visibility.
 
-## 13. Relationship and identity non-claims
+## 14. Relationship and identity non-claims
 
 Wake Packet v0.1 contains no:
 
@@ -310,7 +339,7 @@ A standing self-interpretation or preference may be carried as attributed
 Current data when the resolver says it is operationally safe. That still does
 not make it current first-person speech.
 
-## 14. Renderer boundary
+## 15. Renderer boundary
 
 There is intentionally no prose renderer in this slice.
 
@@ -329,7 +358,7 @@ renderer to distinguish:
 The renderer will need its own review because language can reintroduce authority
 that the typed substrate correctly withheld.
 
-## 15. External reconnaissance gate
+## 16. External reconnaissance gate
 
 Before freezing Wake semantics for independent review, perform a narrow external
 reconnaissance focused on mechanics, not product imitation:
@@ -349,7 +378,7 @@ The first reconnaissance reinforced three v0.1 decisions:
 - recall/carriage and ingestion should remain mechanically separate so injected
   context cannot silently become fresh memory evidence.
 
-## 16. Non-goals
+## 17. Non-goals
 
 Not in Wake Packet v0.1:
 
