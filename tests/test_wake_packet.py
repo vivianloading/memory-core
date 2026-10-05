@@ -672,6 +672,20 @@ class WakePacketTests(unittest.TestCase):
             WakeLayerAvailability.READY,
         )
 
+    def test_receipt_preserves_exact_five_layer_order(self) -> None:
+        _, receipt = self.assemble(room_current=self.view())
+
+        self.assertEqual(
+            tuple(layer for layer, _ in receipt.layer_availability),
+            (
+                WakeLayer.MAP,
+                WakeLayer.SHARED_NOW,
+                WakeLayer.ROOM_NOW,
+                WakeLayer.RECENT_LIFE,
+                WakeLayer.NEARBY_DOORS,
+            ),
+        )
+
     def test_naive_wake_time_is_rejected(self) -> None:
         with self.assertRaises(WakePacketError):
             assemble_wake_packet_v0_1(
