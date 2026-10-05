@@ -105,6 +105,11 @@ explained.
 The audit receipt may retain opaque effect/suppression identifiers needed to
 explain a holdback. It does not contain blocked Current values.
 
+**WakeAssemblyReceipt is not renderer or model input.** It is an internal audit
+artifact. A later renderer/delivery boundary may consume WakePacket only; using
+the receipt as a second context channel would defeat the Packet/receipt
+separation and could reintroduce withheld material through metadata.
+
 ## 5. Layer availability
 
 Each layer has one explicit availability state:
