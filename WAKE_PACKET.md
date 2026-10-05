@@ -507,3 +507,27 @@ the same invariant.
 
 The #58 verdict remains bound to its failed exact SHA. A later head requires a
 fresh exact-SHA review.
+
+## Independent review #59 — section-level conflict split NO-GO
+
+Independent review #59 returned **FAIL / NO-GO** on exact head
+`0ea9ac64c1ea7225304014447db656b2f86745e2`.
+
+The per-item aggregate consistency added after #58 worked, but direct section
+construction could split one genuine key-level conflict into multiple
+non-conflicting items for the same `(room_id, key)`. Every item was internally
+valid, yet the section as a whole erased the required conflict aggregate.
+
+The remediation therefore moves the invariant to the enclosing semantic unit:
+
+- one `WakeRoomNowSection` may contain at most one item per
+  `(room_id, key)`;
+- item IDs must also be unique within the section;
+- distinct keys remain independently representable;
+- a conflict for one key must remain inside that key's single aggregate item.
+
+This reflects the actual Current semantic boundary: one Room Current key has one
+aggregate Wake representation.
+
+The #59 verdict remains bound to its failed exact SHA. A later head requires a
+fresh exact-SHA review.
