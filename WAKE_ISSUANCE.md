@@ -147,11 +147,20 @@ The `WakeIssuanceReceipt` binds:
 
 Receipt construction requires a private package marker.
 
-The issuing authority also registers the **exact receipt object** in a
-process-local registry guarded by a lock.
+The issuing authority also registers the **exact receipt object** in an
+instance-owned process-local registry guarded by a lock.
+
+That instance-owned registry is not treated as sufficient proof of the issuer
+object itself. A separate module-level process-local **origin registry** binds
+each random `authority_id` to the exact authority object that completed live
+construction. This prevents shallow-copy / state-alias objects from inheriting
+the original registry, identifiers, locks, and receipts and then claiming to be
+the originating issuer.
 
 Live verification requires:
 
+- the authority object itself is the exact origin object registered for its
+  `authority_id`;
 - the exact authority instance that registered the receipt;
 - the exact HOME process incarnation;
 - unchanged canonical database binding;
@@ -335,3 +344,47 @@ Before merge, freeze one exact head and apply HOME #18:
 
 Historical failures remain scoped to their exact SHAs. A PASS on a later head
 does not erase them and never grants merge authority.
+
+## 16. Independent review #65 — issuer-origin identity NO-GO
+
+Independent review #65 returned **FAIL / NO-GO** on exact head
+`941b11af3bcddee3257943b6c40745747697db4f`.
+
+The reviewer independently confirmed multiple intended boundaries, including
+separate-authority receipt rejection, marker-retaining receipt-copy rejection,
+artifact digest mutation rejection, read-only issuance, and the typed-caller /
+NONE-authority distinctions.
+
+The blocking contract gap was narrower and deeper:
+
+> receipt-object identity was bound, but the authority object's own originating
+> identity was only self-attested by its copied instance state.
+
+A shallow copy or manual state alias could in principle preserve the
+instance-owned receipt registry, authority id, process id, DB binding, locks,
+and fingerprints. The prior implementation had no independent witness proving
+that the verifier object itself was the authority object that originally
+completed construction.
+
+The remediation adds a separate process-local origin registry:
+
+`authority_id -> exact WakeIssuanceAuthority object`
+
+Registration occurs only at the end of valid authority construction. Every
+`issue(...)` and `require_live_issuance(...)` path reaches
+`_assert_live_binding()`, which now requires the origin registry entry to be
+object-identical to `self`.
+
+Therefore:
+
+- a separately opened authority still has a different authority id;
+- a shallow copy preserving all instance state is rejected;
+- an `object.__new__` + `__dict__` state alias is rejected;
+- copied receipt registries and locks do not become issuer-origin proof.
+
+The origin registry is process-local runtime state, not durable authority,
+semantic identity, Room identity, or restart-safe credential.
+
+#65 remains permanently scoped to its failed exact SHA. A later head requires a
+fresh exact-SHA independent review, including the bounded sweep #65 did not
+reach.
