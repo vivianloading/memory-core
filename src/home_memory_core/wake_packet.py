@@ -161,6 +161,42 @@ class WakeMapItem:
                 "active_attachment_event_id",
                 self.active_attachment_event_id,
             )
+        if self.incoming_continuity is not None:
+            if not isinstance(
+                self.incoming_continuity,
+                WakeContinuityEvidence,
+            ):
+                raise WakePacketError(
+                    "incoming_continuity is invalid"
+                )
+            if (
+                self.incoming_continuity.next_episode_id
+                != self.episode_id
+            ):
+                raise WakePacketError(
+                    "incoming continuity does not point to Map Episode"
+                )
+        if self.route_decision is WakeRouteDecision.ATTACHED:
+            if (
+                self.room_id is None
+                or self.active_attachment_event_id is None
+            ):
+                raise WakePacketError(
+                    "attached Map route requires Room and active route event"
+                )
+        elif self.route_decision is WakeRouteDecision.UNATTACHED:
+            if self.room_id is not None:
+                raise WakePacketError(
+                    "unattached Map route cannot claim a Room"
+                )
+        elif self.route_decision is WakeRouteDecision.UNRESOLVED:
+            if (
+                self.room_id is not None
+                or self.active_attachment_event_id is not None
+            ):
+                raise WakePacketError(
+                    "unresolved Map route cannot claim active Room route"
+                )
         if not isinstance(self.privacy_scope, WakePrivacyScope):
             raise WakePacketError("map privacy_scope is invalid")
         if (
@@ -194,6 +230,17 @@ class WakeEndEvidence:
                 self.perspective_instance_id,
             )
         _refs("source_refs", self.source_refs)
+        if not self.source_refs:
+            raise WakePacketError(
+                "Room end evidence requires source provenance"
+            )
+        if (
+            self.episode_id is None
+            or self.perspective_instance_id is None
+        ):
+            raise WakePacketError(
+                "Room end evidence requires Episode/Perspective attribution"
+            )
 
 
 @dataclass(frozen=True)
@@ -229,16 +276,44 @@ class WakeCurrentCandidate:
             raise WakePacketError("candidate standing is invalid")
         _aware("event_time", self.event_time)
         _aware("recorded_at", self.recorded_at)
-        if self.episode_id is not None:
-            _text("episode_id", self.episode_id)
-        if self.perspective_instance_id is not None:
-            _text(
-                "perspective_instance_id",
-                self.perspective_instance_id,
+        if (
+            self.semantic_change_authority
+            is not SemanticChangeAuthority.ROOM_FIRST_PERSON
+        ):
+            raise WakePacketError(
+                "Room Now candidate must retain Room first-person semantic ownership"
             )
+        if self.state_kind is CurrentStateKind.SHARED_STATE:
+            raise WakePacketError(
+                "Room Now candidate cannot claim Shared state kind"
+            )
+        if (
+            self.episode_id is None
+            or self.perspective_instance_id is None
+        ):
+            raise WakePacketError(
+                "Room Now candidate requires Episode/Perspective attribution"
+            )
+        _text("episode_id", self.episode_id)
+        _text(
+            "perspective_instance_id",
+            self.perspective_instance_id,
+        )
         _refs("source_refs", self.source_refs)
-        if not isinstance(self.end_evidence, tuple):
-            raise WakePacketError("end_evidence must be a tuple")
+        if not self.source_refs:
+            raise WakePacketError(
+                "Room Now candidate requires source provenance"
+            )
+        if (
+            not isinstance(self.end_evidence, tuple)
+            or any(
+                not isinstance(item, WakeEndEvidence)
+                for item in self.end_evidence
+            )
+        ):
+            raise WakePacketError(
+                "end_evidence must contain WakeEndEvidence values"
+            )
 
 
 @dataclass(frozen=True)
