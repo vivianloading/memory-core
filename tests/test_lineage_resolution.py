@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.evidence import create_evidence_ref
 from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.lineage import (
@@ -19,7 +20,7 @@ from home_memory_core.lineage import (
 from home_memory_core.revision import create_supersession_record
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
-from home_memory_core.suppression import create_suppression_record
+from home_memory_core.suppression import SuppressionLedgerIntegrityError
 from home_memory_core.thread import (
     create_interpretation_thread,
     create_thread_admission,
@@ -214,6 +215,33 @@ class LineageResolutionTest(unittest.TestCase):
         self.assertEqual(result.decision, "no_candidate")
         self.assertEqual(result.candidate_ids, frozenset())
         self.assertEqual(result.reason_codes, ("EMPTY_THREAD",))
+
+    def test_resolution_input_rejects_damaged_suppression_ledger(self) -> None:
+        interpretation = self._stored_interpretation(
+            "damaged-ledger-resolution"
+        )
+        self._admit(interpretation)
+        self._suppress_evidence(
+            interpretation,
+            "suppress-damaged-ledger-resolution",
+        )
+
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                "DROP TRIGGER source_suppressions_no_delete"
+            )
+            connection.execute(
+                """
+                DELETE FROM source_suppressions
+                WHERE suppression_id='suppress-damaged-ledger-resolution'
+                """
+            )
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.get_lineage_resolution_input(
+                self.thread.thread_id
+            )
 
     def test_resolution_input_rejects_known_edge_escaping_thread(self) -> None:
         left = self._stored_interpretation("escape-left")

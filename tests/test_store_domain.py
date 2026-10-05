@@ -3,12 +3,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+import home_memory_core.storage as storage_module
+from home_memory_core.evidence import create_evidence_ref
+from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
 from home_memory_core.real_ingress import initialize_closed_real_ingress_schema
@@ -147,6 +151,99 @@ class StoreDomainBoundaryTest(unittest.TestCase):
 
         with self.assertRaises(StoreDomainError):
             MemoryStore(db_path).add_source(source)
+
+    def test_source_use_checks_domain_inside_read_snapshot(self) -> None:
+        db_path = self.root / "domain-read-snapshot.sqlite3"
+        store = MemoryStore(db_path)
+        store.initialize()
+        source = create_source_record(
+            source_id="domain-read-source",
+            content="synthetic fixture",
+            authored_by="synthetic-author",
+            scope="synthetic",
+        )
+        store.add_source(source)
+
+        original_assert = storage_module.assert_synthetic_store_domain
+        observed_transactions = []
+
+        def observing_assert(connection):
+            observed_transactions.append(connection.in_transaction)
+            original_assert(connection)
+
+        with patch.object(
+            storage_module,
+            "assert_synthetic_store_domain",
+            observing_assert,
+        ):
+            self.assertEqual(store.get_source(source.source_id), source)
+
+        self.assertEqual(observed_transactions, [True])
+
+    def test_derived_write_holds_domain_trust_inside_write_transaction(self) -> None:
+        db_path = self.root / "domain-derived-write.sqlite3"
+        store = MemoryStore(db_path)
+        store.initialize()
+        source = create_source_record(
+            source_id="domain-derived-source",
+            content="synthetic fixture",
+            authored_by="synthetic-author",
+            scope="synthetic",
+        )
+        store.add_source(source)
+        evidence = create_evidence_ref(
+            source=source,
+            start_char=0,
+            end_char=len(source.content),
+        )
+        interpretation = create_interpretation_record(
+            interpretation_id="domain-derived-interpretation",
+            text="synthetic interpretation",
+            perspective_owner="synthetic-owner",
+            perspective_instance_id="synthetic-instance",
+            about_subject="synthetic-subject",
+            scope="synthetic",
+            evidence=(evidence,),
+        )
+
+        original_assert = storage_module.assert_synthetic_store_domain
+        observed_transactions = []
+        concurrent_damage_errors = []
+
+        def guarded_assert(connection):
+            observed_transactions.append(connection.in_transaction)
+            original_assert(connection)
+
+            damage = sqlite3.connect(db_path, timeout=0)
+            try:
+                damage.execute("DROP TABLE home_store_domain")
+                damage.commit()
+            except Exception as error:
+                concurrent_damage_errors.append(error)
+                damage.rollback()
+            finally:
+                damage.close()
+
+        with patch.object(
+            storage_module,
+            "assert_synthetic_store_domain",
+            guarded_assert,
+        ):
+            store.add_interpretation(interpretation)
+
+        self.assertEqual(observed_transactions, [True])
+        self.assertEqual(len(concurrent_damage_errors), 1)
+        self.assertIsInstance(
+            concurrent_damage_errors[0],
+            sqlite3.OperationalError,
+        )
+        self.assertEqual(read_store_domain(db_path), SYNTHETIC_STORE_DOMAIN)
+        self.assertEqual(
+            store.get_interpretation_for_audit(
+                interpretation.interpretation_id
+            ),
+            interpretation,
+        )
 
     def test_real_store_creation_refuses_synthetic_store_conversion(self) -> None:
         db_path = self.root / "synthetic.sqlite3"

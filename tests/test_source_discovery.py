@@ -1,10 +1,12 @@
 import dataclasses
+import sqlite3
 import inspect
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.evidence import create_evidence_ref
 from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.revision import create_supersession_record
@@ -17,7 +19,7 @@ from home_memory_core.source_discovery import (
     SourceLinkedReadOnlyDiscovery,
 )
 from home_memory_core.storage import MemoryStore
-from home_memory_core.suppression import create_suppression_record
+from home_memory_core.suppression import SuppressionLedgerIntegrityError
 from home_memory_core.thread import (
     create_interpretation_thread,
     create_thread_admission,
@@ -105,6 +107,44 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
             for locator in result.receipt.internal_match_locators
         ))
 
+    def test_discovery_fails_closed_on_damaged_suppression_ledger(self) -> None:
+        thread, _interpretation, source = self._thread_with_single_evidence(
+            interpretation_id="i-damaged-suppression-discovery",
+            content="Miyakojima must stay stopped",
+            start=0,
+            end=len("Miyakojima must stay stopped"),
+        )
+        self.store.suppress_source(
+            create_suppression_record(
+                suppression_id="suppressed-damaged-discovery",
+                source_id=source.source_id,
+                requested_by="vivi",
+                reason="synthetic stop-use",
+            )
+        )
+        self.assertEqual(self._publish(query="Miyakojima").thread_ids, ())
+
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                "DROP TRIGGER source_suppressions_no_delete"
+            )
+            connection.execute(
+                """
+                DELETE FROM source_suppressions
+                WHERE suppression_id='suppressed-damaged-discovery'
+                """
+            )
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self._publish(query="Miyakojima")
+
+        self.assertEqual(
+            self.store.get_source_for_audit(source.source_id),
+            source,
+        )
+        self.assertIsNotNone(thread.thread_id)
+
     def test_usable_source_cannot_bridge_through_blocked_interpretation(self) -> None:
         thread = self._add_thread()
         source_match = self._add_source("s-match", "Miyakojima usable")
@@ -153,7 +193,7 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
         )
         self.store.add_thread(incompatible_thread)
 
-        with self.store._connection() as connection:
+        with sqlite3.connect(self.db_path) as connection:
             connection.execute(
                 """
                 UPDATE interpretation_thread_memberships
@@ -304,7 +344,7 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
         self._thread_with_single_evidence(
             interpretation_id="i-tamper", content="needle", start=0, end=6
         )
-        with self.store._connection() as connection:
+        with sqlite3.connect(self.db_path) as connection:
             connection.execute(
                 "UPDATE sources SET content = ? WHERE source_id = ?",
                 ("changed", "s-i-tamper"),
@@ -455,7 +495,7 @@ class SourceLinkedReadOnlyDiscoveryTests(unittest.TestCase):
             "supersession_evidence",
         )
         counts = {}
-        with self.store._connection() as connection:
+        with sqlite3.connect(self.db_path) as connection:
             for table in tables:
                 counts[table] = connection.execute(
                     f"SELECT COUNT(*) FROM {table}"

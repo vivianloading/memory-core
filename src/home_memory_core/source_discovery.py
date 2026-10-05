@@ -6,7 +6,7 @@ from typing import Callable
 from uuid import uuid4
 
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
-from home_memory_core.storage import MemoryStore
+from home_memory_core.storage import MemoryStore, assert_source_suppression_ledger
 
 
 QUERY_RULE = "literal_unicode_scalar_substring_v0.1"
@@ -104,6 +104,7 @@ class SourceLinkedReadOnlyDiscovery:
             return result.receipt
 
     def _discover_in_snapshot(self, *, connection, query: str) -> SourceDiscoveryResult:
+        assert_source_suppression_ledger(connection)
         metadata_rows = connection.execute(
             """
             SELECT

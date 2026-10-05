@@ -1,3 +1,4 @@
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.evidence import create_evidence_ref
 from home_memory_core.interpretation import create_interpretation_record
 from home_memory_core.revision import create_supersession_record
@@ -19,7 +21,7 @@ from home_memory_core.thread import (
 )
 from home_memory_core.suppression import (
     SuppressedMemoryError,
-    create_suppression_record,
+    SuppressionLedgerIntegrityError,
 )
 
 
@@ -185,6 +187,115 @@ class SuppressionStorageTest(unittest.TestCase):
                 interpretation.interpretation_id
             )
 
+    def test_interpretation_write_holds_lock_across_suppression_decision(
+        self,
+    ) -> None:
+        source = create_source_record(
+            source_id="stored-message-interpretation-race",
+            content="这段 source 已经停止使用。",
+            authored_by="vivi",
+            scope="shared",
+        )
+        self.store.add_source(source)
+        suppression = create_suppression_record(
+            suppression_id="stored-suppression-interpretation-race",
+            source_id=source.source_id,
+            requested_by="vivi",
+            reason="derived write 必须和 stop-use 决策属于同一个数据库现实。",
+        )
+        self.store.suppress_source(suppression)
+
+        evidence = create_evidence_ref(
+            source=source,
+            start_char=0,
+            end_char=len(source.content),
+        )
+        interpretation = create_interpretation_record(
+            interpretation_id="stored-interpretation-race",
+            text="这条 derived memory 不应该被写入。",
+            perspective_owner="lior",
+            perspective_instance_id="lior-window-test",
+            about_subject="vivi",
+            scope="shared",
+            evidence=(evidence,),
+        )
+
+        observed_transactions = []
+        concurrent_damage_errors = []
+        db_path = self.db_path
+
+        class InspectingStore(MemoryStore):
+            def _get_suppressed_source_ids_from_connection(
+                nested_self,
+                *,
+                connection,
+            ):
+                observed_transactions.append(connection.in_transaction)
+                damage = sqlite3.connect(db_path, timeout=0)
+                try:
+                    damage.execute("PRAGMA foreign_keys=OFF")
+                    damage.execute(
+                        "DROP TRIGGER source_suppressions_no_delete"
+                    )
+                    damage.execute(
+                        """
+                        DELETE FROM source_suppressions
+                        WHERE suppression_id=?
+                        """,
+                        (suppression.suppression_id,),
+                    )
+                    damage.commit()
+                except Exception as error:
+                    concurrent_damage_errors.append(error)
+                    damage.rollback()
+                finally:
+                    damage.close()
+
+                return super()._get_suppressed_source_ids_from_connection(
+                    connection=connection,
+                )
+
+        inspecting = InspectingStore(self.db_path)
+        with self.assertRaises(SuppressedMemoryError):
+            inspecting.add_interpretation(interpretation)
+
+        self.assertEqual(observed_transactions, [True])
+        self.assertEqual(len(concurrent_damage_errors), 1)
+        self.assertIsInstance(
+            concurrent_damage_errors[0],
+            sqlite3.OperationalError,
+        )
+
+        check = sqlite3.connect(self.db_path)
+        try:
+            suppression_count = check.execute(
+                """
+                SELECT count(*) FROM source_suppressions
+                WHERE suppression_id=?
+                """,
+                (suppression.suppression_id,),
+            ).fetchone()[0]
+            guard_count = check.execute(
+                """
+                SELECT count(*) FROM sqlite_master
+                WHERE type='trigger'
+                  AND name='source_suppressions_no_delete'
+                """
+            ).fetchone()[0]
+            interpretation_count = check.execute(
+                """
+                SELECT count(*) FROM interpretations
+                WHERE interpretation_id=?
+                """,
+                (interpretation.interpretation_id,),
+            ).fetchone()[0]
+        finally:
+            check.close()
+
+        self.assertEqual(suppression_count, 1)
+        self.assertEqual(guard_count, 1)
+        self.assertEqual(interpretation_count, 0)
+
     def test_existing_supersession_becomes_unusable_after_suppression(
         self,
     ) -> None:
@@ -280,6 +391,139 @@ class SuppressionStorageTest(unittest.TestCase):
             self.store.get_supersessions(),
             (),
         )
+
+    def test_supersession_write_holds_lock_across_suppression_decision(
+        self,
+    ) -> None:
+        previous = self._stored_interpretation(
+            interpretation_id="stored-interpretation-race-previous",
+            source_id="stored-message-race-previous",
+            source_text="旧证据。",
+            interpretation_text="旧理解。",
+        )
+        new = self._stored_interpretation(
+            interpretation_id="stored-interpretation-race-new",
+            source_id="stored-message-race-new",
+            source_text="后来被停止使用的新证据。",
+            interpretation_text="新理解。",
+        )
+        self._admit_same_thread(previous, new)
+
+        suppression = create_suppression_record(
+            suppression_id="stored-suppression-supersession-race",
+            source_id=new.evidence[0].source_id,
+            requested_by="vivi",
+            reason="revision write 也必须和 stop-use 决策属于同一个数据库现实。",
+        )
+        self.store.suppress_source(suppression)
+        supersession = create_supersession_record(
+            previous=previous,
+            new=new,
+            reason_evidence=new.evidence,
+        )
+
+        observed_transactions = []
+        concurrent_damage_errors = []
+        db_path = self.db_path
+
+        class InspectingStore(MemoryStore):
+            def _get_suppressions_from_connection(
+                nested_self,
+                *,
+                connection,
+            ):
+                observed_transactions.append(connection.in_transaction)
+                damage = sqlite3.connect(db_path, timeout=0)
+                try:
+                    damage.execute("PRAGMA foreign_keys=OFF")
+                    damage.execute(
+                        "DROP TRIGGER source_suppressions_no_delete"
+                    )
+                    damage.execute(
+                        """
+                        DELETE FROM source_suppressions
+                        WHERE suppression_id=?
+                        """,
+                        (suppression.suppression_id,),
+                    )
+                    damage.commit()
+                except Exception as error:
+                    concurrent_damage_errors.append(error)
+                    damage.rollback()
+                finally:
+                    damage.close()
+
+                return super()._get_suppressions_from_connection(
+                    connection=connection,
+                )
+
+        inspecting = InspectingStore(self.db_path)
+        with self.assertRaises(SuppressedMemoryError):
+            inspecting.add_supersession(supersession)
+
+        self.assertEqual(observed_transactions, [True])
+        self.assertEqual(len(concurrent_damage_errors), 1)
+        self.assertIsInstance(
+            concurrent_damage_errors[0],
+            sqlite3.OperationalError,
+        )
+        self.assertEqual(self.store.get_supersessions(), ())
+
+    def test_damaged_suppression_ledger_fails_closed_at_source_use(self) -> None:
+        source = create_source_record(
+            source_id="stored-message-damaged-ledger",
+            content="这段 source 已经停止使用，损坏后也不能复活。",
+            authored_by="vivi",
+            scope="shared",
+        )
+        self.store.add_source(source)
+        suppression = create_suppression_record(
+            suppression_id="stored-suppression-damaged-ledger",
+            source_id=source.source_id,
+            requested_by="vivi",
+            reason="损坏的 stop-use ledger 不能变成使用许可。",
+        )
+        self.store.suppress_source(suppression)
+
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                "DROP TRIGGER source_suppressions_no_delete"
+            )
+            connection.execute(
+                """
+                DELETE FROM source_suppressions
+                WHERE suppression_id=?
+                """,
+                (suppression.suppression_id,),
+            )
+
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.is_source_usable(source.source_id)
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.get_source(source.source_id)
+
+        self.assertEqual(
+            self.store.get_source_for_audit(source.source_id),
+            source,
+        )
+
+        evidence = create_evidence_ref(
+            source=source,
+            start_char=0,
+            end_char=len(source.content),
+        )
+        interpretation = create_interpretation_record(
+            interpretation_id="stored-interpretation-damaged-ledger",
+            text="损坏的 suppression ledger 不能授权新的 derived memory。",
+            perspective_owner="lior",
+            perspective_instance_id="lior-window-test",
+            about_subject="vivi",
+            scope="shared",
+            evidence=(evidence,),
+        )
+        with self.assertRaises(SuppressionLedgerIntegrityError):
+            self.store.add_interpretation(interpretation)
 
     def test_suppression_survives_store_reopen(self) -> None:
         source = create_source_record(

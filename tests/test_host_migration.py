@@ -10,6 +10,7 @@ import warnings
 import zipfile
 
 from _trusted_test_support import trusted_test_real_store_bootstrap_capability
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.host_migration import (
     HostMigrationError,
     create_closed_synthetic_backup,
@@ -32,7 +33,7 @@ from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
 from home_memory_core.store_domain import create_empty_real_store
-from home_memory_core.suppression import SuppressedMemoryError, create_suppression_record
+from home_memory_core.suppression import SuppressedMemoryError
 
 
 _CONFIG = """\

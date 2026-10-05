@@ -9,6 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.current_store import (
     CurrentSourceBinding,
     CurrentStore,
@@ -43,7 +44,7 @@ from home_memory_core.living_continuity import (
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import MemoryStore
-from home_memory_core.suppression import SuppressedMemoryError, create_suppression_record
+from home_memory_core.suppression import SuppressedMemoryError
 
 UTC = timezone.utc
 

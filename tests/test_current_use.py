@@ -5,6 +5,7 @@ from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _suppression_test_support import create_test_suppression_record as create_suppression_record
 from home_memory_core.current_store import (
     CurrentSourceBinding,
     CurrentStore,
@@ -41,12 +42,12 @@ from home_memory_core.living_continuity import (
 from home_memory_core.living_store import LivingStore
 from home_memory_core.source import create_source_record
 from home_memory_core.storage import (
+    SOURCE_SUPPRESSION_TIMING_TABLE,
     SUPPRESSION_SCHEMA_MARKER_TABLE,
     MemoryStore,
 )
 from home_memory_core.suppression import (
     SuppressionLedgerIntegrityError,
-    create_suppression_record,
 )
 
 
@@ -535,6 +536,9 @@ class CurrentPresentUseTests(unittest.TestCase):
 
         connection = sqlite3.connect(self.db)
         try:
+            connection.execute(
+                f"DROP TABLE {SOURCE_SUPPRESSION_TIMING_TABLE}"
+            )
             connection.execute(
                 f"DROP TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE}"
             )

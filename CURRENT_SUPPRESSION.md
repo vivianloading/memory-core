@@ -315,6 +315,169 @@ boundary.
 The #36 verdict remains historical evidence for its exact SHA. Later fixes do
 not rewrite it.
 
+## Issue #41 — present-use must establish suppression trust before permission
+
+Independent re-review #41 returned **FAIL / NO-GO** on exact head
+`d866684b1e59df26cf4b4589020f823f3af84113`.
+
+The review confirmed the Slice 3B1 timing-index remediation, then found an
+older Slice 3A boundary defect: `MemoryStore.get_source()` and
+`MemoryStore.is_source_usable()` read the surviving
+`source_suppressions` rows directly without first establishing that the
+suppression ledger was still trustworthy.
+
+That meant a visibly damaged synthetic store could lose a stop-use row while
+also retaining evidence of damage such as a missing delete guard and orphaned
+timing row. Audited paths correctly rejected the same store, but the two
+source-use APIs interpreted the missing row as permission and could revive a
+previously stopped source.
+
+The remediation makes the trust dependency explicit:
+
+- the shared present-use suppression-id lookup now audits the full suppression
+  ledger before deriving permission from its rows;
+- source-use reads run inside one explicit read snapshot, so source evidence,
+  ledger trust and the resulting use decision belong to one database reality;
+- lineage resolution input also establishes suppression-ledger trust before
+  treating missing suppression joins as usable evidence;
+- audit-only source reads remain distinct and can still expose persisted source
+  history even when suppression integrity is damaged.
+
+Regression coverage preserves the exact #41 class: after a supported stop,
+remove the ledger delete guard and suppression row while leaving the damage
+detectable. Supported source-use and derived-use paths must raise
+`SuppressionLedgerIntegrityError`; they must not reinterpret corruption as
+permission.
+
+The broader rule is:
+
+> **Absence can authorize use only after the structure that gives absence
+> meaning has itself been trusted. Corruption is not permission.**
+
+The #41 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
+## Issue #42 — trust checks and derived effects need one database reality
+
+Independent re-review #42 returned **FAIL / NO-GO** on exact head
+`68ff15cb2b026aaf3a318ca26b2c0603a19c6a5b`.
+
+Issue #41 had made the shared source present-use lookup audit the suppression
+ledger before treating a missing suppression row as permission. #42 found the
+transactional version of the same rule: for a derived write,
+**audit → permission lookup → effect commit** cannot be three moments that may
+observe different database states.
+
+The failing path was `MemoryStore.add_interpretation()`. It could complete a
+healthy ledger audit without an active SQLite transaction, then observe a
+later damaged ledger from which the stop row had disappeared, and finally
+commit a new interpretation from evidence that should still have been blocked.
+
+The remediation closes the class rather than only the exact call site:
+
+- `add_interpretation()` starts `BEGIN IMMEDIATE` before suppression trust,
+  evidence validation and permission lookup, and keeps that transaction
+  through the derived effect commit;
+- `add_supersession()` uses the same write-transaction rule because revision
+  is another suppression-sensitive derived effect;
+- suppression-backed present-use reads such as interpretation and
+  supersession usability use explicit read snapshots so audit and permission
+  inputs come from one coherent database reality;
+- regression coverage injects a second local writer at the suppression decision
+  point and requires the derived writer to already hold the SQLite write
+  boundary. The competing ledger damage must fail rather than interleave.
+
+This preserves the broader rule:
+
+> **A trustworthy permission input is not enough if the effect can be committed
+> against a different database reality. Trust, decision and effect must share
+> the transaction boundary appropriate to that operation.**
+
+The #42 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
+## Issue #43 — domain admission belongs inside the protected database reality
+
+Independent re-review #43 returned **FAIL / NO-GO** on exact head
+`710e1bf54d4433835b22ea3ff72c095d2364990f`.
+
+The review found that suppression trust had been moved into coherent read/write
+transactions, but the higher-level synthetic-store admission check still
+happened before those transactions began. A valid synthetic-domain marker could
+therefore be observed, removed by another connection, and then followed by a
+source-use decision or derived effect that no longer belonged to a currently
+admitted synthetic store.
+
+The remediation moves that prerequisite trust into the same database reality
+as the operation itself:
+
+- read snapshots now open the raw SQLite connection, start `BEGIN`, then
+  establish the synthetic domain inside that snapshot before reading payload or
+  suppression permission inputs;
+- write effects use one shared `BEGIN IMMEDIATE` transaction that establishes
+  the synthetic domain before any effect-specific validation or mutation;
+- MemoryStore writes including source creation, suppression, interpretation,
+  thread admission and supersession use that verified write transaction;
+- the older generic internal connection helper is reduced to a verified
+  read-snapshot compatibility path rather than a transaction-free admission
+  check.
+
+Regression coverage records two boundaries directly: source-use observes the
+domain assertion only after a read transaction exists, and a derived write
+already holds its write transaction when domain admission is checked, so a
+competing local marker-loss write cannot interleave.
+
+The broader rule is:
+
+> **Prerequisite trust is part of the operation, not a preflight memory.
+> Domain admission, authority/permission inputs and the resulting read or
+> effect must be evaluated inside the database reality that gives them
+> meaning.**
+
+The #43 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
+## Issue #44 — discovery eligibility requires trusted stop-use absence
+
+Independent re-review #44 returned **FAIL / NO-GO** on exact head
+`4431db8ffba16bf5ddbebf04c7c4814cc67825fd`.
+
+The review found one public present-use surface that still treated a missing
+suppression row as eligibility without first establishing that the suppression
+ledger itself was trustworthy. `SourceLinkedReadOnlyDiscovery` already used a
+coherent verified read snapshot, but its source-to-thread eligibility query
+performed a direct LEFT JOIN against `source_suppressions` without the
+canonical ledger audit.
+
+That meant a detectably damaged ledger could revive a previously stopped
+source's discovery linkage even though source use, lineage resolution,
+historical suppression reads, initialization and delivery all rejected the
+same store.
+
+The remediation keeps discovery's existing read snapshot and adds the missing
+trust prerequisite **inside that snapshot**:
+
+- `_discover_in_snapshot()` establishes the canonical
+  `assert_source_suppression_ledger()` invariant before interpreting
+  suppression-row absence as discovery eligibility;
+- a damaged append-only guard or orphaned timing record therefore fails closed
+  before any complete discovery receipt can be published;
+- audit-only source history remains separate and readable for inspection.
+
+Regression coverage preserves the exact failure class: after a supported stop,
+remove the suppression delete guard and stop row while leaving the damage
+observable; discovery must raise `SuppressionLedgerIntegrityError` rather
+than republish the source/thread locator.
+
+The broader rule is:
+
+> **Every present-use surface that derives permission from suppression-row
+> absence must first establish the same suppression-ledger trust. A coherent
+> snapshot of untrusted absence is still untrusted absence.**
+
+The #44 verdict remains historical evidence for its exact SHA. Later fixes do
+not rewrite it.
+
 ## Historical audit remains distinct
 
 Audit reads intentionally continue to reconstruct suppressed Current history.

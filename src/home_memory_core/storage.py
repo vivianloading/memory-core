@@ -30,6 +30,9 @@ from home_memory_core.suppression import (
     SuppressedMemoryError,
     SuppressionLedgerIntegrityError,
     SuppressionRecord,
+    suppression_datetime_from_iso,
+    suppression_datetime_to_iso,
+    suppression_instant,
     is_interpretation_usable as interpretation_is_usable,
     is_supersession_usable as supersession_is_usable,
 )
@@ -45,7 +48,8 @@ _AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
 _AUTHORITY_LOCKS: dict[str, RLock] = {}
 
 
-SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
+LEGACY_SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
+SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.2"
 SUPPRESSION_SCHEMA_MARKER_TABLE = "source_suppression_schema_marker"
 SUPPRESSION_SCHEMA_MARKER_TRIGGERS = frozenset(
     {
@@ -64,13 +68,224 @@ SOURCE_SUPPRESSION_TRIGGERS = frozenset(
 )
 
 
-def _source_suppression_marker_table_sql() -> str:
+SOURCE_SUPPRESSION_TIMING_TABLE = "source_suppression_timing"
+SOURCE_SUPPRESSION_TIMING_TRIGGERS = frozenset(
+    {
+        "source_suppression_timing_no_replace",
+        "source_suppression_timing_no_update",
+        "source_suppression_timing_no_delete",
+    }
+)
+
+
+def _source_suppression_timing_table_sql() -> str:
+    return f"""
+        CREATE TABLE {SOURCE_SUPPRESSION_TIMING_TABLE} (
+            suppression_id TEXT PRIMARY KEY,
+            timing_status TEXT NOT NULL
+                CHECK(timing_status IN ('timed','timing_unknown')),
+            effective_instant_us INTEGER,
+            recorded_instant_us INTEGER,
+            effective_at_iso TEXT,
+            recorded_at_iso TEXT,
+            CHECK(
+                (
+                    timing_status='timed'
+                    AND typeof(effective_instant_us)='integer'
+                    AND typeof(recorded_instant_us)='integer'
+                    AND effective_instant_us<=recorded_instant_us
+                    AND effective_at_iso IS NOT NULL
+                    AND length(trim(effective_at_iso))>0
+                    AND recorded_at_iso IS NOT NULL
+                    AND length(trim(recorded_at_iso))>0
+                )
+                OR
+                (
+                    timing_status='timing_unknown'
+                    AND effective_instant_us IS NULL
+                    AND recorded_instant_us IS NULL
+                    AND effective_at_iso IS NULL
+                    AND recorded_at_iso IS NULL
+                )
+            ),
+            FOREIGN KEY(suppression_id)
+                REFERENCES source_suppressions(suppression_id)
+                ON UPDATE RESTRICT ON DELETE RESTRICT
+        ) WITHOUT ROWID
+    """
+
+
+def _source_suppression_timing_trigger_sql() -> dict[str, str]:
+    return {
+        "source_suppression_timing_no_replace": f"""
+            CREATE TRIGGER source_suppression_timing_no_replace
+            BEFORE INSERT ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+            WHEN EXISTS(
+                SELECT 1 FROM {SOURCE_SUPPRESSION_TIMING_TABLE}
+                WHERE suppression_id=NEW.suppression_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression timing already exists');
+            END
+        """,
+        "source_suppression_timing_no_update": f"""
+            CREATE TRIGGER source_suppression_timing_no_update
+            BEFORE UPDATE ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression timing is append-only');
+            END
+        """,
+        "source_suppression_timing_no_delete": f"""
+            CREATE TRIGGER source_suppression_timing_no_delete
+            BEFORE DELETE ON {SOURCE_SUPPRESSION_TIMING_TABLE}
+            BEGIN
+                SELECT RAISE(ABORT,'source suppression timing is append-only');
+            END
+        """,
+    }
+
+
+def _assert_source_suppression_timing(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type='table' AND name=?
+        """,
+        (SOURCE_SUPPRESSION_TIMING_TABLE,),
+    ).fetchone()
+    if (
+        row is None
+        or _normalize_schema_sql(row["sql"])
+        != _normalize_schema_sql(_source_suppression_timing_table_sql())
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression timing table is missing or altered"
+        )
+
+    schema_rows = connection.execute(
+        """
+        SELECT type,name,sql
+        FROM sqlite_master
+        WHERE tbl_name=?
+          AND type IN ('trigger','index')
+        """,
+        (SOURCE_SUPPRESSION_TIMING_TABLE,),
+    ).fetchall()
+    unexpected_indexes = tuple(
+        item["name"]
+        for item in schema_rows
+        if item["type"] == "index" and item["sql"] is not None
+    )
+    if unexpected_indexes:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression timing has unexpected user-defined indexes"
+        )
+
+    actual = {
+        item["name"]: _normalize_schema_sql(item["sql"])
+        for item in schema_rows
+        if item["type"] == "trigger"
+    }
+    expected = {
+        name: _normalize_schema_sql(sql)
+        for name, sql in _source_suppression_timing_trigger_sql().items()
+    }
+    if actual != expected:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression timing guards were altered"
+        )
+
+    missing = connection.execute(
+        f"""
+        SELECT 1
+        FROM source_suppressions AS suppressions
+        LEFT JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+          ON timing.suppression_id=suppressions.suppression_id
+        WHERE timing.suppression_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if missing is not None:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression is missing explicit timing status"
+        )
+
+    rows = connection.execute(
+        f"""
+        SELECT
+            timing.suppression_id,
+            timing.timing_status,
+            timing.effective_instant_us,
+            timing.recorded_instant_us,
+            timing.effective_at_iso,
+            timing.recorded_at_iso,
+            suppressions.suppression_id AS parent_id
+        FROM {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+        LEFT JOIN source_suppressions AS suppressions
+          ON suppressions.suppression_id=timing.suppression_id
+        ORDER BY timing.suppression_id
+        """
+    ).fetchall()
+    for item in rows:
+        if item["parent_id"] is None:
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing has no suppression parent"
+            )
+        if item["timing_status"] == "timing_unknown":
+            if any(
+                item[field] is not None
+                for field in (
+                    "effective_instant_us",
+                    "recorded_instant_us",
+                    "effective_at_iso",
+                    "recorded_at_iso",
+                )
+            ):
+                raise SuppressionLedgerIntegrityError(
+                    "timing_unknown suppression cannot claim exact timing"
+                )
+            continue
+        if item["timing_status"] != "timed":
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing status is invalid"
+            )
+        try:
+            effective_at = suppression_datetime_from_iso(
+                item["effective_at_iso"]
+            )
+            recorded_at = suppression_datetime_from_iso(
+                item["recorded_at_iso"]
+            )
+            effective_us = suppression_instant(effective_at)
+            recorded_us = suppression_instant(recorded_at)
+        except ValueError as error:
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing contains invalid datetime encoding"
+            ) from error
+        if (
+            effective_us != item["effective_instant_us"]
+            or recorded_us != item["recorded_instant_us"]
+            or effective_us > recorded_us
+        ):
+            raise SuppressionLedgerIntegrityError(
+                "source suppression timing scalar does not match encoded datetime"
+            )
+
+
+def _source_suppression_marker_table_sql(
+    version: str = SUPPRESSION_SCHEMA_VERSION,
+) -> str:
+    if version not in {
+        LEGACY_SUPPRESSION_SCHEMA_VERSION,
+        SUPPRESSION_SCHEMA_VERSION,
+    }:
+        raise ValueError("unsupported suppression schema marker version")
     return f"""
         CREATE TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE} (
             marker_key TEXT PRIMARY KEY
                 CHECK (marker_key='source_suppression_schema'),
             schema_version TEXT NOT NULL
-                CHECK (schema_version='{SUPPRESSION_SCHEMA_VERSION}')
+                CHECK (schema_version='{version}')
         ) WITHOUT ROWID
     """
 
@@ -107,9 +322,9 @@ def _suppression_schema_marker_exists(connection: sqlite3.Connection) -> bool:
     )
 
 
-def _assert_source_suppression_schema_marker(
+def _source_suppression_schema_marker_version(
     connection: sqlite3.Connection,
-) -> None:
+) -> str | None:
     table_row = connection.execute(
         """
         SELECT sql FROM sqlite_master
@@ -117,14 +332,8 @@ def _assert_source_suppression_schema_marker(
         """,
         (SUPPRESSION_SCHEMA_MARKER_TABLE,),
     ).fetchone()
-    if (
-        table_row is None
-        or _normalize_schema_sql(table_row["sql"])
-        != _normalize_schema_sql(_source_suppression_marker_table_sql())
-    ):
-        raise SuppressionLedgerIntegrityError(
-            "source suppression schema completion marker is missing or altered"
-        )
+    if table_row is None:
+        return None
 
     rows = connection.execute(
         f"""
@@ -132,12 +341,27 @@ def _assert_source_suppression_schema_marker(
         FROM {SUPPRESSION_SCHEMA_MARKER_TABLE}
         """
     ).fetchall()
-    if len(rows) != 1 or tuple(rows[0]) != (
-        "source_suppression_schema",
-        SUPPRESSION_SCHEMA_VERSION,
-    ):
+    if len(rows) != 1 or rows[0]["marker_key"] != "source_suppression_schema":
         raise SuppressionLedgerIntegrityError(
             "source suppression schema completion marker is inconsistent"
+        )
+    version = rows[0]["schema_version"]
+    if version not in {
+        LEGACY_SUPPRESSION_SCHEMA_VERSION,
+        SUPPRESSION_SCHEMA_VERSION,
+    }:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker version is unknown"
+        )
+
+    if (
+        _normalize_schema_sql(table_row["sql"])
+        != _normalize_schema_sql(
+            _source_suppression_marker_table_sql(version)
+        )
+    ):
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is altered"
         )
 
     trigger_rows = connection.execute(
@@ -160,23 +384,65 @@ def _assert_source_suppression_schema_marker(
         raise SuppressionLedgerIntegrityError(
             "source suppression schema completion marker guards were altered"
         )
+    return version
 
 
-def _install_source_suppression_schema_marker(
+def _assert_source_suppression_schema_marker(
     connection: sqlite3.Connection,
 ) -> None:
-    if _suppression_schema_marker_exists(connection):
-        _assert_source_suppression_schema_marker(connection)
+    version = _source_suppression_schema_marker_version(connection)
+    if version != SUPPRESSION_SCHEMA_VERSION:
+        raise SuppressionLedgerIntegrityError(
+            "source suppression schema completion marker is not current"
+        )
+
+
+def _install_or_upgrade_source_suppression_schema_marker(
+    connection: sqlite3.Connection,
+) -> None:
+    version = _source_suppression_schema_marker_version(connection)
+    if version == SUPPRESSION_SCHEMA_VERSION:
         return
-    connection.execute(_source_suppression_marker_table_sql())
-    connection.execute(
-        f"""
-        INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
-            (marker_key,schema_version)
-        VALUES ('source_suppression_schema',?)
-        """,
-        (SUPPRESSION_SCHEMA_VERSION,),
-    )
+
+    if version == LEGACY_SUPPRESSION_SCHEMA_VERSION:
+        staging = "source_suppression_schema_marker_legacy_v01"
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (staging,),
+        ).fetchone() is not None:
+            raise SuppressionLedgerIntegrityError(
+                "suppression marker migration staging table already exists"
+            )
+        for name in SUPPRESSION_SCHEMA_MARKER_TRIGGERS:
+            connection.execute(f"DROP TRIGGER {name}")
+        connection.execute(
+            f"ALTER TABLE {SUPPRESSION_SCHEMA_MARKER_TABLE} RENAME TO {staging}"
+        )
+        connection.execute(_source_suppression_marker_table_sql())
+        connection.execute(
+            f"""
+            INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
+                (marker_key,schema_version)
+            VALUES ('source_suppression_schema',?)
+            """,
+            (SUPPRESSION_SCHEMA_VERSION,),
+        )
+        connection.execute(f"DROP TABLE {staging}")
+    elif version is None:
+        connection.execute(_source_suppression_marker_table_sql())
+        connection.execute(
+            f"""
+            INSERT INTO {SUPPRESSION_SCHEMA_MARKER_TABLE}
+                (marker_key,schema_version)
+            VALUES ('source_suppression_schema',?)
+            """,
+            (SUPPRESSION_SCHEMA_VERSION,),
+        )
+    else:
+        raise SuppressionLedgerIntegrityError(
+            "unsupported suppression schema marker migration"
+        )
+
     for sql in _source_suppression_marker_trigger_sql().values():
         connection.execute(sql)
     _assert_source_suppression_schema_marker(connection)
@@ -264,12 +530,26 @@ def _assert_missing_suppression_ledger_is_bootstrap_safe(
         )
 
 
+def _source_suppression_timing_exists(
+    connection: sqlite3.Connection,
+) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name=?
+            """,
+            (SOURCE_SUPPRESSION_TIMING_TABLE,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _prepare_source_suppression_table(
     connection: sqlite3.Connection,
 ) -> None:
-    marker_exists = _suppression_schema_marker_exists(connection)
-    if marker_exists:
-        _assert_source_suppression_schema_marker(connection)
+    marker_version = _source_suppression_schema_marker_version(connection)
+    timing_exists = _source_suppression_timing_exists(connection)
 
     row = connection.execute(
         """
@@ -279,26 +559,38 @@ def _prepare_source_suppression_table(
         """
     ).fetchone()
     if row is None:
+        if marker_version is not None or timing_exists:
+            raise SuppressionLedgerIntegrityError(
+                "suppression schema evidence exists without the suppression ledger"
+            )
         return
 
     actual = _normalize_schema_sql(row["sql"])
     target = _normalize_schema_sql(_source_suppression_table_sql())
     if actual == target:
-        if not marker_exists:
+        if marker_version is None:
             raise SuppressionLedgerIntegrityError(
                 "canonical source suppression ledger lacks completed-upgrade marker"
             )
-        # An already-upgraded ledger must arrive with intact guards.
-        # Initialization does not silently heal drift in a trusted stop-use
-        # boundary, because that could conceal a prior resurrection window.
-        assert_source_suppression_ledger(connection)
-        return
+        if marker_version == LEGACY_SUPPRESSION_SCHEMA_VERSION:
+            if timing_exists:
+                raise SuppressionLedgerIntegrityError(
+                    "legacy suppression marker cannot coexist with timing sidecar"
+                )
+            _assert_source_suppression_ledger_core(connection)
+            return
+        if marker_version == SUPPRESSION_SCHEMA_VERSION:
+            assert_source_suppression_ledger(connection)
+            return
+        raise SuppressionLedgerIntegrityError(
+            "unsupported source suppression schema marker version"
+        )
     legacy = _normalize_schema_sql(_legacy_source_suppression_table_sql())
     if actual != legacy:
         raise SuppressionLedgerIntegrityError(
             "source suppression table is not a recognized migratable schema"
         )
-    if marker_exists:
+    if marker_version is not None or timing_exists:
         raise SuppressionLedgerIntegrityError(
             "completed source suppression schema cannot re-enter legacy migration"
         )
@@ -388,10 +680,10 @@ def _normalize_schema_sql(value: str | None) -> str:
     return " ".join(value.replace("\n", " ").replace("\t", " ").split()).lower()
 
 
-def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
-    """Fail closed if the synthetic stop-use ledger is mutable or malformed."""
-
-    _assert_source_suppression_schema_marker(connection)
+def _assert_source_suppression_ledger_core(
+    connection: sqlite3.Connection,
+) -> None:
+    """Audit the immutable stop-use ledger independent of lifecycle version."""
 
     columns = tuple(
         row[1]
@@ -465,6 +757,14 @@ def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
         )
 
     _assert_source_suppression_rows(connection)
+
+
+def assert_source_suppression_ledger(connection: sqlite3.Connection) -> None:
+    """Fail closed unless stop-use ledger and lifecycle timing are fully current."""
+
+    _assert_source_suppression_schema_marker(connection)
+    _assert_source_suppression_ledger_core(connection)
+    _assert_source_suppression_timing(connection)
 
 
 def _assert_source_suppression_rows(
@@ -615,6 +915,61 @@ class MemoryStore:
                     SELECT RAISE(ABORT,'source suppression is append-only');
                 END;
 
+                CREATE TABLE IF NOT EXISTS source_suppression_timing (
+                    suppression_id TEXT PRIMARY KEY,
+                    timing_status TEXT NOT NULL
+                        CHECK(timing_status IN ('timed','timing_unknown')),
+                    effective_instant_us INTEGER,
+                    recorded_instant_us INTEGER,
+                    effective_at_iso TEXT,
+                    recorded_at_iso TEXT,
+                    CHECK(
+                        (
+                            timing_status='timed'
+                            AND typeof(effective_instant_us)='integer'
+                            AND typeof(recorded_instant_us)='integer'
+                            AND effective_instant_us<=recorded_instant_us
+                            AND effective_at_iso IS NOT NULL
+                            AND length(trim(effective_at_iso))>0
+                            AND recorded_at_iso IS NOT NULL
+                            AND length(trim(recorded_at_iso))>0
+                        )
+                        OR
+                        (
+                            timing_status='timing_unknown'
+                            AND effective_instant_us IS NULL
+                            AND recorded_instant_us IS NULL
+                            AND effective_at_iso IS NULL
+                            AND recorded_at_iso IS NULL
+                        )
+                    ),
+                    FOREIGN KEY(suppression_id)
+                        REFERENCES source_suppressions(suppression_id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT
+                ) WITHOUT ROWID;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppression_timing_no_replace
+                BEFORE INSERT ON source_suppression_timing
+                WHEN EXISTS(
+                    SELECT 1 FROM source_suppression_timing
+                    WHERE suppression_id=NEW.suppression_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing already exists');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppression_timing_no_update
+                BEFORE UPDATE ON source_suppression_timing
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing is append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS source_suppression_timing_no_delete
+                BEFORE DELETE ON source_suppression_timing
+                BEGIN
+                    SELECT RAISE(ABORT,'source suppression timing is append-only');
+                END;
+
                 CREATE TABLE IF NOT EXISTS interpretations (
                     interpretation_id TEXT PRIMARY KEY
                         CHECK (length(trim(interpretation_id)) > 0),
@@ -737,7 +1092,31 @@ class MemoryStore:
                 );
                 """
             )
-            _install_source_suppression_schema_marker(connection)
+            connection.execute(
+                f"""
+                INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                    suppression_id,
+                    timing_status,
+                    effective_instant_us,
+                    recorded_instant_us,
+                    effective_at_iso,
+                    recorded_at_iso
+                )
+                SELECT
+                    suppressions.suppression_id,
+                    'timing_unknown',
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL
+                FROM source_suppressions AS suppressions
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+                    WHERE timing.suppression_id=suppressions.suppression_id
+                )
+                """
+            )
+            _install_or_upgrade_source_suppression_schema_marker(connection)
             assert_source_suppression_ledger(connection)
             if not connection.in_transaction:
                 raise SuppressionLedgerIntegrityError(
@@ -748,7 +1127,7 @@ class MemoryStore:
     def add_source(self, source: SourceRecord) -> None:
         self._validate_source_record_integrity(source=source)
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             try:
                 connection.execute(
                     """
@@ -775,7 +1154,7 @@ class MemoryStore:
                 ) from error
 
     def get_source(self, source_id: str) -> SourceRecord:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             source = self._get_source_from_connection(
                 connection=connection,
                 source_id=source_id,
@@ -804,8 +1183,14 @@ class MemoryStore:
         self,
         suppression: SuppressionRecord,
     ) -> None:
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        if not isinstance(suppression, SuppressionRecord):
+            raise TypeError("suppression must be SuppressionRecord")
+        if not suppression.timing_known:
+            raise ValueError(
+                "new source suppression writes require explicit effective_at and recorded_at"
+            )
+
+        with self._write_transaction() as connection:
             assert_source_suppression_ledger(connection)
             self._get_source_from_connection(
                 connection=connection,
@@ -830,6 +1215,33 @@ class MemoryStore:
                         suppression.reason,
                     ),
                 )
+                assert suppression.effective_at is not None
+                assert suppression.recorded_at is not None
+                connection.execute(
+                    f"""
+                    INSERT INTO {SOURCE_SUPPRESSION_TIMING_TABLE} (
+                        suppression_id,
+                        timing_status,
+                        effective_instant_us,
+                        recorded_instant_us,
+                        effective_at_iso,
+                        recorded_at_iso
+                    )
+                    VALUES (?, 'timed', ?, ?, ?, ?)
+                    """,
+                    (
+                        suppression.suppression_id,
+                        suppression_instant(suppression.effective_at),
+                        suppression_instant(suppression.recorded_at),
+                        suppression_datetime_to_iso(
+                            suppression.effective_at
+                        ),
+                        suppression_datetime_to_iso(
+                            suppression.recorded_at
+                        ),
+                    ),
+                )
+                assert_source_suppression_ledger(connection)
             except sqlite3.IntegrityError as error:
                 raise ValueError(
                     "source suppression could not be stored"
@@ -838,13 +1250,13 @@ class MemoryStore:
     def get_suppressions(
         self,
     ) -> tuple[SuppressionRecord, ...]:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             return self._get_suppressions_from_connection(
                 connection=connection,
             )
 
     def is_source_usable(self, source_id: str) -> bool:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             self._get_source_from_connection(
                 connection=connection,
                 source_id=source_id,
@@ -865,7 +1277,7 @@ class MemoryStore:
             interpretation=interpretation,
         )
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             suppressed_ids = self._get_suppressed_source_ids_from_connection(
                 connection=connection,
             )
@@ -940,7 +1352,7 @@ class MemoryStore:
         self,
         interpretation_id: str,
     ) -> InterpretationRecord:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             interpretation = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=interpretation_id,
@@ -974,7 +1386,7 @@ class MemoryStore:
         self,
         interpretation_id: str,
     ) -> bool:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             interpretation = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=interpretation_id,
@@ -993,7 +1405,7 @@ class MemoryStore:
     def add_thread(self, thread: InterpretationThread) -> None:
         self._validate_thread_record(thread=thread)
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             try:
                 connection.execute(
                     """
@@ -1038,7 +1450,7 @@ class MemoryStore:
     ) -> None:
         self._validate_thread_admission_record(admission=admission)
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             thread = self._get_thread_from_connection(
                 connection=connection,
                 thread_id=admission.thread_id,
@@ -1131,7 +1543,7 @@ class MemoryStore:
         if not supersession.reason_evidence:
             raise ValueError("supersession must have evidence")
 
-        with self._connection() as connection:
+        with self._write_transaction() as connection:
             previous = self._get_interpretation_from_connection(
                 connection=connection,
                 interpretation_id=(
@@ -1318,7 +1730,7 @@ class MemoryStore:
         previous_interpretation_id: str,
         new_interpretation_id: str,
     ) -> bool:
-        with self._connection() as connection:
+        with self._read_snapshot() as connection:
             supersession = self._get_supersession_from_connection(
                 connection=connection,
                 previous_interpretation_id=previous_interpretation_id,
@@ -1358,13 +1770,9 @@ class MemoryStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        """Verified read snapshot for compatibility with older internal callers."""
+        with self._read_snapshot() as connection:
+            yield connection
 
     @contextmanager
     def _unverified_connection(self) -> Iterator[sqlite3.Connection]:
@@ -1379,25 +1787,33 @@ class MemoryStore:
 
     @contextmanager
     def _read_snapshot(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
+        connection = self._connect_raw()
 
         try:
             connection.execute("PRAGMA query_only = ON")
             connection.execute("BEGIN")
+            assert_synthetic_store_domain(connection)
             yield connection
         finally:
             if connection.in_transaction:
                 connection.rollback()
             connection.close()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _write_transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect_raw()
+
         try:
+            connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
+            yield connection
+            connection.commit()
         except BaseException:
-            connection.close()
+            if connection.in_transaction:
+                connection.rollback()
             raise
-        return connection
+        finally:
+            connection.close()
 
     def _connect_raw(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -1656,6 +2072,7 @@ class MemoryStore:
         connection: sqlite3.Connection,
         thread_id: str,
     ) -> LineageResolutionInput:
+        assert_source_suppression_ledger(connection)
         thread = self._get_thread_from_connection(
             connection=connection,
             thread_id=thread_id,
@@ -2064,33 +2481,58 @@ class MemoryStore:
         *,
         connection: sqlite3.Connection,
     ) -> tuple[SuppressionRecord, ...]:
+        assert_source_suppression_ledger(connection)
         rows = connection.execute(
-            """
+            f"""
             SELECT
-                suppression_id,
-                source_id,
-                requested_by,
-                reason
-            FROM source_suppressions
-            ORDER BY suppression_id
+                suppressions.suppression_id,
+                suppressions.source_id,
+                suppressions.requested_by,
+                suppressions.reason,
+                timing.timing_status,
+                timing.effective_at_iso,
+                timing.recorded_at_iso
+            FROM source_suppressions AS suppressions
+            JOIN {SOURCE_SUPPRESSION_TIMING_TABLE} AS timing
+              ON timing.suppression_id=suppressions.suppression_id
+            ORDER BY suppressions.suppression_id
             """
         ).fetchall()
 
-        return tuple(
-            SuppressionRecord(
-                suppression_id=row["suppression_id"],
-                source_id=row["source_id"],
-                requested_by=row["requested_by"],
-                reason=row["reason"],
+        result: list[SuppressionRecord] = []
+        for row in rows:
+            if row["timing_status"] == "timing_unknown":
+                effective_at = None
+                recorded_at = None
+            elif row["timing_status"] == "timed":
+                effective_at = suppression_datetime_from_iso(
+                    row["effective_at_iso"]
+                )
+                recorded_at = suppression_datetime_from_iso(
+                    row["recorded_at_iso"]
+                )
+            else:
+                raise SuppressionLedgerIntegrityError(
+                    "suppression timing status is invalid"
+                )
+            result.append(
+                SuppressionRecord(
+                    suppression_id=row["suppression_id"],
+                    source_id=row["source_id"],
+                    requested_by=row["requested_by"],
+                    reason=row["reason"],
+                    effective_at=effective_at,
+                    recorded_at=recorded_at,
+                )
             )
-            for row in rows
-        )
+        return tuple(result)
 
     def _get_suppressed_source_ids_from_connection(
         self,
         *,
         connection: sqlite3.Connection,
     ) -> frozenset[str]:
+        assert_source_suppression_ledger(connection)
         rows = connection.execute(
             """
             SELECT source_id

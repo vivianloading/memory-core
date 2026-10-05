@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -13,6 +14,10 @@ from home_memory_core.revision import create_supersession_record
 from home_memory_core.source import create_source_record
 from home_memory_core.suppression import (
     create_suppression_record,
+    create_timed_suppression_record,
+    suppression_datetime_from_iso,
+    suppression_datetime_to_iso,
+    suppression_instant,
     is_interpretation_usable,
     is_source_usable,
     is_supersession_usable,
@@ -192,6 +197,49 @@ class SuppressionSemanticsTest(unittest.TestCase):
                 new=new,
                 suppressions=(suppression,),
             )
+        )
+
+    def test_timed_suppression_rejects_naive_or_future_effective_time(self) -> None:
+        aware = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        with self.assertRaises(ValueError):
+            create_timed_suppression_record(
+                suppression_id="suppression-time-naive",
+                source_id="source-time-naive",
+                requested_by="vivi",
+                reason="explicit timing is required",
+                effective_at=datetime(2026, 1, 1),
+                recorded_at=aware,
+            )
+
+        with self.assertRaises(ValueError):
+            create_timed_suppression_record(
+                suppression_id="suppression-time-causal",
+                source_id="source-time-causal",
+                requested_by="vivi",
+                reason="record causality must stand",
+                effective_at=aware + timedelta(microseconds=1),
+                recorded_at=aware,
+            )
+
+    def test_suppression_datetime_codec_handles_calendar_edge_offsets(self) -> None:
+        edge = datetime(
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            7,
+            tzinfo=timezone(timedelta(hours=14)),
+        )
+        encoded = suppression_datetime_to_iso(edge)
+        decoded = suppression_datetime_from_iso(encoded)
+
+        self.assertEqual(decoded, edge)
+        self.assertEqual(
+            suppression_instant(decoded),
+            suppression_instant(edge),
         )
 
     def test_suppression_requires_an_auditable_reason(self) -> None:
