@@ -380,6 +380,12 @@ class WakeRoomNowItem:
             raise WakePacketError(
                 "Room Now item requires a tuple of attributed WakeCurrentCandidate values"
             )
+        if len({item.state_id for item in self.candidates}) != len(
+            self.candidates
+        ):
+            raise WakePacketError(
+                "Room Now item cannot repeat a candidate state_id"
+            )
         if len({item.state_kind for item in self.candidates}) != 1:
             raise WakePacketError(
                 "Room Now candidates cannot mix state kinds"
@@ -388,21 +394,23 @@ class WakeRoomNowItem:
             raise WakePacketError(
                 "Room Now item state_kind differs from candidates"
             )
-        if self.standing is not CurrentStanding.CONFLICTING:
+        if len(self.candidates) == 1:
+            if self.standing is not self.candidates[0].standing:
+                raise WakePacketError(
+                    "single-candidate Room Now aggregate standing must match its candidate"
+                )
+        else:
+            if self.standing is not CurrentStanding.CONFLICTING:
+                raise WakePacketError(
+                    "multi-candidate Room Now aggregate must remain conflicting"
+                )
             if any(
-                item.standing is not self.standing
+                item.standing not in _CARRYABLE_STANDINGS
                 for item in self.candidates
             ):
                 raise WakePacketError(
-                    "non-conflicting Room Now item standing must match every candidate"
+                    "conflicting Room Now item contains non-carryable candidate standing"
                 )
-        elif any(
-            item.standing not in _CARRYABLE_STANDINGS
-            for item in self.candidates
-        ):
-            raise WakePacketError(
-                "conflicting Room Now item contains non-carryable candidate standing"
-            )
         _refs("reason_codes", self.reason_codes)
         if not isinstance(self.privacy_scope, WakePrivacyScope):
             raise WakePacketError("Room Now privacy_scope is invalid")
