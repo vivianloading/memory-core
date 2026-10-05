@@ -24,6 +24,7 @@ from home_memory_core.current_view import (
     DowngradeRule,
     SemanticChangeAuthority,
     ValidityRule,
+    resolve_current_state,
 )
 from home_memory_core.living_continuity import (
     ContinuityEdge,
@@ -135,11 +136,18 @@ class WakePacketTests(unittest.TestCase):
             current_state_ids=tuple(
                 candidate.state_id
                 for candidate in candidates
-                if candidate.standing in {
-                    CurrentStanding.CURRENT,
-                    CurrentStanding.LAST_KNOWN,
-                    CurrentStanding.UNRESOLVED,
-                }
+                if (
+                    candidate.standing in {
+                        CurrentStanding.CURRENT,
+                        CurrentStanding.LAST_KNOWN,
+                        CurrentStanding.UNRESOLVED,
+                    }
+                    or (
+                        standing is CurrentStanding.CONFLICTING
+                        and candidate.standing
+                        is CurrentStanding.CONFLICTING
+                    )
+                )
             ),
             historical_state_ids=(),
             future_state_ids=(),
