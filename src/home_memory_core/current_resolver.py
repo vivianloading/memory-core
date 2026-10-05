@@ -9,6 +9,9 @@ import sqlite3
 from home_memory_core.current_admission import (
     CURRENT_END_ADMISSION_TABLE,
     CURRENT_STATE_ADMISSION_TABLE,
+    CurrentAdmissionAuthority,
+    CurrentAdmissionEffectKind,
+    CurrentAdmissionReceipt,
     assert_current_admission_data_integrity,
     assert_current_admission_schema,
 )
@@ -41,17 +44,21 @@ from home_memory_core.current_view import (
 from home_memory_core.storage import assert_source_suppression_ledger
 
 
+_CURRENT_RESOLVER_MARKER = object()
+
+
 class CurrentResolverError(RuntimeError):
-    """Base error for present Current resolution above admitted persisted history."""
+    """Base error for present Current resolution."""
 
 
 class CurrentResolverClosedBoundaryError(CurrentResolverError):
-    """The requested Current namespace has no operational admission path yet."""
+    """The requested Current namespace has no operational resolver path yet."""
 
 
 class CurrentResolverStatus(StrEnum):
     RESOLVED = "resolved"
     BLOCKED_UNKNOWN = "blocked_unknown"
+    ADMISSION_PROOF_UNAVAILABLE = "admission_proof_unavailable"
 
 
 @dataclass(frozen=True)
@@ -70,16 +77,17 @@ class CurrentResolverDependency:
 
 @dataclass(frozen=True)
 class CurrentResolverDecision:
-    """Safe present-use decision plus the admitted semantic audit result."""
+    """Safe present-use decision plus inspectable semantic derivation."""
 
     namespace: CurrentNamespace
     owner_id: str
     key: str
     as_of: datetime
     status: CurrentResolverStatus
-    audit_resolution: CurrentResolution
+    semantic_resolution: CurrentResolution | None
     dependencies: tuple[CurrentResolverDependency, ...]
     blocks: tuple[CurrentSuppressionBlock, ...]
+    missing_live_admission_effects: tuple[CurrentResolverDependency, ...]
     reason_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -96,39 +104,61 @@ class CurrentResolverDecision:
             raise CurrentResolverError(
                 "status must use CurrentResolverStatus"
             )
-        if not isinstance(self.audit_resolution, CurrentResolution):
-            raise CurrentResolverError(
-                "audit_resolution must use CurrentResolution"
-            )
-        if (
-            self.audit_resolution.namespace is not self.namespace
-            or self.audit_resolution.owner_id != self.owner_id
-            or self.audit_resolution.key != self.key
-        ):
-            raise CurrentResolverError(
-                "audit resolution identity does not match resolver decision"
-            )
-        if self.status is CurrentResolverStatus.RESOLVED:
-            if self.blocks:
+        if self.semantic_resolution is not None:
+            if not isinstance(self.semantic_resolution, CurrentResolution):
                 raise CurrentResolverError(
-                    "resolved Current decision cannot carry suppression blocks"
+                    "semantic_resolution must use CurrentResolution"
                 )
-        elif not self.blocks:
-            raise CurrentResolverError(
-                "blocked_unknown Current decision requires suppression blocks"
-            )
+            if (
+                self.semantic_resolution.namespace is not self.namespace
+                or self.semantic_resolution.owner_id != self.owner_id
+                or self.semantic_resolution.key != self.key
+            ):
+                raise CurrentResolverError(
+                    "semantic resolution identity does not match resolver decision"
+                )
+
+        if self.status is CurrentResolverStatus.RESOLVED:
+            if (
+                self.semantic_resolution is None
+                or self.blocks
+                or self.missing_live_admission_effects
+            ):
+                raise CurrentResolverError(
+                    "resolved Current decision has inconsistent proof state"
+                )
+        elif self.status is CurrentResolverStatus.BLOCKED_UNKNOWN:
+            if (
+                self.semantic_resolution is None
+                or not self.blocks
+                or self.missing_live_admission_effects
+            ):
+                raise CurrentResolverError(
+                    "blocked_unknown requires semantic result and suppression blocks"
+                )
+        elif self.status is CurrentResolverStatus.ADMISSION_PROOF_UNAVAILABLE:
+            if (
+                self.semantic_resolution is not None
+                or self.blocks
+                or not self.missing_live_admission_effects
+            ):
+                raise CurrentResolverError(
+                    "admission_proof_unavailable requires exact missing live proof"
+                )
 
     @property
     def usable_standing(self) -> CurrentStanding | None:
-        if self.status is CurrentResolverStatus.BLOCKED_UNKNOWN:
+        if self.status is not CurrentResolverStatus.RESOLVED:
             return None
-        return self.audit_resolution.standing
+        assert self.semantic_resolution is not None
+        return self.semantic_resolution.standing
 
     @property
     def usable_current_state_ids(self) -> tuple[str, ...]:
-        if self.status is CurrentResolverStatus.BLOCKED_UNKNOWN:
+        if self.status is not CurrentResolverStatus.RESOLVED:
             return ()
-        return self.audit_resolution.current_state_ids
+        assert self.semantic_resolution is not None
+        return self.semantic_resolution.current_state_ids
 
 
 @dataclass(frozen=True)
@@ -140,16 +170,36 @@ class CurrentResolvedView:
 
 
 class CurrentResolver:
-    """Read-only Room Current resolver.
+    """Read-only Room Current resolver bound to one live admission authority.
 
-    v0.1 resolves only effects that crossed durable Room Current admission.
-    Persisted-but-unadmitted history remains audit-only and cannot shape the
-    operational semantic input. Suppression is then overlaid without filtering
-    admitted history or manufacturing fallback.
+    Durable admission audit is corroborating history, never sufficient proof of
+    operational admission. Only receipts actually issued by the bound live
+    CurrentAdmissionAuthority may authorize effects to enter semantic Current.
+
+    If durable admission-shaped history exists without matching live proof,
+    v0.1 reports ADMISSION_PROOF_UNAVAILABLE rather than guessing across the
+    process boundary.
     """
 
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = Path(db_path)
+    def __init__(
+        self,
+        *,
+        admission_authority: CurrentAdmissionAuthority,
+        _marker: object,
+    ) -> None:
+        if _marker is not _CURRENT_RESOLVER_MARKER:
+            raise CurrentResolverError(
+                "CurrentResolver must be opened through HOME"
+            )
+        if not isinstance(admission_authority, CurrentAdmissionAuthority):
+            raise TypeError(
+                "admission_authority must be CurrentAdmissionAuthority"
+            )
+        admission_authority._assert_live_authority_binding()
+        self._admission_authority = admission_authority
+        self._canonical_db_path = Path(
+            admission_authority._canonical_db_path
+        ).resolve()
 
     def resolve_key(
         self,
@@ -165,9 +215,43 @@ class CurrentResolver:
             key=key,
             as_of=as_of,
         )
+        self._assert_live_binding()
         connection = self._read_connection()
         try:
-            records, end_events = _read_admitted_history(connection)
+            receipts = (
+                self._admission_authority
+                ._snapshot_live_receipts_for_resolution(
+                    connection=connection,
+                )
+            )
+            missing = _missing_live_admission_effects(
+                connection=connection,
+                namespace=namespace,
+                owner_id=owner_id,
+                key=key,
+                as_of=as_of,
+                receipts=receipts,
+            )
+            if missing:
+                return CurrentResolverDecision(
+                    namespace=namespace,
+                    owner_id=owner_id,
+                    key=key,
+                    as_of=as_of,
+                    status=(
+                        CurrentResolverStatus.ADMISSION_PROOF_UNAVAILABLE
+                    ),
+                    semantic_resolution=None,
+                    dependencies=(),
+                    blocks=(),
+                    missing_live_admission_effects=missing,
+                    reason_codes=("LIVE_ADMISSION_PROOF_UNAVAILABLE",),
+                )
+
+            records, end_events = _read_live_admitted_history(
+                connection=connection,
+                receipts=receipts,
+            )
             return _resolve_key_in_connection(
                 connection=connection,
                 namespace=namespace,
@@ -192,31 +276,29 @@ class CurrentResolver:
             owner_id=owner_id,
             as_of=as_of,
         )
+        self._assert_live_binding()
         connection = self._read_connection()
         try:
-            records, end_events = _read_admitted_history(connection)
-            keys = tuple(
-                sorted(
-                    {
-                        record.key
-                        for record in records
-                        if (
-                            record.namespace is namespace
-                            and record.owner_id == owner_id
-                            and _instant(record.recorded_at) <= _instant(as_of)
-                        )
-                    }
+            receipts = (
+                self._admission_authority
+                ._snapshot_live_receipts_for_resolution(
+                    connection=connection,
                 )
             )
+            keys = _operational_keys(
+                connection=connection,
+                namespace=namespace,
+                owner_id=owner_id,
+                as_of=as_of,
+            )
             items = tuple(
-                _resolve_key_in_connection(
+                self._resolve_key_with_receipts(
                     connection=connection,
+                    receipts=receipts,
                     namespace=namespace,
                     owner_id=owner_id,
                     key=key,
                     as_of=as_of,
-                    records=records,
-                    end_events=end_events,
                 )
                 for key in keys
             )
@@ -229,9 +311,66 @@ class CurrentResolver:
         finally:
             connection.close()
 
+    def _resolve_key_with_receipts(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        receipts: tuple[CurrentAdmissionReceipt, ...],
+        namespace: CurrentNamespace,
+        owner_id: str,
+        key: str,
+        as_of: datetime,
+    ) -> CurrentResolverDecision:
+        missing = _missing_live_admission_effects(
+            connection=connection,
+            namespace=namespace,
+            owner_id=owner_id,
+            key=key,
+            as_of=as_of,
+            receipts=receipts,
+        )
+        if missing:
+            return CurrentResolverDecision(
+                namespace=namespace,
+                owner_id=owner_id,
+                key=key,
+                as_of=as_of,
+                status=CurrentResolverStatus.ADMISSION_PROOF_UNAVAILABLE,
+                semantic_resolution=None,
+                dependencies=(),
+                blocks=(),
+                missing_live_admission_effects=missing,
+                reason_codes=("LIVE_ADMISSION_PROOF_UNAVAILABLE",),
+            )
+        records, end_events = _read_live_admitted_history(
+            connection=connection,
+            receipts=receipts,
+        )
+        return _resolve_key_in_connection(
+            connection=connection,
+            namespace=namespace,
+            owner_id=owner_id,
+            key=key,
+            as_of=as_of,
+            records=records,
+            end_events=end_events,
+        )
+
+    def _assert_live_binding(self) -> None:
+        self._admission_authority._assert_live_authority_binding()
+        current = Path(
+            self._admission_authority._canonical_db_path
+        ).resolve()
+        if current != self._canonical_db_path:
+            raise CurrentResolverError(
+                "Current Resolver canonical database binding changed"
+            )
+
     def _read_connection(self) -> sqlite3.Connection:
         try:
-            connection = CurrentStore(self.db_path)._read_connection()
+            connection = CurrentStore(
+                self._canonical_db_path
+            )._read_connection()
             assert_current_admission_schema(connection)
             assert_current_admission_data_integrity(connection)
             assert_source_suppression_ledger(connection)
@@ -240,6 +379,21 @@ class CurrentResolver:
             if "connection" in locals():
                 connection.close()
             raise
+
+
+def open_current_resolver(
+    *,
+    admission_authority: CurrentAdmissionAuthority,
+) -> CurrentResolver:
+    if not isinstance(admission_authority, CurrentAdmissionAuthority):
+        raise TypeError(
+            "admission_authority must be CurrentAdmissionAuthority"
+        )
+    admission_authority._assert_live_authority_binding()
+    return CurrentResolver(
+        admission_authority=admission_authority,
+        _marker=_CURRENT_RESOLVER_MARKER,
+    )
 
 
 def _resolve_key_in_connection(
@@ -279,9 +433,10 @@ def _resolve_key_in_connection(
             key=key,
             as_of=as_of,
             status=CurrentResolverStatus.BLOCKED_UNKNOWN,
-            audit_resolution=semantic,
+            semantic_resolution=semantic,
             dependencies=dependencies,
             blocks=exact_blocks,
+            missing_live_admission_effects=(),
             reason_codes=("SEMANTIC_DEPENDENCY_SUPPRESSED",),
         )
     return CurrentResolverDecision(
@@ -290,11 +445,165 @@ def _resolve_key_in_connection(
         key=key,
         as_of=as_of,
         status=CurrentResolverStatus.RESOLVED,
-        audit_resolution=semantic,
+        semantic_resolution=semantic,
         dependencies=dependencies,
         blocks=(),
+        missing_live_admission_effects=(),
         reason_codes=("SEMANTIC_DEPENDENCIES_USABLE",),
     )
+
+
+def _missing_live_admission_effects(
+    *,
+    connection: sqlite3.Connection,
+    namespace: CurrentNamespace,
+    owner_id: str,
+    key: str,
+    as_of: datetime,
+    receipts: tuple[CurrentAdmissionReceipt, ...],
+) -> tuple[CurrentResolverDependency, ...]:
+    """Find durable admission-shaped effects lacking live process proof.
+
+    Durable audit rows are used only to deny/fail closed here. They never
+    authorize semantic inclusion.
+    """
+
+    live_state_ids = {
+        receipt.effect_id
+        for receipt in receipts
+        if receipt.effect_kind is CurrentAdmissionEffectKind.STATE
+    }
+    live_end_ids = {
+        receipt.effect_id
+        for receipt in receipts
+        if receipt.effect_kind is CurrentAdmissionEffectKind.END_EVENT
+    }
+    cut = _instant(as_of)
+    missing: list[CurrentResolverDependency] = []
+
+    state_rows = connection.execute(
+        f"""
+        SELECT state.state_id
+        FROM {CURRENT_STATE_TABLE} AS state
+        JOIN {CURRENT_STATE_ADMISSION_TABLE} AS admission
+          ON admission.state_id=state.state_id
+        WHERE state.namespace=?
+          AND state.owner_id=?
+          AND state.key=?
+          AND state.recorded_instant_us<=?
+        ORDER BY state.state_id
+        """,
+        (namespace.value, owner_id, key, cut),
+    ).fetchall()
+    for row in state_rows:
+        if row["state_id"] not in live_state_ids:
+            missing.append(
+                CurrentResolverDependency(
+                    effect_kind=CurrentUseEffectKind.STATE,
+                    effect_id=row["state_id"],
+                )
+            )
+
+    end_rows = connection.execute(
+        f"""
+        SELECT event.end_event_id
+        FROM {CURRENT_END_TABLE} AS event
+        JOIN {CURRENT_END_ADMISSION_TABLE} AS admission
+          ON admission.end_event_id=event.end_event_id
+        JOIN {CURRENT_STATE_TABLE} AS state
+          ON state.state_id=event.state_id
+        WHERE state.namespace=?
+          AND state.owner_id=?
+          AND state.key=?
+          AND event.recorded_instant_us<=?
+        ORDER BY event.end_event_id
+        """,
+        (namespace.value, owner_id, key, cut),
+    ).fetchall()
+    for row in end_rows:
+        if row["end_event_id"] not in live_end_ids:
+            missing.append(
+                CurrentResolverDependency(
+                    effect_kind=CurrentUseEffectKind.END_EVENT,
+                    effect_id=row["end_event_id"],
+                )
+            )
+
+    return _dedupe_dependencies(tuple(missing))
+
+
+def _operational_keys(
+    *,
+    connection: sqlite3.Connection,
+    namespace: CurrentNamespace,
+    owner_id: str,
+    as_of: datetime,
+) -> tuple[str, ...]:
+    cut = _instant(as_of)
+    rows = connection.execute(
+        f"""
+        SELECT DISTINCT state.key
+        FROM {CURRENT_STATE_TABLE} AS state
+        JOIN {CURRENT_STATE_ADMISSION_TABLE} AS admission
+          ON admission.state_id=state.state_id
+        WHERE state.namespace=?
+          AND state.owner_id=?
+          AND state.recorded_instant_us<=?
+        ORDER BY state.key
+        """,
+        (namespace.value, owner_id, cut),
+    ).fetchall()
+    return tuple(row["key"] for row in rows)
+
+
+def _read_live_admitted_history(
+    *,
+    connection: sqlite3.Connection,
+    receipts: tuple[CurrentAdmissionReceipt, ...],
+) -> tuple[
+    tuple[CurrentStateRecord, ...],
+    tuple[CurrentStateEndEvent, ...],
+]:
+    state_ids = {
+        receipt.effect_id
+        for receipt in receipts
+        if receipt.effect_kind is CurrentAdmissionEffectKind.STATE
+    }
+    end_ids = {
+        receipt.effect_id
+        for receipt in receipts
+        if receipt.effect_kind is CurrentAdmissionEffectKind.END_EVENT
+    }
+
+    records: list[CurrentStateRecord] = []
+    for row in connection.execute(
+        f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY state_id"
+    ).fetchall():
+        if row["state_id"] not in state_ids:
+            continue
+        bindings = _read_bindings(
+            connection,
+            CURRENT_STATE_EVIDENCE_TABLE,
+            "state_id",
+            row["state_id"],
+        )
+        records.append(_state_from_row(row, bindings))
+
+    end_events: list[CurrentStateEndEvent] = []
+    for row in connection.execute(
+        f"SELECT * FROM {CURRENT_END_TABLE} ORDER BY end_event_id"
+    ).fetchall():
+        if row["end_event_id"] not in end_ids:
+            continue
+        bindings = _read_bindings(
+            connection,
+            CURRENT_END_EVIDENCE_TABLE,
+            "end_event_id",
+            row["end_event_id"],
+        )
+        end_events.append(_end_from_row(row, bindings))
+
+    return tuple(records), tuple(end_events)
 
 
 def _semantic_dependencies(
@@ -318,66 +627,16 @@ def _semantic_dependencies(
     return _dedupe_dependencies(tuple(dependencies))
 
 
-def _read_admitted_history(
-    connection: sqlite3.Connection,
-) -> tuple[
-    tuple[CurrentStateRecord, ...],
-    tuple[CurrentStateEndEvent, ...],
-]:
-    admitted_state_ids = {
-        row["state_id"]
-        for row in connection.execute(
-            f"SELECT state_id FROM {CURRENT_STATE_ADMISSION_TABLE}"
-        ).fetchall()
-    }
-    admitted_end_ids = {
-        row["end_event_id"]
-        for row in connection.execute(
-            f"SELECT end_event_id FROM {CURRENT_END_ADMISSION_TABLE}"
-        ).fetchall()
-    }
-
-    records: list[CurrentStateRecord] = []
-    for row in connection.execute(
-        f"SELECT * FROM {CURRENT_STATE_TABLE} ORDER BY state_id"
-    ).fetchall():
-        if row["state_id"] not in admitted_state_ids:
-            continue
-        bindings = _read_bindings(
-            connection,
-            CURRENT_STATE_EVIDENCE_TABLE,
-            "state_id",
-            row["state_id"],
-        )
-        records.append(_state_from_row(row, bindings))
-
-    end_events: list[CurrentStateEndEvent] = []
-    for row in connection.execute(
-        f"SELECT * FROM {CURRENT_END_TABLE} ORDER BY end_event_id"
-    ).fetchall():
-        if row["end_event_id"] not in admitted_end_ids:
-            continue
-        bindings = _read_bindings(
-            connection,
-            CURRENT_END_EVIDENCE_TABLE,
-            "end_event_id",
-            row["end_event_id"],
-        )
-        end_events.append(_end_from_row(row, bindings))
-
-    return tuple(records), tuple(end_events)
-
-
 def _dedupe_dependencies(
     dependencies: tuple[CurrentResolverDependency, ...],
 ) -> tuple[CurrentResolverDependency, ...]:
     seen: set[tuple[CurrentUseEffectKind, str]] = set()
     result: list[CurrentResolverDependency] = []
     for dependency in dependencies:
-        key = (dependency.effect_kind, dependency.effect_id)
-        if key in seen:
+        identity = (dependency.effect_kind, dependency.effect_id)
+        if identity in seen:
             continue
-        seen.add(key)
+        seen.add(identity)
         result.append(dependency)
     return tuple(result)
 
@@ -390,16 +649,16 @@ def _dedupe_blocks(
     ] = set()
     result: list[CurrentSuppressionBlock] = []
     for block in blocks:
-        key = (
+        identity = (
             block.source_ref,
             block.source_id,
             block.suppression_id,
             block.origin_effect_kind,
             block.origin_effect_id,
         )
-        if key in seen:
+        if identity in seen:
             continue
-        seen.add(key)
+        seen.add(identity)
         result.append(block)
     return tuple(result)
 
