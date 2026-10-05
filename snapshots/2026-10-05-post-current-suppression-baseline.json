@@ -1,0 +1,120 @@
+{
+  "snapshot_schema": "home-engineering-snapshot-v0.1",
+  "snapshot_id": "2026-10-05-post-current-suppression-baseline",
+  "date": "2026-10-05",
+  "repository": "vivianloading/memory-core",
+  "purpose": "Post-Current-suppression, pre-Current-Resolver and pre-Wake engineering baseline",
+  "anchor": {
+    "branch": "main",
+    "commit": "dd297511aaa3d29e30bea3e49ac15424368e00cb",
+    "tree": "f94a7d6819d0e4d950cdf29b13307b8054c0fbcd"
+  },
+  "milestones": [
+    {
+      "name": "Current persistence Slice 1",
+      "pr": 15,
+      "reviewed_head": "4198361392865b1c3f800c4cf8f42f12af39154e",
+      "merge_commit": "ede9610fd1c9a6da6fcef32044bdf7021c3964a4",
+      "independent_gate_issue": 20,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current authority-aware admission v0.1",
+      "pr": 22,
+      "reviewed_head": "145198fdb7a60c789b6cd612e9983ac7e874e56d",
+      "merge_commit": "be74dbed0e8686337a316d378220ccbe8c3abe71",
+      "independent_gate_issue": 29,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current suppression present-use Slice 3A",
+      "pr": 31,
+      "reviewed_head": "7ab54d4db2ae8006c967f5198ae546143f5ae513",
+      "merge_commit": "557ea3720eba31758f518000c6f991be8293678f",
+      "independent_gate_issue": 37,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Suppression lifecycle + historical as-of Slice 3B1",
+      "pr": 39,
+      "reviewed_head": "eeb76df2f192f3dbbc4d8586a306bdf80871cbcf",
+      "merge_commit": "dd297511aaa3d29e30bea3e49ac15424368e00cb",
+      "independent_gate_issue": 45,
+      "independent_gate_result": "SCOPED_PASS"
+    }
+  ],
+  "latest_exact_head_evidence": {
+    "reviewed_head": "eeb76df2f192f3dbbc4d8586a306bdf80871cbcf",
+    "workflow_run": 313,
+    "python_3_11": "GREEN",
+    "python_3_12": "GREEN",
+    "compile": "GREEN",
+    "full_unit_suite": "GREEN",
+    "independent_reviewer_unit_tests": 651,
+    "portable_migration_rehearsal": "GREEN",
+    "real_personal_data": "CLOSED"
+  },
+  "independent_review_history": {
+    "current_persistence": {
+      "fail_heads": [
+        "9408a3cbd6256298cbd9000580f9330df448f34e",
+        "42764d8427ab5a1d3897f697ca7c0947e61c3e6b",
+        "464dac091b8623aa3d3b6923b9b41c398d61cdb7"
+      ],
+      "pass_head": "4198361392865b1c3f800c4cf8f42f12af39154e"
+    },
+    "current_admission": {
+      "stale_issues": [
+        23
+      ],
+      "fail_issues": [
+        25,
+        26,
+        27
+      ],
+      "pass_head": "145198fdb7a60c789b6cd612e9983ac7e874e56d"
+    },
+    "current_suppression": {
+      "fail_issues": [
+        33,
+        34,
+        35,
+        36
+      ],
+      "pass_head": "7ab54d4db2ae8006c967f5198ae546143f5ae513"
+    },
+    "suppression_asof": {
+      "fail_issues": [
+        40,
+        41,
+        42,
+        43,
+        44
+      ],
+      "pass_head": "eeb76df2f192f3dbbc4d8586a306bdf80871cbcf"
+    }
+  },
+  "open_boundaries": [
+    "No production/present Current resolver",
+    "No model delivery of Current",
+    "No Wake Packet / Orientation delivery",
+    "No safe Wake prose/pronoun rendering",
+    "No restore / unsuppress",
+    "No fallback/resurrection semantics",
+    "Shared Current operational admission remains CLOSED",
+    "No relationship-state automation",
+    "No Heartbeat/proximity behavior",
+    "No identity continuity classification",
+    "Real personal data remains CLOSED"
+  ],
+  "post_anchor_construction": {
+    "issue": 46,
+    "pull_request": 47,
+    "note": "Current Resolver work began after the anchor and is not part of this snapshot tree."
+  },
+  "capture_process": {
+    "issue": 48,
+    "branch": "engineering-snapshot-2026-10-05",
+    "note": "Capture metadata and snapshot-document commits occur after the anchor."
+  }
+}
