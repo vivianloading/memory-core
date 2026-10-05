@@ -858,6 +858,7 @@ def _validate_operational_plan(
 
 def _plan_payload(plan: WakePresentationPlan) -> dict[str, object]:
     return {
+        "presentation_version": plan.presentation_version,
         "wake_id": plan.wake_id,
         "issuance_id": plan.issuance_id,
         "as_of": _datetime_text(plan.as_of),
