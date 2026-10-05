@@ -175,6 +175,14 @@ issuance id and plan digest; it does not surface withheld payloads.
 
 ## 10. Deterministic structured renderer
 
+Operational rendering receives the live authority, exact issued artifact and
+the proposed plan. It rebuilds the canonical expected plan from that exact
+issuance and compares their canonical serialized projections before rendering.
+
+This comparison is deliberately not plain Python dataclass equality. Exact
+timezone-offset encoding is part of the issuance-cut projection, avoiding DST
+fold/equality ambiguities.
+
 Renderer v0.1 emits one JSON payload with media type:
 
 `application/vnd.home.wake-presentation+json`
