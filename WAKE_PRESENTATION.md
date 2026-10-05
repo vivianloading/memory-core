@@ -255,7 +255,25 @@ Synthetic/local defensive validation must include at least:
 - plan/payload mutation changes the bound digest or fails validation;
 - no model request, transport, tools, role or prompt capability appears.
 
-## 14. Nonclaims
+## 14. Model-behavior nonclaim
+
+The structured renderer retains exact carried Current values as attributed data.
+
+The presence of typed policy fields such as
+`no_current_first_person` and six `none` authority axes proves the HOME
+presentation artifact did not grant those authorities. It does **not** prove
+that a future language model shown this data would necessarily obey those fields
+without an additional delivery/control boundary.
+
+Therefore v0.1 intentionally stops before model exposure.
+
+A later delivery design must not argue:
+
+> "the JSON says no speech authority, therefore model behavior is safe."
+
+That would confuse semantic metadata with enforcement.
+
+## 15. Nonclaims
 
 Wake Presentation v0.1 does not establish:
 
@@ -273,7 +291,7 @@ Wake Presentation v0.1 does not establish:
 - production readiness;
 - merge authorization.
 
-## 15. Review
+## 16. Review
 
 Before merge freeze one exact head and apply HOME #18:
 
