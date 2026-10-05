@@ -341,36 +341,62 @@ class WakeIssuanceTests(unittest.TestCase):
     def test_living_and_current_use_same_sqlite_snapshot_connection(self) -> None:
         self._admit_state()
         seen = {}
-        living_read = self.living._read_all_episodes
-        current_read = self.resolver._resolve_owner_in_connection
+        living_read = LivingStore._read_all_episodes
+        current_read = self.resolver.__class__._resolve_owner_in_connection
 
-        def wrapped_living(connection):
+        def wrapped_living(store, connection):
             seen["living"] = id(connection)
             self.assertTrue(connection.in_transaction)
             self.assertEqual(
                 connection.execute("PRAGMA query_only").fetchone()[0],
                 1,
             )
-            return living_read(connection)
+            return living_read(store, connection)
 
-        def wrapped_current(**kwargs):
+        def wrapped_current(resolver, **kwargs):
             connection = kwargs["connection"]
             seen["current"] = id(connection)
             self.assertTrue(connection.in_transaction)
-            return current_read(**kwargs)
+            return current_read(resolver, **kwargs)
 
         with patch.object(
-            self.living,
+            LivingStore,
             "_read_all_episodes",
+            autospec=True,
             side_effect=wrapped_living,
         ), patch.object(
-            self.resolver,
+            self.resolver.__class__,
             "_resolve_owner_in_connection",
+            autospec=True,
             side_effect=wrapped_current,
         ):
             self.issuer.issue(episode_id="episode-b")
 
         self.assertEqual(seen["living"], seen["current"])
+
+    def test_caller_owned_living_instance_method_cannot_forge_operational_reads(self) -> None:
+        self._admit_state()
+        fake = EpisodeRecord(
+            episode_id="episode-b",
+            perspective_instance_id="forged-perspective",
+            runtime_instance_id="forged-runtime",
+        )
+
+        with patch.object(
+            self.living,
+            "_read_all_episodes",
+            return_value=(fake,),
+        ):
+            issued = self.issuer.issue(episode_id="episode-b")
+
+        self.assertEqual(
+            issued.packet.perspective_instance_id,
+            "perspective-b",
+        )
+        self.assertNotEqual(
+            issued.packet.perspective_instance_id,
+            fake.perspective_instance_id,
+        )
 
     def test_issuance_is_database_read_only(self) -> None:
         self._admit_state()
@@ -533,9 +559,10 @@ class WakeIssuanceTests(unittest.TestCase):
             clock=naive,
         )
         with patch.object(
-            self.resolver,
+            self.resolver.__class__,
             "_read_connection",
-            wraps=self.resolver._read_connection,
+            autospec=True,
+            wraps=self.resolver.__class__._read_connection,
         ) as read:
             with self.assertRaises(WakeIssuanceIntegrityError):
                 issuer.issue(episode_id="episode-b")
