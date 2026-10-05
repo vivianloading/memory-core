@@ -581,6 +581,52 @@ class WakeIssuanceTests(unittest.TestCase):
         with self.assertRaises(WakeIssuanceAuthorizationError):
             alias.issue(episode_id="episode-b")
 
+    def test_alias_cannot_substitute_original_bound_live_checker(self) -> None:
+        issued = self.issuer.issue(episode_id="episode-b")
+        alias = copy(self.issuer)
+        alias._assert_live_binding = self.issuer._assert_live_binding
+
+        self.assertIsNot(alias, self.issuer)
+        self.assertIs(
+            alias._assert_live_binding.__self__,
+            self.issuer,
+        )
+
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            issuance_module.WakeIssuanceAuthority.require_live_issuance(
+                alias,
+                issued=issued,
+            )
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            issuance_module.WakeIssuanceAuthority.issue(
+                alias,
+                episode_id="episode-b",
+            )
+
+        # The failed alias issue attempt must not add any receipt that the
+        # original authority can later verify.
+        self.assertIs(
+            self.issuer.require_live_issuance(issued=issued),
+            issued.packet,
+        )
+
+    def test_manual_state_alias_cannot_substitute_original_bound_live_checker(self) -> None:
+        issued = self.issuer.issue(episode_id="episode-b")
+        alias = object.__new__(issuance_module.WakeIssuanceAuthority)
+        alias.__dict__.update(self.issuer.__dict__)
+        alias._assert_live_binding = self.issuer._assert_live_binding
+
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            issuance_module.WakeIssuanceAuthority.require_live_issuance(
+                alias,
+                issued=issued,
+            )
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            issuance_module.WakeIssuanceAuthority.issue(
+                alias,
+                episode_id="episode-b",
+            )
+
     def test_foreign_authority_cannot_verify_receipt(self) -> None:
         issued = self.issuer.issue(episode_id="episode-b")
         foreign = open_wake_issuance_authority(
