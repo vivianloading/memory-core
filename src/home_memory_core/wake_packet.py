@@ -13,11 +13,16 @@ from home_memory_core.current_view import (
     CurrentCandidate,
     CurrentNamespace,
     CurrentStanding,
+    CurrentStateKind,
+    EndKind,
+    SemanticChangeAuthority,
 )
 from home_memory_core.living_continuity import (
     ContinuityEdge,
+    ContinuityStatus,
     EpisodeRecord,
     RoomAttachmentResolution,
+    TransferMode,
 )
 
 
@@ -56,6 +61,12 @@ class WakeAuthority(StrEnum):
 
 class WakeInputTrust(StrEnum):
     TYPED_CALLER_INPUT = "typed_caller_input"
+
+
+class WakeRouteDecision(StrEnum):
+    ATTACHED = "attached"
+    UNATTACHED = "unattached"
+    UNRESOLVED = "unresolved"
 
 
 @dataclass(frozen=True)
@@ -104,18 +115,20 @@ class WakeContinuityEvidence:
     edge_id: str
     previous_episode_id: str
     next_episode_id: str
-    transfer_mode: str
-    continuity_status: str
+    transfer_mode: TransferMode
+    continuity_status: ContinuityStatus
 
     def __post_init__(self) -> None:
         for field_name in (
             "edge_id",
             "previous_episode_id",
             "next_episode_id",
-            "transfer_mode",
-            "continuity_status",
         ):
             _text(field_name, getattr(self, field_name))
+        if not isinstance(self.transfer_mode, TransferMode):
+            raise WakePacketError("continuity transfer_mode is invalid")
+        if not isinstance(self.continuity_status, ContinuityStatus):
+            raise WakePacketError("continuity status is invalid")
 
 
 @dataclass(frozen=True)
@@ -123,7 +136,7 @@ class WakeMapItem:
     item_id: str
     episode_id: str
     perspective_instance_id: str
-    route_decision: str
+    route_decision: WakeRouteDecision
     room_id: str | None
     active_attachment_event_id: str | None
     incoming_continuity: WakeContinuityEvidence | None
@@ -136,10 +149,11 @@ class WakeMapItem:
             "item_id",
             "episode_id",
             "perspective_instance_id",
-            "route_decision",
             "inclusion_reason",
         ):
             _text(field_name, getattr(self, field_name))
+        if not isinstance(self.route_decision, WakeRouteDecision):
+            raise WakePacketError("Map route decision is invalid")
         if self.room_id is not None:
             _text("room_id", self.room_id)
         if self.active_attachment_event_id is not None:
@@ -149,6 +163,13 @@ class WakeMapItem:
             )
         if not isinstance(self.privacy_scope, WakePrivacyScope):
             raise WakePacketError("map privacy_scope is invalid")
+        if (
+            self.privacy_scope.kind is not WakePrivacyScopeKind.EPISODE
+            or self.privacy_scope.scope_id != self.episode_id
+        ):
+            raise WakePacketError(
+                "Wake Map must remain scoped to its concrete Episode"
+            )
         if not isinstance(self.use_boundary, WakeUseBoundary):
             raise WakePacketError("map use boundary is invalid")
 
@@ -156,14 +177,15 @@ class WakeMapItem:
 @dataclass(frozen=True)
 class WakeEndEvidence:
     end_event_id: str
-    end_kind: str
+    end_kind: EndKind
     episode_id: str | None
     perspective_instance_id: str | None
     source_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
         _text("end_event_id", self.end_event_id)
-        _text("end_kind", self.end_kind)
+        if not isinstance(self.end_kind, EndKind):
+            raise WakePacketError("end_kind is invalid")
         if self.episode_id is not None:
             _text("episode_id", self.episode_id)
         if self.perspective_instance_id is not None:
@@ -178,9 +200,9 @@ class WakeEndEvidence:
 class WakeCurrentCandidate:
     state_id: str
     value: str
-    state_kind: str
+    state_kind: CurrentStateKind
     standing: CurrentStanding
-    semantic_change_authority: str
+    semantic_change_authority: SemanticChangeAuthority
     event_time: datetime
     recorded_at: datetime
     episode_id: str | None
@@ -192,10 +214,17 @@ class WakeCurrentCandidate:
         for field_name in (
             "state_id",
             "value",
-            "state_kind",
-            "semantic_change_authority",
         ):
             _text(field_name, getattr(self, field_name))
+        if not isinstance(self.state_kind, CurrentStateKind):
+            raise WakePacketError("candidate state_kind is invalid")
+        if not isinstance(
+            self.semantic_change_authority,
+            SemanticChangeAuthority,
+        ):
+            raise WakePacketError(
+                "candidate semantic_change_authority is invalid"
+            )
         if not isinstance(self.standing, CurrentStanding):
             raise WakePacketError("candidate standing is invalid")
         _aware("event_time", self.event_time)
@@ -217,7 +246,7 @@ class WakeRoomNowItem:
     item_id: str
     room_id: str
     key: str
-    state_kind: str
+    state_kind: CurrentStateKind
     standing: CurrentStanding
     candidates: tuple[WakeCurrentCandidate, ...]
     reason_codes: tuple[str, ...]
@@ -232,10 +261,11 @@ class WakeRoomNowItem:
             "item_id",
             "room_id",
             "key",
-            "state_kind",
             "inclusion_reason",
         ):
             _text(field_name, getattr(self, field_name))
+        if not isinstance(self.state_kind, CurrentStateKind):
+            raise WakePacketError("Room Now state_kind is invalid")
         if not isinstance(self.standing, CurrentStanding):
             raise WakePacketError("Room Now standing is invalid")
         if self.standing not in _CARRYABLE_STANDINGS:
@@ -356,6 +386,16 @@ class WakePacket:
         _aware("as_of", self.as_of)
         _text("episode_id", self.episode_id)
         _text("perspective_instance_id", self.perspective_instance_id)
+        if not isinstance(self.map, WakeMapSection):
+            raise WakePacketError("Wake Map section is invalid")
+        if not isinstance(self.shared_now, WakeEmptyLayer):
+            raise WakePacketError("Wake Shared Now section is invalid")
+        if not isinstance(self.room_now, WakeRoomNowSection):
+            raise WakePacketError("Wake Room Now section is invalid")
+        if not isinstance(self.recent_life, WakeEmptyLayer):
+            raise WakePacketError("Wake Recent Life section is invalid")
+        if not isinstance(self.nearby_doors, WakeEmptyLayer):
+            raise WakePacketError("Wake Nearby Doors section is invalid")
         if self.map.item.episode_id != self.episode_id:
             raise WakePacketError(
                 "Map episode differs from Wake episode"
@@ -369,10 +409,17 @@ class WakePacket:
             )
         if (
             self.shared_now.layer is not WakeLayer.SHARED_NOW
+            or self.shared_now.availability is not WakeLayerAvailability.CLOSED
             or self.recent_life.layer is not WakeLayer.RECENT_LIFE
+            or self.recent_life.availability
+            is not WakeLayerAvailability.UNAVAILABLE
             or self.nearby_doors.layer is not WakeLayer.NEARBY_DOORS
+            or self.nearby_doors.availability
+            is not WakeLayerAvailability.UNAVAILABLE
         ):
-            raise WakePacketError("Wake fixed layer ordering is invalid")
+            raise WakePacketError(
+                "Wake v0.1 fixed layer availability is invalid"
+            )
         if not isinstance(self.use_boundary, WakeUseBoundary):
             raise WakePacketError("Wake packet use boundary is invalid")
 
@@ -539,7 +586,7 @@ def assemble_wake_packet_v0_1(
         item_id=f"map:{episode.episode_id}",
         episode_id=episode.episode_id,
         perspective_instance_id=episode.perspective_instance_id,
-        route_decision=route.decision,
+        route_decision=WakeRouteDecision(route.decision),
         room_id=route.room_id,
         active_attachment_event_id=(
             route.active_attachment_event_id
@@ -839,11 +886,9 @@ def _wake_current_candidate(
     return WakeCurrentCandidate(
         state_id=record.state_id,
         value=record.value,
-        state_kind=record.state_kind.value,
+        state_kind=record.state_kind,
         standing=candidate.standing,
-        semantic_change_authority=(
-            record.semantic_change_authority.value
-        ),
+        semantic_change_authority=record.semantic_change_authority,
         event_time=record.event_time,
         recorded_at=record.recorded_at,
         episode_id=record.episode_id,
@@ -852,7 +897,7 @@ def _wake_current_candidate(
         end_evidence=tuple(
             WakeEndEvidence(
                 end_event_id=event.end_event_id,
-                end_kind=event.end_kind.value,
+                end_kind=event.end_kind,
                 episode_id=event.episode_id,
                 perspective_instance_id=event.perspective_instance_id,
                 source_refs=event.source_refs,
@@ -869,8 +914,8 @@ def _wake_continuity_evidence(
         edge_id=edge.edge_id,
         previous_episode_id=edge.previous_episode_id,
         next_episode_id=edge.next_episode_id,
-        transfer_mode=edge.transfer_mode.value,
-        continuity_status=edge.continuity_status.value,
+        transfer_mode=edge.transfer_mode,
+        continuity_status=edge.continuity_status,
     )
 
 
