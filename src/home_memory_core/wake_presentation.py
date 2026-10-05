@@ -729,11 +729,21 @@ def build_wake_presentation_plan(
 
 def render_wake_presentation(
     *,
+    authority: WakeIssuanceAuthority,
+    issued: IssuedWakePacket,
     plan: WakePresentationPlan,
 ) -> RenderedWakePresentation:
-    """Render a verified plan as deterministic structured data, never prose."""
+    """Render one exact live-issued presentation plan as structured data."""
 
     _validate_operational_plan(plan)
+    expected = build_wake_presentation_plan(
+        authority=authority,
+        issued=issued,
+    )
+    if plan != expected:
+        raise WakePresentationError(
+            "presentation plan differs from the exact live-issued projection"
+        )
 
     plan_payload = _plan_payload(plan)
     plan_json = _canonical_json(plan_payload)
@@ -928,7 +938,6 @@ def _block_payload(
                 "key": block.key,
                 "state_kind": block.state_kind.value,
                 "standing": block.standing.value,
-                "winner_state_id": None,
                 "candidates": [
                     {
                         "state_id": candidate.state_id,
