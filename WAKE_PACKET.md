@@ -168,8 +168,12 @@ For a safe `resolved` decision, v0.1 carries only:
 - `unresolved`;
 - `conflicting`.
 
-`conflicting` stays conflicting. Every candidate is preserved; Wake does not
-select a winner.
+`conflicting` stays conflicting. Every candidate implicated by
+`current_state_ids` is preserved; Wake does not select a winner.
+
+Current View may retain other inactive head candidates for audit semantics.
+Those candidates do **not** enter Room Now merely because they are present in
+`CurrentResolution.candidates`.
 
 The following resolved standings produce no Room Now item:
 
