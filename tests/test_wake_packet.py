@@ -913,6 +913,84 @@ class WakePacketTests(unittest.TestCase):
         with self.assertRaises(WakePacketError):
             replace(valid, candidates=(candidate, candidate))
 
+    def test_conflict_cannot_be_split_into_duplicate_room_key_items(self) -> None:
+        a = self.state("split-a", value="A")
+        b = self.state("split-b", value="B")
+        candidates = (
+            CurrentCandidate(
+                record=a,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("HEAD",),
+            ),
+            CurrentCandidate(
+                record=b,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("HEAD",),
+            ),
+        )
+        packet, _ = self.assemble(
+            room_current=self.view(
+                self.resolved_decision(
+                    standing=CurrentStanding.CONFLICTING,
+                    candidates=candidates,
+                )
+            )
+        )
+        conflict = packet.room_now.items[0]
+        split = tuple(
+            replace(
+                conflict,
+                item_id=f"{conflict.item_id}:part-{index}",
+                standing=candidate.standing,
+                candidates=(candidate,),
+            )
+            for index, candidate in enumerate(conflict.candidates)
+        )
+
+        with self.assertRaises(WakePacketError):
+            replace(packet.room_now, items=split)
+
+    def test_room_now_section_rejects_duplicate_item_ids(self) -> None:
+        valid = self._valid_room_item()
+        other = replace(
+            valid,
+            key="project.other",
+        )
+
+        with self.assertRaises(WakePacketError):
+            WakeRoomNowSection(
+                availability=WakeLayerAvailability.READY,
+                items=(valid, other),
+                reason_codes=(),
+            )
+
+    def test_distinct_room_now_keys_remain_representable(self) -> None:
+        first = self._valid_room_item()
+        second_candidate = replace(
+            first.candidates[0],
+            state_id="state-second-key",
+            source_refs=("ref-second-key",),
+        )
+        second = replace(
+            first,
+            item_id="room-now:room-wake:project.other",
+            key="project.other",
+            candidates=(second_candidate,),
+        )
+
+        section = WakeRoomNowSection(
+            availability=WakeLayerAvailability.READY,
+            items=(first, second),
+            reason_codes=(),
+        )
+
+        self.assertEqual(
+            tuple(item.key for item in section.items),
+            ("project.status", "project.other"),
+        )
+
     def test_ended_result_is_not_carried_but_does_not_make_layer_partial(self) -> None:
         record = self.state("ended-state")
         candidate = CurrentCandidate(
