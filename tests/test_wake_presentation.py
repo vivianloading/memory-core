@@ -751,6 +751,21 @@ class WakePresentationTests(unittest.TestCase):
                 plan=changed,
             )
 
+    def test_forced_plan_version_mutation_is_rejected(self) -> None:
+        issued, plan = self._issued_plan("episode-c")
+        object.__setattr__(
+            plan,
+            "presentation_version",
+            "wake-presentation-v999",
+        )
+
+        with self.assertRaises(WakePresentationError):
+            render_wake_presentation(
+                authority=self.issuer,
+                issued=issued,
+                plan=plan,
+            )
+
     def test_renderer_is_deterministic_for_exact_plan(self) -> None:
         self._admit_state(
             state_id="state-deterministic",
