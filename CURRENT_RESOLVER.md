@@ -202,3 +202,26 @@ After author stabilization, freeze a new exact head and apply #18:
 The next independent review should reproduce the #50 manufactured-durable-audit
 class and attack the live-receipt / durable-corroboration / restart boundary
 without treating author tests or CI as proof.
+
+## Issue #51 non-blocking finding — read means no create-on-open
+
+Independent re-review #51 returned **PASS WITH NON-BLOCKING FINDINGS** on exact
+head `d05a4f4f691edaba16f4548e111c5f26cbedff44`.
+
+The finding was narrow but real: `CurrentStore._read_connection()` used an
+ordinary `sqlite3.connect(path)` before enabling `query_only`. If the canonical
+database file had disappeared, SQLite could create a zero-byte file at that path
+before HOME failed the domain/integrity checks.
+
+That did not mint Current or authority, but it violated a cleaner read invariant:
+
+> **A read-only resolver must not create the database it is trying to read.**
+
+The post-#51 remediation opens Current read connections with SQLite URI
+`mode=ro`. A missing canonical database therefore fails at open time without
+creating a replacement file. A resolver regression moves the canonical DB aside,
+asserts the read fails, and asserts the original path remains absent.
+
+Because this changes product code after #51, the #51 verdict remains valid only
+for `d05a4f4f691edaba16f4548e111c5f26cbedff44`. The remediation head requires a
+new exact-SHA narrow re-review before merge.
