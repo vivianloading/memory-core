@@ -1323,6 +1323,47 @@ class WakePacketTests(unittest.TestCase):
         with self.assertRaises(WakePacketError):
             replace(stale_candidate, standing=CurrentStanding.CURRENT)
 
+    def test_end_evidence_cannot_predate_target_state_semantics(self) -> None:
+        from home_memory_core.current_view import EndKind
+        from home_memory_core.wake_packet import WakeEndEvidence
+
+        candidate = self._valid_room_item().candidates[0]
+        before_record = WakeEndEvidence(
+            end_event_id="end-before-record",
+            state_id=candidate.state_id,
+            ended_at=candidate.valid_from,
+            recorded_at=candidate.recorded_at - timedelta(seconds=1),
+            end_kind=EndKind.COMPLETED,
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-before-record",),
+        )
+        with self.assertRaises(WakePacketError):
+            replace(
+                candidate,
+                standing=CurrentStanding.ENDED,
+                end_evidence=(before_record,),
+            )
+
+        before_valid = WakeEndEvidence(
+            end_event_id="end-before-valid",
+            state_id=candidate.state_id,
+            ended_at=candidate.valid_from - timedelta(seconds=1),
+            recorded_at=candidate.recorded_at,
+            end_kind=EndKind.COMPLETED,
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-before-valid",),
+        )
+        with self.assertRaises(WakePacketError):
+            replace(
+                candidate,
+                standing=CurrentStanding.ENDED,
+                end_evidence=(before_valid,),
+            )
+
     def test_candidate_standing_cut_must_match_packet_cut(self) -> None:
         packet, _ = self.assemble(
             room_current=self.view(self.resolved_decision())
