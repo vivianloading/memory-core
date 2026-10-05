@@ -327,7 +327,8 @@ class CurrentResolver:
             as_of=as_of,
         )
         items = tuple(
-            self._resolve_key_with_receipts(
+            CurrentResolver._resolve_key_with_receipts(
+                self,
                 connection=connection,
                 receipts=receipts,
                 namespace=namespace,
