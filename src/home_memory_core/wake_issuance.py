@@ -40,10 +40,6 @@ WAKE_ISSUANCE_VERSION = "wake-issuance-v0.1"
 _WAKE_ISSUANCE_AUTHORITY_MARKER = object()
 _WAKE_ISSUANCE_RECEIPT_MARKER = object()
 _WAKE_ISSUANCE_ORIGIN_REGISTRY_GUARD = Lock()
-_WAKE_ISSUANCE_ORIGIN_REGISTRY: dict[
-    str,
-    "WakeIssuanceAuthority",
-] = {}
 
 
 class WakeIssuanceError(RuntimeError):
@@ -163,6 +159,26 @@ class _LiveReceiptState:
     fingerprint: str
 
 
+@dataclass(frozen=True)
+class _LiveAuthorityOriginState:
+    authority: "WakeIssuanceAuthority"
+    bound_living_store: LivingStore
+    living_store: LivingStore
+    current_resolver: CurrentResolver
+    clock: Callable[[], datetime]
+    canonical_db_path: Path
+    canonical_db_binding_digest: str
+    home_process_instance_id: str
+    receipt_guard: object
+    receipts: dict[str, _LiveReceiptState]
+
+
+_WAKE_ISSUANCE_ORIGIN_REGISTRY: dict[
+    str,
+    _LiveAuthorityOriginState,
+] = {}
+
+
 class WakeIssuanceAuthority:
     """Runtime-bound issuer for one canonical HOME database.
 
@@ -231,7 +247,22 @@ class WakeIssuanceAuthority:
                 )
             _WAKE_ISSUANCE_ORIGIN_REGISTRY[
                 self._authority_id
-            ] = self
+            ] = _LiveAuthorityOriginState(
+                authority=self,
+                bound_living_store=self._bound_living_store,
+                living_store=self._living_store,
+                current_resolver=self._current_resolver,
+                clock=self._clock,
+                canonical_db_path=self._canonical_db_path,
+                canonical_db_binding_digest=(
+                    self._canonical_db_binding_digest
+                ),
+                home_process_instance_id=(
+                    self._home_process_instance_id
+                ),
+                receipt_guard=self._receipt_guard,
+                receipts=self._receipts,
+            )
 
     @property
     def authority_id(self) -> str:
@@ -422,38 +453,56 @@ class WakeIssuanceAuthority:
         return issued.packet
 
     def _assert_live_binding(self) -> None:
-        current_process = current_home_process_instance_id()
-        if current_process != self._home_process_instance_id:
-            raise WakeIssuanceAuthorizationError(
-                "Wake issuance authority belongs to another HOME process incarnation"
-            )
         with _WAKE_ISSUANCE_ORIGIN_REGISTRY_GUARD:
             origin = _WAKE_ISSUANCE_ORIGIN_REGISTRY.get(
                 getattr(self, "_authority_id", "")
             )
-        if origin is not self:
+        if origin is None or origin.authority is not self:
             raise WakeIssuanceAuthorizationError(
                 "Wake issuance authority is not the originating live authority instance"
             )
+        if (
+            self._bound_living_store is not origin.bound_living_store
+            or self._living_store is not origin.living_store
+            or self._current_resolver is not origin.current_resolver
+            or self._clock is not origin.clock
+            or self._receipt_guard is not origin.receipt_guard
+            or self._receipts is not origin.receipts
+            or self._canonical_db_path != origin.canonical_db_path
+            or self._canonical_db_binding_digest
+            != origin.canonical_db_binding_digest
+            or self._home_process_instance_id
+            != origin.home_process_instance_id
+        ):
+            raise WakeIssuanceAuthorizationError(
+                "Wake issuance authority opening-state binding changed"
+            )
+
+        current_process = current_home_process_instance_id()
+        if current_process != origin.home_process_instance_id:
+            raise WakeIssuanceAuthorizationError(
+                "Wake issuance authority belongs to another HOME process incarnation"
+            )
+
         CurrentResolver._assert_live_binding(
-            self._current_resolver
+            origin.current_resolver
         )
         try:
             living_path = Path(
-                self._bound_living_store.db_path
+                origin.bound_living_store.db_path
             ).resolve()
             resolver_path = Path(
-                self._current_resolver._canonical_db_path
+                origin.current_resolver._canonical_db_path
             ).resolve()
         except (OSError, RuntimeError) as error:
             raise WakeIssuanceAuthorizationError(
                 "Wake issuance canonical database binding cannot be resolved"
             ) from error
         if (
-            living_path != self._canonical_db_path
-            or resolver_path != self._canonical_db_path
+            living_path != origin.canonical_db_path
+            or resolver_path != origin.canonical_db_path
             or _database_binding_digest(resolver_path)
-            != self._canonical_db_binding_digest
+            != origin.canonical_db_binding_digest
         ):
             raise WakeIssuanceAuthorizationError(
                 "Wake issuance canonical database binding changed"
