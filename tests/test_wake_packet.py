@@ -276,6 +276,9 @@ class WakePacketTests(unittest.TestCase):
         with self.assertRaises(WakePacketError):
             WakeCurrentCandidate(
                 state_id="state-no-perspective",
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-wake",
+                key="project.status",
                 value="looks-plausible",
                 state_kind=CurrentStateKind.PROJECT_STATUS,
                 standing=CurrentStanding.CURRENT,
@@ -290,6 +293,9 @@ class WakePacketTests(unittest.TestCase):
         with self.assertRaises(WakePacketError):
             WakeCurrentCandidate(
                 state_id="state-shared-owner",
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-wake",
+                key="project.status",
                 value="shared-shaped-value",
                 state_kind=CurrentStateKind.PROJECT_STATUS,
                 standing=CurrentStanding.CURRENT,
@@ -306,6 +312,9 @@ class WakePacketTests(unittest.TestCase):
         with self.assertRaises(WakePacketError):
             WakeCurrentCandidate(
                 state_id="state-no-source",
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-wake",
+                key="project.status",
                 value="orphan-value",
                 state_kind=CurrentStateKind.PROJECT_STATUS,
                 standing=CurrentStanding.CURRENT,
@@ -360,9 +369,15 @@ class WakePacketTests(unittest.TestCase):
             room_current=self.view(self.resolved_decision())
         )
         item = packet.room_now.items[0]
+        other_candidate = replace(
+            item.candidates[0],
+            owner_id="room-other",
+        )
         other_item = replace(
             item,
+            item_id="room-now:room-other:project.status",
             room_id="room-other",
+            candidates=(other_candidate,),
             privacy_scope=WakePrivacyScope(
                 kind=WakePrivacyScopeKind.ROOM,
                 scope_id="room-other",
@@ -954,9 +969,16 @@ class WakePacketTests(unittest.TestCase):
 
     def test_room_now_section_rejects_duplicate_item_ids(self) -> None:
         valid = self._valid_room_item()
+        other_candidate = replace(
+            valid.candidates[0],
+            state_id="state-other-key-duplicate-item-id",
+            key="project.other",
+            source_refs=("ref-other-key-duplicate-item-id",),
+        )
         other = replace(
             valid,
             key="project.other",
+            candidates=(other_candidate,),
         )
 
         with self.assertRaises(WakePacketError):
@@ -971,6 +993,7 @@ class WakePacketTests(unittest.TestCase):
         second_candidate = replace(
             first.candidates[0],
             state_id="state-second-key",
+            key="project.other",
             source_refs=("ref-second-key",),
         )
         second = replace(
