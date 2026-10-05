@@ -271,45 +271,78 @@ class CurrentResolver:
         owner_id: str,
         as_of: datetime,
     ) -> CurrentResolvedView:
+        self._assert_live_binding()
+        connection = self._read_connection()
+        try:
+            return self._resolve_owner_in_connection(
+                connection=connection,
+                namespace=namespace,
+                owner_id=owner_id,
+                as_of=as_of,
+            )
+        finally:
+            connection.close()
+
+    def _resolve_owner_in_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        namespace: CurrentNamespace,
+        owner_id: str,
+        as_of: datetime,
+    ) -> CurrentResolvedView:
+        """Resolve one owner on an already-pinned HOME read snapshot.
+
+        This package-internal seam exists for higher-level operations such as
+        Wake issuance that must combine Living and Current reads from one SQLite
+        transaction. It does not weaken live admission proof or create a new
+        public resolver path.
+        """
+
         _validate_owner_request(
             namespace=namespace,
             owner_id=owner_id,
             as_of=as_of,
         )
         self._assert_live_binding()
-        connection = self._read_connection()
-        try:
-            receipts = (
-                self._admission_authority
-                ._snapshot_live_receipts_for_resolution(
-                    connection=connection,
-                )
+        if not isinstance(connection, sqlite3.Connection):
+            raise TypeError("connection must be sqlite3.Connection")
+        if not connection.in_transaction:
+            raise CurrentResolverError(
+                "in-connection Current resolution requires an active read transaction"
             )
-            keys = _operational_keys(
+        assert_current_admission_schema(connection)
+        assert_current_admission_data_integrity(connection)
+        assert_source_suppression_ledger(connection)
+        receipts = (
+            self._admission_authority
+            ._snapshot_live_receipts_for_resolution(
                 connection=connection,
+            )
+        )
+        keys = _operational_keys(
+            connection=connection,
+            namespace=namespace,
+            owner_id=owner_id,
+            as_of=as_of,
+        )
+        items = tuple(
+            self._resolve_key_with_receipts(
+                connection=connection,
+                receipts=receipts,
                 namespace=namespace,
                 owner_id=owner_id,
+                key=key,
                 as_of=as_of,
             )
-            items = tuple(
-                self._resolve_key_with_receipts(
-                    connection=connection,
-                    receipts=receipts,
-                    namespace=namespace,
-                    owner_id=owner_id,
-                    key=key,
-                    as_of=as_of,
-                )
-                for key in keys
-            )
-            return CurrentResolvedView(
-                as_of=as_of,
-                namespace=namespace,
-                owner_id=owner_id,
-                items=items,
-            )
-        finally:
-            connection.close()
+            for key in keys
+        )
+        return CurrentResolvedView(
+            as_of=as_of,
+            namespace=namespace,
+            owner_id=owner_id,
+            items=items,
+        )
 
     def _resolve_key_with_receipts(
         self,
