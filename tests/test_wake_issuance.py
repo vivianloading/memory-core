@@ -399,6 +399,58 @@ class WakeIssuanceTests(unittest.TestCase):
             fake.perspective_instance_id,
         )
 
+    def test_concurrent_route_write_cannot_tear_one_issuance_snapshot(self) -> None:
+        self._admit_state()
+        connection = sqlite3.connect(self.db)
+        try:
+            mode = connection.execute(
+                "PRAGMA journal_mode=WAL"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(str(mode).lower(), "wal")
+
+        original = LivingStore._read_all_episodes
+        wrote = {"done": False}
+
+        def interleave_route_write(store, read_connection):
+            episodes = original(store, read_connection)
+            if not wrote["done"]:
+                wrote["done"] = True
+                self.living.add_room_attachment(
+                    RoomAttachmentEvent(
+                        attachment_event_id="route-b-unattached",
+                        episode_id="episode-b",
+                        route_kind=RoomRouteKind.UNATTACHED,
+                        room_id=None,
+                        basis="concurrent-correction",
+                        supersedes_attachment_event_id="route-b",
+                    )
+                )
+            return episodes
+
+        with patch.object(
+            LivingStore,
+            "_read_all_episodes",
+            autospec=True,
+            side_effect=interleave_route_write,
+        ):
+            issued = self.issuer.issue(episode_id="episode-b")
+
+        self.assertTrue(wrote["done"])
+        self.assertEqual(
+            issued.packet.map.item.route_decision.value,
+            "attached",
+        )
+        self.assertEqual(issued.packet.map.item.room_id, "room-r")
+        self.assertEqual(len(issued.packet.room_now.items), 1)
+
+        canonical_after = self.living.resolve_room_attachment(
+            episode_id="episode-b",
+        )
+        self.assertEqual(canonical_after.decision, "unattached")
+        self.assertIsNone(canonical_after.room_id)
+
     def test_issuance_is_database_read_only(self) -> None:
         self._admit_state()
         before = self._dump_database()
@@ -469,6 +521,21 @@ class WakeIssuanceTests(unittest.TestCase):
                 _marker=object(),
             )
 
+    def test_replaced_marker_valid_receipt_is_not_live_proof(self) -> None:
+        issued = self.issuer.issue(episode_id="episode-b")
+        copied_receipt = replace(
+            issued.issuance_receipt,
+            issuance_id="wake-issuance-copied",
+        )
+        copied = IssuedWakePacket(
+            packet=issued.packet,
+            assembly_receipt=issued.assembly_receipt,
+            issuance_receipt=copied_receipt,
+        )
+
+        with self.assertRaises(WakeIssuanceAuthorizationError):
+            self.issuer.require_live_issuance(issued=copied)
+
     def test_foreign_authority_cannot_verify_receipt(self) -> None:
         issued = self.issuer.issue(episode_id="episode-b")
         foreign = open_wake_issuance_authority(
@@ -511,6 +578,19 @@ class WakeIssuanceTests(unittest.TestCase):
                 assembly_receipt=issued.assembly_receipt,
                 issuance_receipt=issued.issuance_receipt,
             )
+
+    def test_in_place_frozen_packet_mutation_is_detected_at_live_verify(self) -> None:
+        self._admit_state()
+        issued = self.issuer.issue(episode_id="episode-b")
+        candidate = issued.packet.room_now.items[0].candidates[0]
+        object.__setattr__(
+            candidate,
+            "value",
+            "mutated-after-issued-wrapper-construction",
+        )
+
+        with self.assertRaises(WakeIssuanceIntegrityError):
+            self.issuer.require_live_issuance(issued=issued)
 
     def test_assembly_receipt_mutation_breaks_issuance_digest(self) -> None:
         issued = self.issuer.issue(episode_id="episode-b")
