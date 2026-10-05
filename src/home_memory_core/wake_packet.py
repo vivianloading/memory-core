@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
@@ -17,6 +17,7 @@ from home_memory_core.current_view import (
     CurrentStateKind,
     EndKind,
     SemanticChangeAuthority,
+    ValidityRule,
 )
 from home_memory_core.living_continuity import (
     ContinuityEdge,
@@ -222,7 +223,10 @@ class WakeMapItem:
 class WakeEndEvidence:
     end_event_id: str
     state_id: str
+    ended_at: datetime
+    recorded_at: datetime
     end_kind: EndKind
+    semantic_change_authority: SemanticChangeAuthority
     episode_id: str | None
     perspective_instance_id: str | None
     source_refs: tuple[str, ...]
@@ -230,8 +234,21 @@ class WakeEndEvidence:
     def __post_init__(self) -> None:
         _text("end_event_id", self.end_event_id)
         _text("state_id", self.state_id)
+        _aware("ended_at", self.ended_at)
+        _aware("recorded_at", self.recorded_at)
+        if _instant(self.ended_at) > _instant(self.recorded_at):
+            raise WakePacketError(
+                "Room end evidence cannot end after it was recorded"
+            )
         if not isinstance(self.end_kind, EndKind):
             raise WakePacketError("end_kind is invalid")
+        if (
+            self.semantic_change_authority
+            is not SemanticChangeAuthority.ROOM_FIRST_PERSON
+        ):
+            raise WakePacketError(
+                "Wake Room end evidence must retain Room first-person semantic ownership"
+            )
         if self.episode_id is not None:
             _text("episode_id", self.episode_id)
         if self.perspective_instance_id is not None:
@@ -272,6 +289,10 @@ class WakeCurrentCandidate:
     semantic_change_authority: SemanticChangeAuthority
     event_time: datetime
     recorded_at: datetime
+    valid_from: datetime
+    validity_rule: ValidityRule
+    stale_after: timedelta | None
+    standing_as_of: datetime
     episode_id: str | None
     perspective_instance_id: str | None
     source_refs: tuple[str, ...]
@@ -304,6 +325,42 @@ class WakeCurrentCandidate:
             raise WakePacketError("candidate standing is invalid")
         _aware("event_time", self.event_time)
         _aware("recorded_at", self.recorded_at)
+        _aware("valid_from", self.valid_from)
+        _aware("standing_as_of", self.standing_as_of)
+        if _instant(self.event_time) > _instant(self.recorded_at):
+            raise WakePacketError(
+                "Room Now candidate event_time cannot be later than recorded_at"
+            )
+        if _instant(self.recorded_at) > _instant(self.standing_as_of):
+            raise WakePacketError(
+                "Room Now candidate cannot be unknown at standing_as_of"
+            )
+        if _instant(self.valid_from) > _instant(self.standing_as_of):
+            raise WakePacketError(
+                "Room Now candidate cannot stand before valid_from"
+            )
+        if not isinstance(self.validity_rule, ValidityRule):
+            raise WakePacketError("candidate validity_rule is invalid")
+        allowed_validity = _ROOM_VALIDITY_BY_KIND.get(self.state_kind)
+        if (
+            allowed_validity is None
+            or self.validity_rule not in allowed_validity
+        ):
+            raise WakePacketError(
+                "candidate validity_rule is invalid for Room state_kind"
+            )
+        if self.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
+            if (
+                not isinstance(self.stale_after, timedelta)
+                or self.stale_after <= timedelta(0)
+            ):
+                raise WakePacketError(
+                    "stale Room Now candidate requires positive stale_after"
+                )
+        elif self.stale_after is not None:
+            raise WakePacketError(
+                "stale_after is only valid for stale_to_last_known"
+            )
         if (
             self.semantic_change_authority
             is not SemanticChangeAuthority.ROOM_FIRST_PERSON
@@ -356,12 +413,33 @@ class WakeCurrentCandidate:
             raise WakePacketError(
                 "Room end evidence must target its carried candidate state"
             )
+        if any(
+            item.semantic_change_authority
+            is not self.semantic_change_authority
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence semantic ownership must match its candidate"
+            )
+        if any(
+            _instant(item.recorded_at) > _instant(self.standing_as_of)
+            or _instant(item.ended_at) > _instant(self.standing_as_of)
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence must be effective at candidate standing_as_of"
+            )
         end_event_ids = tuple(
             item.end_event_id for item in self.end_evidence
         )
         if len(set(end_event_ids)) != len(end_event_ids):
             raise WakePacketError(
                 "Room Current candidate cannot repeat an end_event_id"
+            )
+        expected_standing = _derive_wake_candidate_standing(self)
+        if self.standing is not expected_standing:
+            raise WakePacketError(
+                "Room Now candidate standing contradicts its retained derivation evidence"
             )
 
 
@@ -421,6 +499,10 @@ class WakeRoomNowItem:
         ):
             raise WakePacketError(
                 "Room Now item labels must match every candidate semantic identity"
+            )
+        if len({_instant(item.standing_as_of) for item in self.candidates}) != 1:
+            raise WakePacketError(
+                "Room Now candidates must share one standing_as_of instant"
             )
         if len({item.state_kind for item in self.candidates}) != 1:
             raise WakePacketError(
@@ -631,6 +713,17 @@ class WakePacket:
                 raise WakePacketError(
                     "Room Now item crosses the Map-attached Room boundary"
                 )
+            if any(
+                not _same_instant(
+                    candidate.standing_as_of,
+                    self.as_of,
+                )
+                for item in self.room_now.items
+                for candidate in item.candidates
+            ):
+                raise WakePacketError(
+                    "Room Now candidate standing_as_of differs from Wake as_of"
+                )
         else:
             if (
                 self.room_now.items
@@ -732,6 +825,53 @@ class WakeAssemblyReceipt:
             raise WakePacketError(
                 "receipt layer availability must preserve the five-layer order"
             )
+
+
+_ROOM_VALIDITY_BY_KIND = {
+    CurrentStateKind.PROJECT_STATUS: frozenset(
+        {ValidityRule.DURABLE_UNTIL_CHANGED}
+    ),
+    CurrentStateKind.PREFERENCE: frozenset(
+        {
+            ValidityRule.DURABLE_UNTIL_CHANGED,
+            ValidityRule.STALE_TO_LAST_KNOWN,
+        }
+    ),
+    CurrentStateKind.COMMITMENT: frozenset(
+        {ValidityRule.OPEN_UNTIL_RESOLVED}
+    ),
+    CurrentStateKind.SELF_INTERPRETATION: frozenset(
+        {ValidityRule.DURABLE_UNTIL_CHANGED}
+    ),
+    CurrentStateKind.UNFINISHED_WORK: frozenset(
+        {ValidityRule.OPEN_UNTIL_RESOLVED}
+    ),
+}
+
+
+def _derive_wake_candidate_standing(
+    candidate: WakeCurrentCandidate,
+) -> CurrentStanding:
+    if len(candidate.end_evidence) > 1:
+        return CurrentStanding.CONFLICTING
+    if len(candidate.end_evidence) == 1:
+        return CurrentStanding.ENDED
+    if candidate.validity_rule is ValidityRule.DURABLE_UNTIL_CHANGED:
+        return CurrentStanding.CURRENT
+    if candidate.validity_rule is ValidityRule.STALE_TO_LAST_KNOWN:
+        assert candidate.stale_after is not None
+        elapsed = (
+            _instant(candidate.standing_as_of)
+            - _instant(candidate.event_time)
+        )
+        if elapsed >= _timedelta_micros(candidate.stale_after):
+            return CurrentStanding.LAST_KNOWN
+        return CurrentStanding.CURRENT
+    if candidate.validity_rule is ValidityRule.OPEN_UNTIL_RESOLVED:
+        return CurrentStanding.UNRESOLVED
+    raise WakePacketError(
+        "unsupported Room candidate validity rule"
+    )
 
 
 _CARRYABLE_STANDINGS = frozenset(
@@ -1081,7 +1221,10 @@ def _wake_room_item(
                 "selected Current candidate crosses Wake Room/key boundary"
             )
     candidates = tuple(
-        _wake_current_candidate(candidate)
+        _wake_current_candidate(
+            candidate,
+            as_of=decision.as_of,
+        )
         for candidate in selected
     )
     state_kinds = {item.state_kind for item in candidates}
@@ -1106,6 +1249,8 @@ def _wake_room_item(
 
 def _wake_current_candidate(
     candidate: CurrentCandidate,
+    *,
+    as_of: datetime,
 ) -> WakeCurrentCandidate:
     record = candidate.record
     if record.namespace is not CurrentNamespace.ROOM:
@@ -1127,6 +1272,10 @@ def _wake_current_candidate(
         semantic_change_authority=record.semantic_change_authority,
         event_time=record.event_time,
         recorded_at=record.recorded_at,
+        valid_from=record.valid_from,
+        validity_rule=record.validity_rule,
+        stale_after=record.stale_after,
+        standing_as_of=as_of,
         episode_id=record.episode_id,
         perspective_instance_id=record.perspective_instance_id,
         source_refs=record.source_refs,
@@ -1134,7 +1283,10 @@ def _wake_current_candidate(
             WakeEndEvidence(
                 end_event_id=event.end_event_id,
                 state_id=event.state_id,
+                ended_at=event.ended_at,
+                recorded_at=event.recorded_at,
                 end_kind=event.end_kind,
+                semantic_change_authority=event.semantic_change_authority,
                 episode_id=event.episode_id,
                 perspective_instance_id=event.perspective_instance_id,
                 source_refs=event.source_refs,
@@ -1181,6 +1333,13 @@ def _instant(value: datetime) -> int:
         + offset.microseconds
     )
     return wall_micros - offset_micros
+
+
+def _timedelta_micros(value: timedelta) -> int:
+    return (
+        (value.days * 86_400 + value.seconds) * 1_000_000
+        + value.microseconds
+    )
 
 
 def _text(field_name: str, value: object) -> None:
