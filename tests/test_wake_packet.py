@@ -991,6 +991,183 @@ class WakePacketTests(unittest.TestCase):
             ("project.status", "project.other"),
         )
 
+    def test_candidate_retains_room_and_key_semantic_identity(self) -> None:
+        valid = self._valid_room_item()
+        candidate = valid.candidates[0]
+
+        self.assertEqual(candidate.namespace, CurrentNamespace.ROOM)
+        self.assertEqual(candidate.owner_id, valid.room_id)
+        self.assertEqual(candidate.key, valid.key)
+
+        with self.assertRaises(WakePacketError):
+            replace(valid, key="project.relabelled")
+        with self.assertRaises(WakePacketError):
+            replace(
+                valid,
+                room_id="room-other",
+                privacy_scope=WakePrivacyScope(
+                    kind=WakePrivacyScopeKind.ROOM,
+                    scope_id="room-other",
+                ),
+            )
+
+    def test_conflict_candidates_cannot_be_split_by_relabelling_keys(self) -> None:
+        a = self.state("identity-conflict-a", value="A")
+        b = self.state("identity-conflict-b", value="B")
+        candidates = (
+            CurrentCandidate(
+                record=a,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("HEAD",),
+            ),
+            CurrentCandidate(
+                record=b,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("HEAD",),
+            ),
+        )
+        packet, _ = self.assemble(
+            room_current=self.view(
+                self.resolved_decision(
+                    standing=CurrentStanding.CONFLICTING,
+                    candidates=candidates,
+                )
+            )
+        )
+        conflict = packet.room_now.items[0]
+
+        first = replace(
+            conflict,
+            item_id=f"{conflict.item_id}:first",
+            standing=conflict.candidates[0].standing,
+            candidates=(conflict.candidates[0],),
+        )
+        with self.assertRaises(WakePacketError):
+            replace(
+                conflict,
+                item_id=f"{conflict.item_id}:second",
+                key="project.fake-key",
+                standing=conflict.candidates[1].standing,
+                candidates=(conflict.candidates[1],),
+            )
+
+        self.assertEqual(first.key, "project.status")
+
+    def test_candidate_cannot_be_rehomed_by_outer_room_labels(self) -> None:
+        donor = self._valid_room_item()
+
+        with self.assertRaises(WakePacketError):
+            replace(
+                donor,
+                item_id="room-now:room-other:project.status",
+                room_id="room-other",
+                privacy_scope=WakePrivacyScope(
+                    kind=WakePrivacyScopeKind.ROOM,
+                    scope_id="room-other",
+                ),
+            )
+
+    def test_section_rejects_duplicate_state_identity_across_keys(self) -> None:
+        first = self._valid_room_item()
+        second_candidate = replace(
+            first.candidates[0],
+            key="project.other",
+            value="different-payload",
+            episode_id="episode-other",
+            perspective_instance_id="perspective-other",
+            source_refs=("ref-other-provenance",),
+        )
+        second = replace(
+            first,
+            item_id="room-now:room-wake:project.other",
+            key="project.other",
+            candidates=(second_candidate,),
+        )
+
+        with self.assertRaises(WakePacketError):
+            WakeRoomNowSection(
+                availability=WakeLayerAvailability.READY,
+                items=(first, second),
+                reason_codes=(),
+            )
+
+    def test_end_evidence_must_remain_bound_to_candidate_state(self) -> None:
+        from home_memory_core.current_view import EndKind
+        from home_memory_core.wake_packet import WakeEndEvidence
+
+        valid = self._valid_room_item().candidates[0]
+        evidence = WakeEndEvidence(
+            end_event_id="end-other",
+            state_id="different-state",
+            end_kind=EndKind.COMPLETED,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-end-other",),
+        )
+
+        with self.assertRaises(WakePacketError):
+            replace(valid, end_evidence=(evidence,))
+
+    def test_section_rejects_duplicate_end_event_identity(self) -> None:
+        from home_memory_core.current_view import EndKind
+        from home_memory_core.wake_packet import WakeEndEvidence
+
+        first = self._valid_room_item()
+        first_evidence = WakeEndEvidence(
+            end_event_id="end-shared-id",
+            state_id=first.candidates[0].state_id,
+            end_kind=EndKind.COMPLETED,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-end-a",),
+        )
+        first_candidate = replace(
+            first.candidates[0],
+            standing=CurrentStanding.CONFLICTING,
+            end_evidence=(first_evidence,),
+        )
+        first_item = replace(
+            first,
+            standing=CurrentStanding.CONFLICTING,
+            candidates=(first_candidate,),
+        )
+
+        second_candidate = replace(
+            first.candidates[0],
+            state_id="state-second-end-owner",
+            key="project.other",
+            standing=CurrentStanding.CONFLICTING,
+            source_refs=("ref-second-end-owner",),
+        )
+        second_evidence = WakeEndEvidence(
+            end_event_id="end-shared-id",
+            state_id=second_candidate.state_id,
+            end_kind=EndKind.CANCELLED,
+            episode_id="episode-second",
+            perspective_instance_id="perspective-second",
+            source_refs=("ref-end-b",),
+        )
+        second_candidate = replace(
+            second_candidate,
+            end_evidence=(second_evidence,),
+        )
+        second_item = replace(
+            first,
+            item_id="room-now:room-wake:project.other",
+            key="project.other",
+            standing=CurrentStanding.CONFLICTING,
+            candidates=(second_candidate,),
+        )
+
+        with self.assertRaises(WakePacketError):
+            WakeRoomNowSection(
+                availability=WakeLayerAvailability.READY,
+                items=(first_item, second_item),
+                reason_codes=(),
+            )
+
     def test_ended_result_is_not_carried_but_does_not_make_layer_partial(self) -> None:
         record = self.state("ended-state")
         candidate = CurrentCandidate(
