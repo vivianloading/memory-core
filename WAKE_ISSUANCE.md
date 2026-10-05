@@ -59,6 +59,11 @@ already:
 - inside one active `BEGIN` read transaction;
 - pinned to the resolver's canonical database path.
 
+The caller-owned `LivingStore` is binding evidence only. Operational Living
+reads use a fresh base `LivingStore` pinned to the already-resolved canonical
+database path, and the issuer calls the base Living/Current implementations for
+the new issuance path rather than trusting caller-replaced instance methods.
+
 The issuer validates Living integrity on that same connection, then reads:
 
 - the requested Episode;
@@ -250,6 +255,17 @@ Wake Issuance does not change the v0.1 fixed-layer producer reality:
 The returned `IssuedWakePacket` is stronger than a bare `WakePacket` only in
 producer provenance.
 
+A valid issuance receipt proves **what happened at its issuance snapshot**. It
+does not claim that no canonical state, suppression, route, or Current value
+changed after that snapshot.
+
+Therefore an issuance receipt is not a timeless “still current” credential.
+Future model delivery must obtain issuance as part of its own fresh delivery
+operation; it must not treat an old retained issuance as proof of present
+freshness. v0.1 deliberately does not invent a time-to-live or durable freshness
+epoch here.
+
+
 It is still **not renderer input authorization**.
 
 A future Wake renderer/delivery slice should require a live
@@ -268,6 +284,8 @@ v0.1 must fail closed against at least:
 - naive clock;
 - more than one clock read per issuance;
 - different SQLite connections for Living and Current within one issuance;
+- a caller-owned Living instance method being substituted as the canonical producer;
+- a concurrent route write tearing one issuance across pre/post-write state;
 - caller-minted receipt;
 - foreign-authority receipt replay;
 - changed canonical database binding;
