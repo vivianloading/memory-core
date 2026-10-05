@@ -451,6 +451,23 @@ class WakeIssuanceTests(unittest.TestCase):
         self.assertEqual(canonical_after.decision, "unattached")
         self.assertIsNone(canonical_after.room_id)
 
+    def test_caller_owned_resolver_instance_method_cannot_replace_operational_resolution(self) -> None:
+        record, _ = self._admit_state()
+
+        with patch.object(
+            self.resolver,
+            "_resolve_owner_in_connection",
+            side_effect=AssertionError(
+                "caller-owned resolver instance method must not run"
+            ),
+        ):
+            issued = self.issuer.issue(episode_id="episode-b")
+
+        self.assertEqual(
+            issued.packet.room_now.items[0].candidates[0].state_id,
+            record.state_id,
+        )
+
     def test_issuance_is_database_read_only(self) -> None:
         self._admit_state()
         before = self._dump_database()
