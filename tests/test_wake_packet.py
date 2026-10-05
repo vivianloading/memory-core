@@ -32,6 +32,7 @@ from home_memory_core.living_continuity import (
 from home_memory_core.wake_packet import (
     WakeAuthority,
     WakeLayer,
+    WakeInputTrust,
     WakeLayerAvailability,
     WakePacketError,
     WakePrivacyScopeKind,
@@ -181,6 +182,10 @@ class WakePacketTests(unittest.TestCase):
             room_current=self.view()
         )
 
+        self.assertEqual(
+            packet.input_trust,
+            WakeInputTrust.TYPED_CALLER_INPUT,
+        )
         item = packet.map.item
         self.assertEqual(
             packet.map.availability,
