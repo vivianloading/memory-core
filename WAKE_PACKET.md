@@ -482,3 +482,28 @@ normal assembler:
 
 The #57 verdict remains permanently bound to its failed exact head. A later
 remediation head requires a fresh independent review and bounded coverage sweep.
+
+## Independent review #58 — conflict aggregate NO-GO
+
+Independent review #58 returned **FAIL / NO-GO** on exact head
+`34acfe30d0d021220cb7691ec39b64d693b7a55f`.
+
+The #57 risk families were successfully rejected in independent proofs and the
+bounded sweep was reached. The sweep found one remaining semantic representation
+family: direct construction could carry multiple distinct eligible candidates
+while labelling the aggregate as non-conflicting.
+
+The remediation makes aggregate/candidate consistency mechanical:
+
+- candidate `state_id` values must be unique;
+- one candidate requires the aggregate standing to exactly match that candidate;
+- more than one candidate requires aggregate `CONFLICTING`;
+- legitimate one-candidate `CONFLICTING` remains representable (for example,
+  one state with multiple effective end events).
+
+The author additionally checked the symmetric direct-construction case where a
+single ordinary candidate was falsely labelled `CONFLICTING`; it is rejected by
+the same invariant.
+
+The #58 verdict remains bound to its failed exact SHA. A later head requires a
+fresh exact-SHA review.
