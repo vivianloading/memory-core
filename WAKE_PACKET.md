@@ -113,8 +113,11 @@ Technical transfer evidence != relationship or first-person speech authority.
 
 ### Map privacy scope
 
-- attached route -> Room scoped;
-- unattached/unresolved route -> Episode scoped.
+Map is always Episode scoped in v0.1.
+
+An attached route may name the Room the Episode is structurally routed to, but
+that fact does not widen continuity topology or support refs into Room privacy
+authority. Room-scoped carried content begins in Room Now, not in Map.
 
 Topology itself does not widen the scope.
 
