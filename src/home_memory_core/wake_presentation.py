@@ -740,12 +740,14 @@ def render_wake_presentation(
         authority=authority,
         issued=issued,
     )
-    if plan != expected:
+    plan_payload = _plan_payload(plan)
+    expected_payload = _plan_payload(expected)
+    if _canonical_json(plan_payload) != _canonical_json(
+        expected_payload
+    ):
         raise WakePresentationError(
             "presentation plan differs from the exact live-issued projection"
         )
-
-    plan_payload = _plan_payload(plan)
     plan_json = _canonical_json(plan_payload)
     payload = {
         "kind": "home_wake_presentation_data",
@@ -864,6 +866,9 @@ def _plan_payload(plan: WakePresentationPlan) -> dict[str, object]:
             plan.perspective_instance_id
         ),
         "temporal_claim": "standing_at_issuance_cut",
+        "use_boundary": _use_boundary_payload(
+            plan.use_boundary
+        ),
         "layers": [
             _layer_payload(layer)
             for layer in plan.layers
@@ -978,25 +983,35 @@ def _policy_payload(
             policy.authority_ceiling.value
         ),
         "inclusion_basis": policy.inclusion_basis,
+        **_use_boundary_payload(policy.use_boundary),
+    }
+
+
+def _use_boundary_payload(
+    boundary: WakeUseBoundary,
+) -> dict[str, str]:
+    if not isinstance(boundary, WakeUseBoundary):
+        raise WakePresentationError(
+            "Wake presentation use boundary is invalid"
+        )
+    return {
         "instruction_authority": (
-            policy.use_boundary.instruction_authority.value
+            boundary.instruction_authority.value
         ),
         "current_first_person_speech_authority": (
-            policy.use_boundary
-            .current_first_person_speech_authority.value
+            boundary.current_first_person_speech_authority.value
         ),
         "identity_continuity_claim_authority": (
-            policy.use_boundary
-            .identity_continuity_claim_authority.value
+            boundary.identity_continuity_claim_authority.value
         ),
         "relationship_claim_authority": (
-            policy.use_boundary.relationship_claim_authority.value
+            boundary.relationship_claim_authority.value
         ),
         "model_delivery_authority": (
-            policy.use_boundary.model_delivery_authority.value
+            boundary.model_delivery_authority.value
         ),
         "memory_write_authority": (
-            policy.use_boundary.memory_write_authority.value
+            boundary.memory_write_authority.value
         ),
     }
 
