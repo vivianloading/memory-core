@@ -291,6 +291,11 @@ and what opening it authorizes.
 
 ## 11. Inclusion reason
 
+Wake keeps upstream semantic enum types (for example CurrentStateKind,
+SemanticChangeAuthority, EndKind, TransferMode, and ContinuityStatus) as typed
+values inside the substrate. It does not flatten them to arbitrary text merely
+for early serialization convenience.
+
 Every carried v0.1 item contains a mechanical inclusion reason.
 
 Initial reasons:
