@@ -1327,7 +1327,10 @@ class WakePacketTests(unittest.TestCase):
         from home_memory_core.current_view import EndKind
         from home_memory_core.wake_packet import WakeEndEvidence
 
-        candidate = self._valid_room_item().candidates[0]
+        candidate = replace(
+            self._valid_room_item().candidates[0],
+            valid_from=self.t0 - timedelta(seconds=2),
+        )
         before_record = WakeEndEvidence(
             end_event_id="end-before-record",
             state_id=candidate.state_id,
