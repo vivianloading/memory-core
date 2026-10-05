@@ -227,6 +227,7 @@ as operational holdbacks.
 Every carried Current candidate retains:
 
 - exact state id;
+- exact Current namespace, owner id, and key;
 - exact value;
 - state kind;
 - candidate standing;
@@ -531,3 +532,35 @@ aggregate Wake representation.
 
 The #59 verdict remains bound to its failed exact SHA. A later head requires a
 fresh exact-SHA review.
+
+## Independent review #60 — semantic identity laundering NO-GO
+
+Independent review #60 returned **FAIL / NO-GO** on exact head
+`3f4cb30c897a33805131a5eaab9a083a85dc2f2d`.
+
+The section-level duplicate-key guard from #59 worked. The layered review found a
+deeper cause: the Current -> Wake candidate conversion preserved payload and
+attribution but dropped the candidate's own Current namespace / owner / key.
+Later checks therefore validated only caller-declared outer labels.
+
+That allowed three ordinary direct-construction contradictions:
+
+1. split one genuine conflict and relabel one outer key, erasing the conflict;
+2. relabel Room/privacy outer fields and rehome unchanged Room-A candidates into
+   a Room-B packet;
+3. carry two incompatible payload/provenance representations for one immutable
+   state ID across distinct items.
+
+The remediation preserves semantic identity through the representation stack:
+
+- `WakeCurrentCandidate` now carries exact Current namespace / owner / key;
+- every Room Now item must match every candidate's retained semantic identity;
+- state IDs are unique across the entire Room Now section;
+- end-event evidence now retains its target state ID and must match its candidate;
+- end-event IDs are unique across the entire Room Now section.
+
+This closes relabelling rather than adding more checks only to caller-declared
+outer labels.
+
+The #60 verdict remains bound to its failed exact SHA. A later head requires
+fresh exact-SHA review and the broad regression sweep that #60 did not reach.
