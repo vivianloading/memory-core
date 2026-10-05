@@ -31,11 +31,17 @@ from home_memory_core.living_continuity import (
 )
 from home_memory_core.wake_packet import (
     WakeAuthority,
-    WakeLayer,
+    WakeContinuityEvidence,
+    WakeCurrentCandidate,
     WakeInputTrust,
+    WakeLayer,
     WakeLayerAvailability,
+    WakeMapItem,
     WakePacketError,
+    WakePrivacyScope,
     WakePrivacyScopeKind,
+    WakeRouteDecision,
+    WakeRoomNowItem,
     assemble_wake_packet_v0_1,
 )
 
@@ -223,6 +229,90 @@ class WakePacketTests(unittest.TestCase):
             )
         with self.assertRaises(WakePacketError):
             WakeUseBoundary(memory_write_authority="granted")
+
+    def test_hand_built_map_cannot_claim_impossible_attached_route(self) -> None:
+        with self.assertRaises(WakePacketError):
+            WakeMapItem(
+                item_id="map:bad-route",
+                episode_id=self.episode.episode_id,
+                perspective_instance_id=self.episode.perspective_instance_id,
+                route_decision=WakeRouteDecision.ATTACHED,
+                room_id=None,
+                active_attachment_event_id=None,
+                incoming_continuity=None,
+                privacy_scope=WakePrivacyScope(
+                    kind=WakePrivacyScopeKind.EPISODE,
+                    scope_id=self.episode.episode_id,
+                ),
+            )
+
+    def test_hand_built_map_continuity_must_point_to_map_episode(self) -> None:
+        with self.assertRaises(WakePacketError):
+            WakeMapItem(
+                item_id="map:wrong-edge",
+                episode_id=self.episode.episode_id,
+                perspective_instance_id=self.episode.perspective_instance_id,
+                route_decision=WakeRouteDecision.ATTACHED,
+                room_id="room-wake",
+                active_attachment_event_id="route-wake",
+                incoming_continuity=WakeContinuityEvidence(
+                    edge_id="edge-wrong",
+                    previous_episode_id="episode-old",
+                    next_episode_id="different-episode",
+                    transfer_mode=TransferMode.TEXT_CONTEXT_HANDOFF,
+                    continuity_status=ContinuityStatus.UNKNOWN,
+                ),
+                privacy_scope=WakePrivacyScope(
+                    kind=WakePrivacyScopeKind.EPISODE,
+                    scope_id=self.episode.episode_id,
+                ),
+            )
+
+    def test_hand_built_room_now_candidate_requires_perspective_and_room_ownership(self) -> None:
+        with self.assertRaises(WakePacketError):
+            WakeCurrentCandidate(
+                state_id="state-no-perspective",
+                value="looks-plausible",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                standing=CurrentStanding.CURRENT,
+                semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+                event_time=self.t0,
+                recorded_at=self.t0,
+                episode_id=None,
+                perspective_instance_id=None,
+                source_refs=("ref-no-perspective",),
+                end_evidence=(),
+            )
+        with self.assertRaises(WakePacketError):
+            WakeCurrentCandidate(
+                state_id="state-shared-owner",
+                value="shared-shaped-value",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                standing=CurrentStanding.CURRENT,
+                semantic_change_authority=SemanticChangeAuthority.SHARED_GOVERNANCE,
+                event_time=self.t0,
+                recorded_at=self.t0,
+                episode_id=self.episode.episode_id,
+                perspective_instance_id=self.episode.perspective_instance_id,
+                source_refs=("ref-shared-owner",),
+                end_evidence=(),
+            )
+
+    def test_hand_built_room_now_candidate_requires_source_provenance(self) -> None:
+        with self.assertRaises(WakePacketError):
+            WakeCurrentCandidate(
+                state_id="state-no-source",
+                value="orphan-value",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                standing=CurrentStanding.CURRENT,
+                semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+                event_time=self.t0,
+                recorded_at=self.t0,
+                episode_id=self.episode.episode_id,
+                perspective_instance_id=self.episode.perspective_instance_id,
+                source_refs=(),
+                end_evidence=(),
+            )
 
     def test_five_layers_are_explicit_even_when_not_implemented(self) -> None:
         packet, receipt = self.assemble(
