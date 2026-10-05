@@ -1,56 +1,100 @@
 # HOME Current Resolver v0.1 — Present Standing Integration
 
-**Status:** DRAFT IMPLEMENTATION LAYER; synthetic/local only; no model delivery; real personal data CLOSED.
+**Status:** DRAFT IMPLEMENTATION LAYER; synthetic/local Room Current only; no model delivery; real personal data CLOSED.
 
 Issue: #46
 
 ## Purpose
 
-Current View already defines the semantic meaning of present standing.
-Current persistence stores its immutable inputs. Current present-use classifies
-whether persisted effects may still participate in operational use after source
-stop-use.
+Current View defines semantic present standing. Current persistence stores its
+immutable inputs. Current admission records which Room effects actually crossed
+the live authority boundary. Current present-use records whether those admitted
+effects may still be used after source stop-use.
 
-The resolver joins those layers without collapsing them.
+The resolver composes those layers without collapsing them.
 
-> **Semantic standing answers what the history means. Present-use eligibility
-> answers whether HOME may rely on the effects that make that answer true now.**
+Two distinctions are essential:
 
-Suppression is therefore not a semantic edit, deletion, negation, or fallback
-instruction.
+> **Persisted history is not automatically admitted semantic history.**
 
-## Core rule: overlay, never filter-and-rerun
+and:
 
-The resolver MUST NOT remove suppressed state/end rows and rerun Current View.
+> **Suppression is not semantic negation, deletion, or fallback authorization.**
 
-Filtering first would manufacture new semantics. In particular:
+## Order of operations
 
-- suppressing a superseding child could make its predecessor look current again;
-- suppressing an end event could make its target look current again;
-- suppressing one conflict participant could silently choose the other as a
-  winner.
+For one explicit timezone-aware `as_of`, inside one coherent SQLite read
+snapshot, v0.1:
 
-Those are semantic changes. Stop-use alone has no authority to assert them.
+1. establishes synthetic-domain, Living, Current persistence, Current admission
+   and suppression-ledger integrity;
+2. reconstructs the subset of persisted Room Current state/end effects that have
+   exact durable admission audit records;
+3. derives ordinary Current View semantics from that **admitted history**;
+4. identifies the exact admitted effects on which the semantic answer depends;
+5. overlays present-use suppression eligibility for those effects;
+6. exposes the semantic answer only when every dependency remains usable;
+7. otherwise returns explicit `blocked_unknown` with exact stop-use provenance.
 
-The resolver instead:
+This ordering is deliberate.
 
-1. derives Current semantic standing from the complete trusted history known at
-   the explicit `as_of`;
-2. identifies the exact persisted effects on which that semantic answer depends;
-3. overlays present-use eligibility for those effects;
-4. exposes the semantic answer only when every required effect remains usable;
-5. otherwise returns an explicit blocked/unknown operational result with exact
-   suppression provenance.
+## Admission filtering is allowed; suppression filtering is not
 
-The complete semantic resolution remains available inside the typed decision for
-audit/debugging. A later delivery boundary MUST NOT present a blocked semantic
-resolution as current model context.
+Admission and suppression answer different questions.
+
+### Unadmitted persisted rows
+
+A structurally valid persisted row that never crossed Current admission is
+storage/audit history only. It never acquired operational semantic standing.
+
+Therefore it is excluded **before** Current View derivation.
+
+Examples:
+
+- a raw/unadmitted child cannot supersede an admitted parent for present Current;
+- a raw/unadmitted competing head cannot manufacture a Current conflict;
+- a raw/unadmitted end event cannot end an admitted state.
+
+This is not resurrection. The excluded effect was never admitted into the
+operational semantic history.
+
+Durable admission audit is used here only as evidence that the historical effect
+crossed authority when it was created. It is **not** a credential for a new
+write and does not recreate a process-local CurrentAdmissionReceipt.
+
+### Suppressed admitted rows
+
+An admitted effect did participate in semantic history. Later stop-use does not
+erase that fact or authorize a replacement semantic assertion.
+
+Therefore the resolver MUST NOT delete/filter suppressed admitted rows and rerun
+Current View.
+
+Filtering suppressed history could:
+
+- revive a superseded predecessor;
+- revive a state whose end event was stopped;
+- choose a winner from a historical conflict.
+
+v0.1 instead keeps the admitted semantic answer intact for audit and marks its
+present operational result `blocked_unknown` when a required dependency is
+suppressed.
+
+## Namespace boundary
+
+Current Resolver v0.1 is **Room-only**.
+
+Shared Current admission remains CLOSED because HOME has no concrete Shared
+operational governance primitive yet. A semantic label such as
+`shared_governance` cannot mint authority.
+
+Requests for `CurrentNamespace.SHARED` fail closed. Shared semantic/persisted
+history does not become operational Current merely because it exists.
 
 ## Time
 
-The resolver accepts an explicit timezone-aware `as_of`.
-
-No ambient clock is read.
+The resolver accepts an explicit timezone-aware `as_of`; it never reads the
+ambient clock.
 
 `as_of` controls Current semantic time: record visibility, validity intervals,
 staleness and effective end events.
@@ -58,105 +102,64 @@ staleness and effective end events.
 Suppression eligibility is intentionally **present-use** eligibility from the
 current canonical stop-use ledger. Historical questions about what stop-use HOME
 knew at an earlier time belong to `SuppressionAsOfStore` /
-`HistoricalCurrentUseStore`, not this resolver.
+`HistoricalCurrentUseStore`.
 
 A caller that wants "now" must supply its explicit current instant.
 
 ## Coherent read boundary
 
-One resolution uses one SQLite read snapshot.
+One resolver call uses one SQLite read snapshot.
 
-Inside that snapshot HOME must establish:
+Inside that snapshot HOME establishes:
 
 - synthetic-store domain trust;
 - Living schema/data integrity;
-- Current schema/data integrity;
+- Current persistence schema/data integrity;
+- Current admission schema/data integrity;
 - canonical suppression-ledger integrity.
 
-History reconstruction, semantic derivation and present-use decisions all occur
-against that same database reality.
-
-A past trust check is not sufficient.
+Admission classification, semantic derivation and present-use decisions therefore
+belong to one database reality.
 
 ## Result axes
 
-The resolver keeps semantic standing separate from operational usability.
+`CurrentResolverStatus` is separate from `CurrentStanding`:
 
-`CurrentResolverStatus`:
+- `resolved` — all admitted effects required by the semantic answer remain
+  presently usable;
+- `blocked_unknown` — at least one required admitted effect is stopped from use.
 
-- `resolved` — every effect required by the semantic answer is presently usable;
-- `blocked_unknown` — at least one required effect is stopped from present use.
+`CurrentStanding` retains its semantic meaning.
 
-`CurrentStanding` remains unchanged and continues to mean semantic standing.
+A blocked decision exposes no `usable_standing` or
+`usable_current_state_ids`. Its complete semantic answer is kept only as
+`audit_resolution` for inspection and later review; a delivery boundary must
+not present that audit object as current model context.
 
-A `blocked_unknown` result has no usable standing/value for downstream delivery,
-even though its `semantic_resolution` remains inspectable internally.
+A safe `resolved` result can itself have semantic standing current,
+last_known, unresolved, expired, ended, conflicting, no_current, or unknown.
 
 ## Dependency set v0.1
 
-For one key at one `as_of`, the conservative dependency set is:
+For one admitted key at one `as_of`, the conservative dependency set is:
 
 - every semantic head candidate returned by Current View;
 - every effective end event attached to those candidate heads.
 
-State present-use evaluation already carries inherited suppression from
-supersession ancestors. Therefore a head whose lineage depends on a stopped
-ancestor is blocked without separately making every historical ancestor a
-top-level dependency.
+State present-use evaluation already carries inherited stop-use from admitted
+supersession ancestors.
 
-Effects that cannot affect this key's semantic answer do not block it merely
-because they are suppressed:
+Other keys, future effects and persisted-but-unadmitted effects do not enter the
+dependency set.
 
-- other keys;
-- historical non-head effects outside the selected head lineage;
-- future effects not participating at the explicit `as_of`.
-
-This rule is deliberately conservative around ambiguity. If suppression touches
-an effect that participates in conflict/end/current derivation, v0.1 returns
+If suppression touches a participating conflict/end/current effect, v0.1 returns
 `blocked_unknown`; it does not simplify the semantic problem by deleting that
 effect.
 
-## No resurrection
+## Exact blocking provenance
 
-Examples:
-
-### Suppressed successor
-
-History:
-
-A -> B
-
-B is the semantic head. If B becomes suppressed:
-
-- A does not become current;
-- B remains the semantic head in audit history;
-- present resolver status becomes `blocked_unknown`.
-
-### Suppressed end event
-
-History:
-
-A -> END(A)
-
-If the effective end event becomes suppressed:
-
-- HOME does not assert A is current again;
-- HOME also may not rely on the stopped end evidence;
-- present resolver status becomes `blocked_unknown`.
-
-### Suppressed conflict participant
-
-If semantic Current View has two eligible heads A and B and B becomes
-suppressed:
-
-- HOME does not choose A;
-- the historical conflict is not rewritten;
-- present resolver status becomes `blocked_unknown`.
-
-## Provenance
-
-Every blocked result carries exact `CurrentSuppressionBlock` provenance from
-the existing present-use layer:
+Every blocked result retains exact existing `CurrentSuppressionBlock`
+provenance:
 
 - source_ref;
 - source_id;
@@ -164,26 +167,7 @@ the existing present-use layer:
 - origin effect kind;
 - origin effect id.
 
-Duplicate inherited blocks may be deduplicated for presentation only when every
-field is identical. Provenance must not be weakened to an opaque boolean.
-
-## What resolved means
-
-`resolved` does not mean `CurrentStanding.CURRENT`.
-
-A safe semantic result can legitimately be:
-
-- current;
-- last_known;
-- unresolved;
-- expired;
-- ended;
-- conflicting;
-- no_current;
-- unknown.
-
-`resolved` only means HOME can rely on the exact effects needed to state that
-semantic result under the present-use boundary.
+Identical inherited blocks may be deduplicated for presentation only.
 
 ## Non-goals
 
@@ -193,8 +177,9 @@ Current Resolver v0.1 does not provide:
 - prose rendering or pronoun choice;
 - restore/unsuppress;
 - deletion/reversal of stop-use;
-- implicit fallback/resurrection;
-- Shared write admission/governance expansion;
+- suppression-driven fallback/resurrection;
+- Shared Current admission/governance;
+- restart-safe recreation of live admission receipts;
 - relationship automation;
 - Heartbeat/proximity;
 - identity continuity;
@@ -207,5 +192,7 @@ After author stabilization, freeze one exact head and apply #18:
 
 **Fresh discovery -> Minimal proof -> Bounded coverage sweep.**
 
-Independent review should attack the dependency set, snapshot/trust ordering and
-all ways suppression might accidentally manufacture a different semantic answer.
+Independent review should attack both sides of the boundary:
+
+- unadmitted persistence must never become operational Current;
+- suppression must never manufacture a different semantic answer.
