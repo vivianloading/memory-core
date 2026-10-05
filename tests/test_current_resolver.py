@@ -645,6 +645,19 @@ class CurrentResolverTests(unittest.TestCase):
             (record.state_id,),
         )
 
+    def test_missing_canonical_db_fails_without_creating_zero_byte_file(self) -> None:
+        self.admit_state("missing-db-read-only")
+        moved = self.db.with_name("home.moved.db")
+        self.db.replace(moved)
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.resolve()
+            self.assertFalse(self.db.exists())
+        finally:
+            if self.db.exists():
+                self.db.unlink()
+            moved.replace(self.db)
+
     def test_shared_resolution_is_closed_until_shared_admission_exists(self) -> None:
         with self.assertRaises(CurrentResolverClosedBoundaryError):
             self.resolver.resolve_key(
