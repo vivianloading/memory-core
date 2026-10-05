@@ -385,6 +385,13 @@ Therefore:
 The origin registry is process-local runtime state, not durable authority,
 semantic identity, Room identity, or restart-safe credential.
 
+The origin witness also retains the exact opening-bound runtime dependencies:
+the caller-binding LivingStore, internal canonical LivingStore, CurrentResolver,
+clock object, receipt registry/guard, canonical DB binding, and HOME process
+instance. Live binding rejects substitution of those objects on the original
+authority after opening. This is intentionally object/dependency identity, not
+a claim that a mutable clock's future return values are themselves frozen.
+
 #65 remains permanently scoped to its failed exact SHA. A later head requires a
 fresh exact-SHA independent review, including the bounded sweep #65 did not
 reach.
@@ -433,3 +440,27 @@ SHA and does not extend automatically to a later head.
 
 #66 remains permanently scoped to its failed exact SHA. A later head requires a
 fresh exact-SHA review.
+
+### Author-side same-family hardening after #66
+
+After fixing operation-receiver dispatch, author self-review extended the same
+origin invariant to the original authority object's opening-bound dependencies.
+
+The process-local origin registry now stores a frozen witness of the exact
+objects/values that defined the authority at construction:
+
+- caller-binding LivingStore;
+- internal canonical LivingStore;
+- CurrentResolver;
+- clock object;
+- receipt registry and lock;
+- canonical DB path/digest;
+- HOME process instance.
+
+`_assert_live_binding()` requires the current authority state to match that
+independent opening witness before any issue/verify operation proceeds.
+
+This closes the adjacent case “the object is still the original `self`, but
+its runtime producer dependencies were replaced after opening.”
+
+The witness binds dependency identity, not immutable future clock output.
