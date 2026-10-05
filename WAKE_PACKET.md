@@ -424,3 +424,27 @@ High-value attacks include:
 - untyped recency/ranking sneaking into Recent Life;
 - carried context acquiring instruction authority;
 - Packet audit metadata becoming a backdoor for suppressed content.
+
+## Author-side type-integrity hardening after initial freeze
+
+A later author re-read treated direct dataclass construction as adversarial input,
+rather than assuming the assembler would always be the only producer.
+
+That review found two representation holes in the first frozen head
+`36a787132f09a7712c556b9a9d591cc0656ed7be`:
+
+1. a hand-built `WakeMapItem` could encode an impossible route or attach an
+   incoming continuity edge whose destination was not the Map Episode;
+2. a hand-built `WakeCurrentCandidate` could omit Episode/Perspective
+   attribution, claim non-Room semantic ownership, or omit source provenance.
+
+The assembler did not emit those shapes, but the substrate itself was too weak.
+v0.1 now rejects them at dataclass construction time.
+
+This preserves a stronger rule:
+
+> **Typed shape must not launder missing attribution into Wake content, even
+> before an operational producer exists.**
+
+The old frozen head remains author-side pre-review history; any independent
+review target bound to it is stale once this hardening changes the branch head.
