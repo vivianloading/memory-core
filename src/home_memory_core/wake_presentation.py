@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum, StrEnum
 from hashlib import sha256
 import json
 
@@ -740,15 +740,17 @@ def render_wake_presentation(
         authority=authority,
         issued=issued,
     )
-    plan_payload = _plan_payload(plan)
-    expected_payload = _plan_payload(expected)
-    if _canonical_json(plan_payload) != _canonical_json(
-        expected_payload
+    plan_semantics = _canonical_semantic_value(plan)
+    expected_semantics = _canonical_semantic_value(expected)
+    if _canonical_json(plan_semantics) != _canonical_json(
+        expected_semantics
     ):
         raise WakePresentationError(
-            "presentation plan differs from the exact live-issued projection"
+            "presentation plan differs from the exact live-issued semantic projection"
         )
-    plan_json = _canonical_json(plan_payload)
+
+    plan_payload = _plan_payload(plan)
+    plan_json = _canonical_json(plan_semantics)
     payload = {
         "kind": "home_wake_presentation_data",
         "presentation_version": (
@@ -896,6 +898,7 @@ def _block_payload(
 ) -> dict[str, object]:
     common = {
         "block_id": block.block_id,
+        "layer": block.layer.value,
         "block_kind": block.block_kind.value,
         "policy": _policy_payload(block.policy),
     }
@@ -1015,6 +1018,64 @@ def _use_boundary_payload(
             boundary.memory_write_authority.value
         ),
     }
+
+
+def _canonical_semantic_value(value: object) -> object:
+    """Canonicalize every public semantic field of a typed presentation object.
+
+    Renderer payload projection is intentionally a separate concern. This
+    function exists so operational exact-plan comparison and plan digests cannot
+    silently omit a newly added public dataclass field.
+
+    Private construction markers are excluded because they are misuse guards,
+    not presentation semantics or authority credentials.
+    """
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            "__dataclass__": (
+                f"{value.__class__.__module__}."
+                f"{value.__class__.__qualname__}"
+            ),
+            "fields": [
+                [
+                    item.name,
+                    _canonical_semantic_value(
+                        getattr(value, item.name)
+                    ),
+                ]
+                for item in fields(value)
+                if not item.name.startswith("_")
+            ],
+        }
+    if isinstance(value, Enum):
+        return {
+            "__enum__": (
+                f"{value.__class__.__module__}."
+                f"{value.__class__.__qualname__}"
+            ),
+            "value": _canonical_semantic_value(value.value),
+        }
+    if isinstance(value, datetime):
+        _aware("semantic datetime", value)
+        return {
+            "__datetime__": value.isoformat(
+                timespec="microseconds"
+            ),
+        }
+    if isinstance(value, tuple):
+        return {
+            "__tuple__": [
+                _canonical_semantic_value(item)
+                for item in value
+            ],
+        }
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    raise WakePresentationError(
+        "unsupported presentation semantic value: "
+        f"{type(value).__name__}"
+    )
 
 
 def _canonical_json(value: object) -> str:
