@@ -216,6 +216,8 @@ class WakePacketTests(unittest.TestCase):
             WakeUseBoundary(
                 current_first_person_speech_authority="granted",
             )
+        with self.assertRaises(WakePacketError):
+            WakeUseBoundary(memory_write_authority="granted")
 
     def test_five_layers_are_explicit_even_when_not_implemented(self) -> None:
         packet, receipt = self.assemble(
@@ -286,6 +288,10 @@ class WakePacketTests(unittest.TestCase):
         )
         self.assertEqual(
             item.use_boundary.model_delivery_authority,
+            WakeAuthority.NONE,
+        )
+        self.assertEqual(
+            item.use_boundary.memory_write_authority,
             WakeAuthority.NONE,
         )
         self.assertIn(item.item_id, receipt.included_item_ids)
