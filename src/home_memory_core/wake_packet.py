@@ -106,7 +106,6 @@ class WakeContinuityEvidence:
     next_episode_id: str
     transfer_mode: str
     continuity_status: str
-    support_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -117,7 +116,6 @@ class WakeContinuityEvidence:
             "continuity_status",
         ):
             _text(field_name, getattr(self, field_name))
-        _refs("support_refs", self.support_refs)
 
 
 @dataclass(frozen=True)
@@ -829,7 +827,6 @@ def _wake_continuity_evidence(
         next_episode_id=edge.next_episode_id,
         transfer_mode=edge.transfer_mode.value,
         continuity_status=edge.continuity_status.value,
-        support_refs=edge.support_refs,
     )
 
 
