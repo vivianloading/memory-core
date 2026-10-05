@@ -245,7 +245,7 @@ class WakeIssuanceAuthority:
         """Issue one Wake artifact from one canonical SQLite read snapshot."""
 
         _require_text("episode_id", episode_id)
-        self._assert_live_binding()
+        WakeIssuanceAuthority._assert_live_binding(self)
 
         # Capture the operation cut exactly once, before opening/reading the
         # canonical snapshot. Lower layers receive the explicit cut.
@@ -326,7 +326,7 @@ class WakeIssuanceAuthority:
 
         # Recheck all live bindings after the snapshot operation and before
         # minting process-local proof.
-        self._assert_live_binding()
+        WakeIssuanceAuthority._assert_live_binding(self)
 
         receipt = WakeIssuanceReceipt(
             issuance_id=f"wake-issuance-{secrets.token_hex(16)}",
@@ -370,7 +370,7 @@ class WakeIssuanceAuthority:
     ) -> WakePacket:
         """Verify exact artifact binding to this exact live issuer."""
 
-        self._assert_live_binding()
+        WakeIssuanceAuthority._assert_live_binding(self)
         if not isinstance(issued, IssuedWakePacket):
             raise WakeIssuanceAuthorizationError(
                 "live Wake verification requires IssuedWakePacket"
