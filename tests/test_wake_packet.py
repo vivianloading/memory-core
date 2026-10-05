@@ -296,6 +296,63 @@ class WakePacketTests(unittest.TestCase):
         )
         self.assertIn(item.item_id, receipt.included_item_ids)
 
+    def test_inactive_head_candidate_does_not_enter_room_now(self) -> None:
+        active = self.state("active-state", value="ACTIVE")
+        inactive = self.state("ended-head", value="ENDED_OLD_VALUE")
+        candidates = (
+            CurrentCandidate(
+                record=active,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("DURABLE_UNTIL_CHANGED",),
+            ),
+            CurrentCandidate(
+                record=inactive,
+                end_events=(),
+                standing=CurrentStanding.ENDED,
+                reason_codes=("EXPLICIT_END_EVENT",),
+            ),
+        )
+        semantic = CurrentResolution(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key="project.status",
+            standing=CurrentStanding.CURRENT,
+            current_state_ids=(active.state_id,),
+            historical_state_ids=(inactive.state_id,),
+            future_state_ids=(),
+            candidates=candidates,
+            reason_codes=("DURABLE_UNTIL_CHANGED",),
+        )
+        decision = CurrentResolverDecision(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key="project.status",
+            as_of=self.t0,
+            status=CurrentResolverStatus.RESOLVED,
+            semantic_resolution=semantic,
+            dependencies=(
+                CurrentResolverDependency(
+                    effect_kind=CurrentUseEffectKind.STATE,
+                    effect_id=active.state_id,
+                ),
+            ),
+            blocks=(),
+            missing_live_admission_effects=(),
+            reason_codes=("SEMANTIC_DEPENDENCIES_USABLE",),
+        )
+
+        packet, _ = self.assemble(
+            room_current=self.view(decision)
+        )
+
+        item = packet.room_now.items[0]
+        self.assertEqual(
+            tuple(candidate.state_id for candidate in item.candidates),
+            (active.state_id,),
+        )
+        self.assertNotIn("ENDED_OLD_VALUE", repr(packet))
+
     def test_blocked_current_value_never_enters_packet(self) -> None:
         secret = self.state(
             "blocked-state",
