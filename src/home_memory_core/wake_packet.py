@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.current_resolver import (
     CurrentResolvedView,
     CurrentResolverDecision,
@@ -154,6 +155,13 @@ class WakeMapItem:
             _text(field_name, getattr(self, field_name))
         if not isinstance(self.route_decision, WakeRouteDecision):
             raise WakePacketError("Map route decision is invalid")
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Wake Map requires concrete Perspective attribution"
+            )
         if self.room_id is not None:
             _text("room_id", self.room_id)
         if self.active_attachment_event_id is not None:
@@ -241,6 +249,13 @@ class WakeEndEvidence:
             raise WakePacketError(
                 "Room end evidence requires Episode/Perspective attribution"
             )
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Room end evidence requires concrete Perspective attribution"
+            )
 
 
 @dataclass(frozen=True)
@@ -299,6 +314,13 @@ class WakeCurrentCandidate:
             "perspective_instance_id",
             self.perspective_instance_id,
         )
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Room Now candidate requires concrete Perspective attribution"
+            )
         _refs("source_refs", self.source_refs)
         if not self.source_refs:
             raise WakePacketError(
@@ -347,17 +369,39 @@ class WakeRoomNowItem:
             raise WakePacketError(
                 "Room Now item standing is not carryable in v0.1"
             )
-        if not self.candidates:
+        if (
+            not isinstance(self.candidates, tuple)
+            or not self.candidates
+            or any(
+                not isinstance(item, WakeCurrentCandidate)
+                for item in self.candidates
+            )
+        ):
             raise WakePacketError(
-                "Room Now item requires attributed candidates"
+                "Room Now item requires a tuple of attributed WakeCurrentCandidate values"
             )
         if len({item.state_kind for item in self.candidates}) != 1:
             raise WakePacketError(
                 "Room Now candidates cannot mix state kinds"
             )
-        if self.state_kind != self.candidates[0].state_kind:
+        if self.state_kind is not self.candidates[0].state_kind:
             raise WakePacketError(
                 "Room Now item state_kind differs from candidates"
+            )
+        if self.standing is not CurrentStanding.CONFLICTING:
+            if any(
+                item.standing is not self.standing
+                for item in self.candidates
+            ):
+                raise WakePacketError(
+                    "non-conflicting Room Now item standing must match every candidate"
+                )
+        elif any(
+            item.standing not in _CARRYABLE_STANDINGS
+            for item in self.candidates
+        ):
+            raise WakePacketError(
+                "conflicting Room Now item contains non-carryable candidate standing"
             )
         _refs("reason_codes", self.reason_codes)
         if not isinstance(self.privacy_scope, WakePrivacyScope):
@@ -380,6 +424,8 @@ class WakeMapSection:
     reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.availability, WakeLayerAvailability):
+            raise WakePacketError("Map availability is invalid")
         if self.availability is not WakeLayerAvailability.READY:
             raise WakePacketError("Map must be ready in v0.1 assembly")
         if not isinstance(self.item, WakeMapItem):
@@ -394,6 +440,10 @@ class WakeRoomNowSection:
     reason_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.availability, WakeLayerAvailability):
+            raise WakePacketError(
+                "Room Now availability must use WakeLayerAvailability"
+            )
         if self.availability not in {
             WakeLayerAvailability.READY,
             WakeLayerAvailability.PARTIAL,
@@ -402,8 +452,16 @@ class WakeRoomNowSection:
             raise WakePacketError(
                 "Room Now availability is invalid"
             )
-        if not isinstance(self.items, tuple):
-            raise WakePacketError("Room Now items must be a tuple")
+        if (
+            not isinstance(self.items, tuple)
+            or any(
+                not isinstance(item, WakeRoomNowItem)
+                for item in self.items
+            )
+        ):
+            raise WakePacketError(
+                "Room Now items must contain WakeRoomNowItem values"
+            )
         if (
             self.availability is WakeLayerAvailability.UNAVAILABLE
             and self.items
@@ -421,6 +479,12 @@ class WakeEmptyLayer:
     reason_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.layer, WakeLayer):
+            raise WakePacketError("empty Wake layer must use WakeLayer")
+        if not isinstance(self.availability, WakeLayerAvailability):
+            raise WakePacketError(
+                "empty Wake layer availability must use WakeLayerAvailability"
+            )
         if self.layer in {WakeLayer.MAP, WakeLayer.ROOM_NOW}:
             raise WakePacketError(
                 "Map/Room Now require their typed section forms"
@@ -482,6 +546,24 @@ class WakePacket:
             raise WakePacketError(
                 "Map perspective differs from Wake perspective"
             )
+        if self.map.item.route_decision is WakeRouteDecision.ATTACHED:
+            assert self.map.item.room_id is not None
+            if any(
+                item.room_id != self.map.item.room_id
+                for item in self.room_now.items
+            ):
+                raise WakePacketError(
+                    "Room Now item crosses the Map-attached Room boundary"
+                )
+        else:
+            if (
+                self.room_now.items
+                or self.room_now.availability
+                is not WakeLayerAvailability.UNAVAILABLE
+            ):
+                raise WakePacketError(
+                    "unattached/unresolved Map cannot carry Room Now content"
+                )
         if (
             self.shared_now.layer is not WakeLayer.SHARED_NOW
             or self.shared_now.availability is not WakeLayerAvailability.CLOSED
@@ -995,9 +1077,30 @@ def _wake_continuity_evidence(
 
 
 def _same_instant(left: datetime, right: datetime) -> bool:
-    _aware("left timestamp", left)
-    _aware("right timestamp", right)
-    return left == right
+    return _instant(left) == _instant(right)
+
+
+def _instant(value: datetime) -> int:
+    _aware("timestamp", value)
+    offset = value.utcoffset()
+    assert offset is not None
+    wall_micros = (
+        (
+            (
+                (value.toordinal() * 24 + value.hour) * 60
+                + value.minute
+            )
+            * 60
+            + value.second
+        )
+        * 1_000_000
+        + value.microsecond
+    )
+    offset_micros = (
+        (offset.days * 86_400 + offset.seconds) * 1_000_000
+        + offset.microseconds
+    )
+    return wall_micros - offset_micros
 
 
 def _text(field_name: str, value: object) -> None:
