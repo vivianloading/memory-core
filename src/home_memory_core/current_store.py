@@ -331,7 +331,7 @@ class CurrentStore:
             raise
 
     def _read_connection(self) -> sqlite3.Connection:
-        connection = self._connect()
+        connection = self._connect_read_only()
         try:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
@@ -342,6 +342,15 @@ class CurrentStore:
         except Exception:
             connection.close()
             raise
+
+    def _connect_read_only(self) -> sqlite3.Connection:
+        """Open an existing Current database without create-on-open side effects."""
+
+        uri = f"{self.db_path.absolute().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection
 
     def _assert_upstream(self, connection: sqlite3.Connection) -> None:
         assert_synthetic_store_domain(connection)
