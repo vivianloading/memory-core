@@ -39,6 +39,11 @@ WAKE_ISSUANCE_VERSION = "wake-issuance-v0.1"
 
 _WAKE_ISSUANCE_AUTHORITY_MARKER = object()
 _WAKE_ISSUANCE_RECEIPT_MARKER = object()
+_WAKE_ISSUANCE_ORIGIN_REGISTRY_GUARD = Lock()
+_WAKE_ISSUANCE_ORIGIN_REGISTRY: dict[
+    str,
+    "WakeIssuanceAuthority",
+] = {}
 
 
 class WakeIssuanceError(RuntimeError):
@@ -214,6 +219,19 @@ class WakeIssuanceAuthority:
         )
         self._receipt_guard = Lock()
         self._receipts: dict[str, _LiveReceiptState] = {}
+
+        # The instance-owned receipt registry is not sufficient to prove
+        # originating-object identity: shallow copies can alias instance state.
+        # Keep one independent process-local witness from authority_id to the
+        # exact object that completed live construction.
+        with _WAKE_ISSUANCE_ORIGIN_REGISTRY_GUARD:
+            if self._authority_id in _WAKE_ISSUANCE_ORIGIN_REGISTRY:
+                raise WakeIssuanceIntegrityError(
+                    "Wake issuance authority id already has a live origin"
+                )
+            _WAKE_ISSUANCE_ORIGIN_REGISTRY[
+                self._authority_id
+            ] = self
 
     @property
     def authority_id(self) -> str:
@@ -408,6 +426,14 @@ class WakeIssuanceAuthority:
         if current_process != self._home_process_instance_id:
             raise WakeIssuanceAuthorizationError(
                 "Wake issuance authority belongs to another HOME process incarnation"
+            )
+        with _WAKE_ISSUANCE_ORIGIN_REGISTRY_GUARD:
+            origin = _WAKE_ISSUANCE_ORIGIN_REGISTRY.get(
+                getattr(self, "_authority_id", "")
+            )
+        if origin is not self:
+            raise WakeIssuanceAuthorizationError(
+                "Wake issuance authority is not the originating live authority instance"
             )
         CurrentResolver._assert_live_binding(
             self._current_resolver
