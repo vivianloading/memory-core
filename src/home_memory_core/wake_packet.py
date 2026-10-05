@@ -717,14 +717,41 @@ def _wake_room_item(
         raise WakePacketError(
             "Room Now conversion requires semantic resolution"
         )
+    selected_ids = semantic.current_state_ids
+    if not selected_ids or len(set(selected_ids)) != len(selected_ids):
+        raise WakePacketError(
+            "carryable semantic standing requires exact current_state_ids"
+        )
+    candidate_by_id = {
+        candidate.state_id: candidate
+        for candidate in semantic.candidates
+    }
+    if len(candidate_by_id) != len(semantic.candidates):
+        raise WakePacketError(
+            "Current semantic candidates contain duplicate ids"
+        )
+    if any(state_id not in candidate_by_id for state_id in selected_ids):
+        raise WakePacketError(
+            "Current semantic current_state_ids lack candidate provenance"
+        )
+    selected = tuple(
+        candidate_by_id[state_id]
+        for state_id in selected_ids
+    )
+    for candidate in selected:
+        record = candidate.record
+        if (
+            record.namespace is not CurrentNamespace.ROOM
+            or record.owner_id != room_id
+            or record.key != decision.key
+        ):
+            raise WakePacketError(
+                "selected Current candidate crosses Wake Room/key boundary"
+            )
     candidates = tuple(
         _wake_current_candidate(candidate)
-        for candidate in semantic.candidates
+        for candidate in selected
     )
-    if not candidates:
-        raise WakePacketError(
-            "carryable semantic standing requires candidates"
-        )
     state_kinds = {item.state_kind for item in candidates}
     if len(state_kinds) != 1:
         raise WakePacketError(
