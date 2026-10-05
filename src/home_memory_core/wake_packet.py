@@ -54,6 +54,10 @@ class WakeAuthority(StrEnum):
     NONE = "none"
 
 
+class WakeInputTrust(StrEnum):
+    TYPED_CALLER_INPUT = "typed_caller_input"
+
+
 @dataclass(frozen=True)
 class WakeUseBoundary:
     """Authority that carriage itself does not grant.
@@ -330,6 +334,7 @@ class WakeEmptyLayer:
 class WakePacket:
     wake_id: str
     packet_version: str
+    input_trust: WakeInputTrust
     as_of: datetime
     episode_id: str
     perspective_instance_id: str
@@ -344,6 +349,10 @@ class WakePacket:
         _text("wake_id", self.wake_id)
         if self.packet_version != WAKE_PACKET_VERSION:
             raise WakePacketError("unexpected Wake Packet version")
+        if self.input_trust is not WakeInputTrust.TYPED_CALLER_INPUT:
+            raise WakePacketError(
+                "Wake Packet v0.1 has no operational producer proof"
+            )
         _aware("as_of", self.as_of)
         _text("episode_id", self.episode_id)
         _text("perspective_instance_id", self.perspective_instance_id)
@@ -529,6 +538,7 @@ def assemble_wake_packet_v0_1(
     packet = WakePacket(
         wake_id=wake_id,
         packet_version=WAKE_PACKET_VERSION,
+        input_trust=WakeInputTrust.TYPED_CALLER_INPUT,
         as_of=as_of,
         episode_id=episode.episode_id,
         perspective_instance_id=episode.perspective_instance_id,
