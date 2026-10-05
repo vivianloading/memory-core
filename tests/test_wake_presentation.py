@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from _trusted_test_support import (
     trusted_test_room_continuation_policy,
@@ -716,6 +717,38 @@ class WakePresentationTests(unittest.TestCase):
                 authority=self.issuer,
                 issued=issued,
                 plan=changed_plan,
+            )
+
+    def test_renderer_rejects_dst_fold_cut_rebinding(self) -> None:
+        ny = ZoneInfo("America/New_York")
+        fold_zero = datetime(
+            2026, 11, 1, 1, 30, tzinfo=ny, fold=0
+        )
+        fold_one = datetime(
+            2026, 11, 1, 1, 30, tzinfo=ny, fold=1
+        )
+        self.assertNotEqual(
+            fold_zero.utcoffset(),
+            fold_one.utcoffset(),
+        )
+
+        fold_issuer = open_wake_issuance_authority(
+            living_store=self.living,
+            current_resolver=self.resolver,
+            clock=FixedClock(fold_zero),
+        )
+        issued = fold_issuer.issue(episode_id="episode-c")
+        plan = build_wake_presentation_plan(
+            authority=fold_issuer,
+            issued=issued,
+        )
+        changed = replace(plan, as_of=fold_one)
+
+        with self.assertRaises(WakePresentationError):
+            render_wake_presentation(
+                authority=fold_issuer,
+                issued=issued,
+                plan=changed,
             )
 
     def test_renderer_is_deterministic_for_exact_plan(self) -> None:
