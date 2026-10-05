@@ -301,6 +301,88 @@ class WakePacketTests(unittest.TestCase):
         )
         self.assertIn(item.item_id, receipt.included_item_ids)
 
+    def test_standing_past_perspective_is_not_rewritten_as_waking_perspective(self) -> None:
+        past = CurrentStateRecord(
+            state_id="state-from-past-perspective",
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key="project.status",
+            state_kind=CurrentStateKind.PROJECT_STATUS,
+            value="still-standing",
+            event_time=self.t0,
+            recorded_at=self.t0,
+            valid_from=self.t0,
+            validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+            downgrade_rule=DowngradeRule.NONE,
+            semantic_change_authority=(
+                SemanticChangeAuthority.ROOM_FIRST_PERSON
+            ),
+            episode_id="episode-previous",
+            perspective_instance_id="perspective-previous",
+            source_refs=("ref-past-perspective",),
+        )
+        candidate = CurrentCandidate(
+            record=past,
+            end_events=(),
+            standing=CurrentStanding.CURRENT,
+            reason_codes=("DURABLE_UNTIL_CHANGED",),
+        )
+        semantic = CurrentResolution(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key="project.status",
+            standing=CurrentStanding.CURRENT,
+            current_state_ids=(past.state_id,),
+            historical_state_ids=(),
+            future_state_ids=(),
+            candidates=(candidate,),
+            reason_codes=("DURABLE_UNTIL_CHANGED",),
+        )
+        decision = CurrentResolverDecision(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key="project.status",
+            as_of=self.t0,
+            status=CurrentResolverStatus.RESOLVED,
+            semantic_resolution=semantic,
+            dependencies=(
+                CurrentResolverDependency(
+                    effect_kind=CurrentUseEffectKind.STATE,
+                    effect_id=past.state_id,
+                ),
+            ),
+            blocks=(),
+            missing_live_admission_effects=(),
+            reason_codes=("SEMANTIC_DEPENDENCIES_USABLE",),
+        )
+
+        packet, _ = self.assemble(
+            room_current=self.view(decision)
+        )
+
+        self.assertEqual(
+            packet.perspective_instance_id,
+            "perspective-wake",
+        )
+        carried = packet.room_now.items[0].candidates[0]
+        self.assertEqual(
+            carried.perspective_instance_id,
+            "perspective-previous",
+        )
+        self.assertEqual(
+            carried.episode_id,
+            "episode-previous",
+        )
+        self.assertNotEqual(
+            carried.perspective_instance_id,
+            packet.perspective_instance_id,
+        )
+        self.assertEqual(
+            packet.room_now.items[0]
+            .use_boundary.current_first_person_speech_authority,
+            WakeAuthority.NONE,
+        )
+
     def test_inactive_head_candidate_does_not_enter_room_now(self) -> None:
         active = self.state("active-state", value="ACTIVE")
         inactive = self.state("ended-head", value="ENDED_OLD_VALUE")
