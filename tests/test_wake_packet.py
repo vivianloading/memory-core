@@ -194,7 +194,7 @@ class WakePacketTests(unittest.TestCase):
         self.assertEqual(item.room_id, "room-wake")
         self.assertEqual(
             item.privacy_scope.kind,
-            WakePrivacyScopeKind.ROOM,
+            WakePrivacyScopeKind.EPISODE,
         )
         self.assertEqual(
             item.incoming_continuity.continuity_status,
@@ -208,6 +208,14 @@ class WakePacketTests(unittest.TestCase):
             receipt.included_item_ids,
             ("map:episode-wake",),
         )
+
+    def test_wake_use_boundary_rejects_caller_minted_authority(self) -> None:
+        from home_memory_core.wake_packet import WakeUseBoundary
+
+        with self.assertRaises(WakePacketError):
+            WakeUseBoundary(
+                current_first_person_speech_authority="granted",
+            )
 
     def test_five_layers_are_explicit_even_when_not_implemented(self) -> None:
         packet, receipt = self.assemble(
