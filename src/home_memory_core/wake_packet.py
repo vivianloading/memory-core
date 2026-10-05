@@ -470,6 +470,19 @@ class WakeRoomNowSection:
             raise WakePacketError(
                 "Room Now items must contain WakeRoomNowItem values"
             )
+        item_ids = tuple(item.item_id for item in self.items)
+        if len(set(item_ids)) != len(item_ids):
+            raise WakePacketError(
+                "Room Now section cannot repeat an item_id"
+            )
+        room_keys = tuple(
+            (item.room_id, item.key)
+            for item in self.items
+        )
+        if len(set(room_keys)) != len(room_keys):
+            raise WakePacketError(
+                "Room Now section requires one aggregate item per Room/key"
+            )
         if (
             self.availability is WakeLayerAvailability.UNAVAILABLE
             and self.items
