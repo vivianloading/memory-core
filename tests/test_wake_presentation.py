@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import home_memory_core.wake_presentation as presentation_module
+
 from _trusted_test_support import (
     trusted_test_room_continuation_policy,
     trusted_test_runtime_launch_issuer,
@@ -678,6 +680,113 @@ class WakePresentationTests(unittest.TestCase):
         self.assertEqual(
             payload["presentation"]["layers"][2]["blocks"],
             [],
+        )
+
+    def test_forced_map_block_layer_mutation_is_rejected_and_bound(self) -> None:
+        issued, plan = self._issued_plan("episode-c")
+        map_block = plan.layers[0].blocks[0]
+
+        before_semantics = (
+            presentation_module._canonical_semantic_value(plan)
+        )
+        before_digest = presentation_module._sha256_text(
+            presentation_module._canonical_json(
+                before_semantics
+            )
+        )
+
+        object.__setattr__(
+            map_block,
+            "layer",
+            WakeLayer.SHARED_NOW,
+        )
+
+        after_semantics = (
+            presentation_module._canonical_semantic_value(plan)
+        )
+        after_digest = presentation_module._sha256_text(
+            presentation_module._canonical_json(
+                after_semantics
+            )
+        )
+
+        self.assertNotEqual(
+            before_semantics,
+            after_semantics,
+        )
+        self.assertNotEqual(before_digest, after_digest)
+
+        with self.assertRaises(WakePresentationError):
+            render_wake_presentation(
+                authority=self.issuer,
+                issued=issued,
+                plan=plan,
+            )
+
+    def test_forced_room_block_layer_mutation_is_rejected_and_bound(self) -> None:
+        self._admit_state(
+            state_id="state-room-layer",
+            key="project.room.layer",
+            value="room-bound",
+        )
+        issued, plan = self._issued_plan()
+        room_block = plan.layers[2].blocks[0]
+
+        before_semantics = (
+            presentation_module._canonical_semantic_value(plan)
+        )
+        before_digest = presentation_module._sha256_text(
+            presentation_module._canonical_json(
+                before_semantics
+            )
+        )
+
+        object.__setattr__(
+            room_block,
+            "layer",
+            WakeLayer.SHARED_NOW,
+        )
+
+        after_semantics = (
+            presentation_module._canonical_semantic_value(plan)
+        )
+        after_digest = presentation_module._sha256_text(
+            presentation_module._canonical_json(
+                after_semantics
+            )
+        )
+
+        self.assertNotEqual(
+            before_semantics,
+            after_semantics,
+        )
+        self.assertNotEqual(before_digest, after_digest)
+
+        with self.assertRaises(WakePresentationError):
+            render_wake_presentation(
+                authority=self.issuer,
+                issued=issued,
+                plan=plan,
+            )
+
+    def test_rendered_blocks_explicitly_carry_their_layer(self) -> None:
+        self._admit_state(
+            state_id="state-render-layer",
+            key="project.render.layer",
+            value="explicit",
+        )
+        issued, plan = self._issued_plan()
+        payload = json.loads(
+            self._render(issued, plan).payload_json
+        )
+
+        self.assertEqual(
+            payload["presentation"]["layers"][0]["blocks"][0]["layer"],
+            "map",
+        )
+        self.assertEqual(
+            payload["presentation"]["layers"][2]["blocks"][0]["layer"],
+            "room_now",
         )
 
     def test_marker_retaining_altered_plan_cannot_render(self) -> None:
