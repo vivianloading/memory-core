@@ -221,12 +221,16 @@ remains only a JSON string value.
 - deterministic plan digest;
 - deterministic payload digest.
 
-The receipt is projection provenance only.
+The receipt is deterministic projection evidence only.
 
 It grants no model-delivery, speech, instruction, identity, relationship, or
 memory-write authority.
 
-It is not a freshness credential.
+It is not authentication, a model-delivery credential, or a freshness
+credential. A future delivery layer must not accept a stored
+`RenderedWakePresentation` or render receipt by itself as permission to hand
+data to a model. Delivery must perform its own live/request-bound verification
+and ordering operation.
 
 ## 12. Warmth is not in v0.1
 
