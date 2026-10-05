@@ -899,39 +899,47 @@ class WakePacketTests(unittest.TestCase):
             replace(valid, standing=CurrentStanding.CONFLICTING)
 
     def test_single_conflicting_candidate_remains_valid(self) -> None:
-        record = self.state("single-conflicting")
-        candidate = CurrentCandidate(
-            record=record,
-            end_events=(),
-            standing=CurrentStanding.CONFLICTING,
-            reason_codes=("MULTIPLE_EFFECTIVE_END_EVENTS",),
+        from home_memory_core.current_view import (
+            CurrentStateEndEvent,
+            EndKind,
         )
-        decision = CurrentResolverDecision(
+
+        record = self.state("single-conflicting")
+        end_one = CurrentStateEndEvent(
+            end_event_id="single-conflict-completed",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.COMPLETED,
+            reason="completed",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-single-completed",),
+        )
+        end_two = CurrentStateEndEvent(
+            end_event_id="single-conflict-cancelled",
+            state_id=record.state_id,
+            ended_at=self.t0,
+            recorded_at=self.t0,
+            end_kind=EndKind.CANCELLED,
+            reason="cancelled",
+            semantic_change_authority=SemanticChangeAuthority.ROOM_FIRST_PERSON,
+            episode_id=self.episode.episode_id,
+            perspective_instance_id=self.episode.perspective_instance_id,
+            source_refs=("ref-single-cancelled",),
+        )
+        semantic = resolve_current_state(
             namespace=CurrentNamespace.ROOM,
             owner_id="room-wake",
             key=record.key,
+            records=(record,),
+            end_events=(end_one, end_two),
             as_of=self.t0,
-            status=CurrentResolverStatus.RESOLVED,
-            semantic_resolution=CurrentResolution(
-                namespace=CurrentNamespace.ROOM,
-                owner_id="room-wake",
-                key=record.key,
-                standing=CurrentStanding.CONFLICTING,
-                current_state_ids=(record.state_id,),
-                historical_state_ids=(),
-                future_state_ids=(),
-                candidates=(candidate,),
-                reason_codes=("CONFLICTING_HEAD_SEMANTICS",),
-            ),
-            dependencies=(
-                CurrentResolverDependency(
-                    effect_kind=CurrentUseEffectKind.STATE,
-                    effect_id=record.state_id,
-                ),
-            ),
-            blocks=(),
-            missing_live_admission_effects=(),
-            reason_codes=("SEMANTIC_DEPENDENCIES_USABLE",),
+        )
+        decision = self.resolved_decision(
+            standing=semantic.standing,
+            candidates=semantic.candidates,
         )
         packet, _ = self.assemble(room_current=self.view(decision))
         item = packet.room_now.items[0]
@@ -941,6 +949,7 @@ class WakePacketTests(unittest.TestCase):
             item.candidates[0].standing,
             CurrentStanding.CONFLICTING,
         )
+        self.assertEqual(len(item.candidates[0].end_evidence), 2)
 
     def test_room_now_rejects_duplicate_candidate_state_ids(self) -> None:
         valid = self._valid_room_item()
@@ -1193,7 +1202,6 @@ class WakePacketTests(unittest.TestCase):
             first.candidates[0],
             state_id="state-second-end-owner",
             key="project.other",
-            standing=CurrentStanding.CONFLICTING,
             source_refs=("ref-second-end-owner",),
         )
         second_shared = WakeEndEvidence(
@@ -1215,6 +1223,7 @@ class WakePacketTests(unittest.TestCase):
         )
         second_candidate = replace(
             second_base,
+            standing=CurrentStanding.CONFLICTING,
             end_evidence=(second_shared, second_extra),
         )
         second_item = replace(
