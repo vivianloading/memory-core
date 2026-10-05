@@ -88,6 +88,31 @@ Therefore:
 
 > durable admission audit presence != live operational credential.
 
+## Resolver use of admission proof
+
+Current Resolver v0.1 must not interpret durable admission-table membership as
+operational admission proof.
+
+The durable admission binding digest remains intentionally non-credential
+material. For process-local resolution, the only positive proof that an effect
+entered admitted semantic history is a `CurrentAdmissionReceipt` actually
+issued and registered by the exact live `CurrentAdmissionAuthority`, then
+corroborated against its durable audit row.
+
+The authority exposes a package-internal receipt-snapshot seam for this purpose.
+That seam validates process-local issuance and exact durable binding but does
+not apply source-suppression usability. Suppression remains a separate later
+resolver axis so stopped evidence cannot be deleted from semantic history and
+manufacture fallback.
+
+If the process-local receipt is gone after restart, durable audit cannot recreate
+it. Resolver must fail closed / report proof unavailable rather than promote the
+audit row into authority.
+
+This preserves the existing rule:
+
+> durable admission audit presence != live operational credential.
+
 ## Authority/effect ordering
 
 The combined Room admission path establishes one lock order:

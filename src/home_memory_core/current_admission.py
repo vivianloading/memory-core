@@ -494,6 +494,39 @@ class CurrentAdmissionAuthority:
         finally:
             connection.close()
 
+    def _snapshot_live_receipts_for_resolution(
+        self,
+        *,
+        connection: sqlite3.Connection,
+    ) -> tuple[CurrentAdmissionReceipt, ...]:
+        """Return receipts actually issued by this live authority.
+
+        This package-internal seam proves process-local issuance and exact
+        durable audit binding. It deliberately does not apply source-suppression
+        present-use checks: Current Resolver must derive admitted semantic
+        history first, then overlay suppression without erasing that history.
+        """
+
+        self._assert_live_authority_binding()
+        if not isinstance(connection, sqlite3.Connection):
+            raise TypeError("connection must be sqlite3.Connection")
+        assert_current_admission_schema(connection)
+        assert_current_admission_data_integrity(connection)
+        with self._receipt_guard:
+            receipts = tuple(
+                state.receipt
+                for _, state in sorted(self._receipts.items())
+            )
+        return tuple(
+            self._require_live_receipt_binding(
+                connection=connection,
+                receipt=receipt,
+                effect_kind=receipt.effect_kind,
+                effect_id=receipt.effect_id,
+            )
+            for receipt in receipts
+        )
+
     def _require_supersession_receipt(
         self,
         *,
@@ -520,7 +553,7 @@ class CurrentAdmissionAuthority:
         )
         return parent.admission_id
 
-    def _require_live_receipt(
+    def _require_live_receipt_binding(
         self,
         *,
         connection: sqlite3.Connection,
@@ -528,6 +561,8 @@ class CurrentAdmissionAuthority:
         effect_kind: CurrentAdmissionEffectKind,
         effect_id: str,
     ) -> CurrentAdmissionReceipt:
+        """Validate live issuance plus exact durable audit binding only."""
+
         self._assert_live_process()
         if not isinstance(effect_kind, CurrentAdmissionEffectKind):
             raise CurrentAdmissionAuthorizationError(
@@ -572,6 +607,22 @@ class CurrentAdmissionAuthority:
             raise CurrentAdmissionIntegrityError(
                 "live Current admission receipt differs from durable audit record"
             )
+        return receipt
+
+    def _require_live_receipt(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        receipt: CurrentAdmissionReceipt,
+        effect_kind: CurrentAdmissionEffectKind,
+        effect_id: str,
+    ) -> CurrentAdmissionReceipt:
+        receipt = self._require_live_receipt_binding(
+            connection=connection,
+            receipt=receipt,
+            effect_kind=effect_kind,
+            effect_id=effect_id,
+        )
         _require_current_effect_usable(
             connection=connection,
             effect_kind=(
