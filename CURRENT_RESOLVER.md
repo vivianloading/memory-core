@@ -1,185 +1,192 @@
 # HOME Current Resolver v0.1 — Present Standing Integration
 
-**Status:** DRAFT IMPLEMENTATION LAYER; synthetic/local Room Current only; no model delivery; real personal data CLOSED.
+**Status:** DRAFT IMPLEMENTATION LAYER; synthetic/local Room Current only; process-local admission proof only; no model delivery; real personal data CLOSED.
 
 Issue: #46
 
 ## Purpose
 
-Current View defines semantic present standing. Current persistence stores its
-immutable inputs. Current admission records which Room effects actually crossed
-the live authority boundary. Current present-use records whether those admitted
-effects may still be used after source stop-use.
+Current Resolver composes three distinct questions without collapsing them:
 
-The resolver composes those layers without collapsing them.
+1. **Admission proof:** which persisted Room Current effects can HOME prove were actually issued through the live CurrentAdmissionAuthority in this HOME process?
+2. **Semantic Current:** what standing does Current View derive from that admitted history at one explicit `as_of`?
+3. **Present-use suppression:** may HOME still rely on the exact admitted effects required by that semantic answer?
 
-Two distinctions are essential:
+The governing rules are:
 
-> **Persisted history is not automatically admitted semantic history.**
+> Persisted history is not automatically admitted semantic history.
 
-and:
+> Durable admission audit is provenance, not an operational credential.
 
-> **Suppression is not semantic negation, deletion, or fallback authorization.**
+> Suppression is not semantic negation, deletion, or fallback authorization.
 
-## Order of operations
+## Issue #50 — durable audit alone is not admission proof
 
-For one explicit timezone-aware `as_of`, inside one coherent SQLite read
-snapshot, v0.1:
+Independent review #50 returned **FAIL / NO-GO** on exact head
+`3da3abd49f25cc3a7af59e39cc1302d87291fb46`.
 
-1. establishes synthetic-domain, Living, Current persistence, Current admission
-   and suppression-ledger integrity;
-2. reconstructs the subset of persisted Room Current state/end effects that have
-   exact durable admission audit records;
-3. derives ordinary Current View semantics from that **admitted history**;
-4. identifies the exact admitted effects on which the semantic answer depends;
-5. overlays present-use suppression eligibility for those effects;
-6. exposes the semantic answer only when every dependency remains usable;
-7. otherwise returns explicit `blocked_unknown` with exact stop-use provenance.
+The failed head selected semantic inputs by durable membership in
+`current_state_admissions` / `current_end_admissions` after structural
+integrity checks.
 
-This ordering is deliberate.
+That was insufficient. The admission binding digest is intentionally a plain
+deterministic checksum, not a signature/MAC/secret-bound credential. A
+storage-only row could therefore be paired with a manufactured but internally
+consistent durable admission row and become operational semantic Current even
+though no live admission receipt had ever been issued.
 
-## Admission filtering is allowed; suppression filtering is not
+The current design fixes the boundary rather than strengthening the checksum
+into an accidental credential.
 
-Admission and suppression answer different questions.
+### v0.1 admission proof
 
-### Unadmitted persisted rows
+Current Resolver must be opened against one live `CurrentAdmissionAuthority`.
 
-A structurally valid persisted row that never crossed Current admission is
-storage/audit history only. It never acquired operational semantic standing.
+Only `CurrentAdmissionReceipt` objects that:
 
-Therefore it is excluded **before** Current View derivation.
+- were actually issued and registered by that exact live authority;
+- remain bound to the exact HOME process incarnation;
+- match their exact durable audit row and effect digest;
 
-Examples:
+may authorize effects to enter Current semantic derivation.
 
-- a raw/unadmitted child cannot supersede an admitted parent for present Current;
-- a raw/unadmitted competing head cannot manufacture a Current conflict;
-- a raw/unadmitted end event cannot end an admitted state.
+The durable audit row corroborates a live receipt. It never substitutes for one.
 
-This is not resurrection. The excluded effect was never admitted into the
-operational semantic history.
+A package-internal authority seam exposes this exact live receipt set for
+resolution. That seam deliberately does **not** apply source-suppression
+present-use checks, because suppression must be overlaid only after semantic
+history has been derived.
 
-Durable admission audit is used here only as evidence that the historical effect
-crossed authority when it was created. It is **not** a credential for a new
-write and does not recreate a process-local CurrentAdmissionReceipt.
+## Restart boundary is explicit
 
-### Suppressed admitted rows
+v0.1 does **not** recreate live admission receipts from durable audit after
+process restart.
 
-An admitted effect did participate in semantic history. Later stop-use does not
-erase that fact or authorize a replacement semantic assertion.
+If durable admission-shaped history relevant to the requested key exists but
+the current live authority lacks matching process-local receipts, the resolver
+returns:
 
-Therefore the resolver MUST NOT delete/filter suppressed admitted rows and rerun
-Current View.
+`admission_proof_unavailable`
 
-Filtering suppressed history could:
+with the exact affected effect ids.
 
-- revive a superseded predecessor;
-- revive a state whose end event was stopped;
-- choose a winner from a historical conflict.
+It does not:
 
-v0.1 instead keeps the admitted semantic answer intact for audit and marks its
-present operational result `blocked_unknown` when a required dependency is
-suppressed.
+- reinterpret the durable audit as authority;
+- silently ignore formerly admitted history and choose a newer/older answer;
+- report ordinary semantic `unknown` as if nothing had been admitted.
 
-## Namespace boundary
+This is intentionally restrictive. Restart-safe Current resolution remains a
+future boundary that needs authenticated durable authority semantics.
 
-Current Resolver v0.1 is **Room-only**.
+Durable admission rows are used without live receipts only in the fail-closed
+direction: their presence can make resolution unavailable, but can never
+authorize semantic inclusion.
 
-Shared Current admission remains CLOSED because HOME has no concrete Shared
-operational governance primitive yet. A semantic label such as
-`shared_governance` cannot mint authority.
+## Raw unadmitted history
 
-Requests for `CurrentNamespace.SHARED` fail closed. Shared semantic/persisted
-history does not become operational Current merely because it exists.
+Persisted effects with no durable admission shape and no live receipt remain
+audit/storage history only.
 
-## Time
+They cannot:
 
-The resolver accepts an explicit timezone-aware `as_of`; it never reads the
-ambient clock.
+- become current;
+- supersede an admitted parent;
+- end an admitted state;
+- manufacture a conflict.
 
-`as_of` controls Current semantic time: record visibility, validity intervals,
-staleness and effective end events.
+This remains distinct from the restart case above.
 
-Suppression eligibility is intentionally **present-use** eligibility from the
-current canonical stop-use ledger. Historical questions about what stop-use HOME
-knew at an earlier time belong to `SuppressionAsOfStore` /
-`HistoricalCurrentUseStore`.
+## Suppression overlay
 
-A caller that wants "now" must supply its explicit current instant.
+For live-receipt-backed admitted history, Current View derives semantic standing
+from the complete admitted history first.
 
-## Coherent read boundary
+The resolver then identifies semantic dependencies and evaluates current
+present-use suppression.
 
-One resolver call uses one SQLite read snapshot.
+It MUST NOT remove suppressed admitted rows and rerun Current View.
 
-Inside that snapshot HOME establishes:
+Otherwise stop-use could manufacture:
+
+- predecessor resurrection;
+- ended-state revival;
+- conflict winner selection.
+
+A suppressed required dependency therefore produces
+`blocked_unknown` with exact `CurrentSuppressionBlock` provenance and no
+usable standing/current state ids.
+
+## Result statuses
+
+`CurrentResolverStatus` is separate from semantic `CurrentStanding`:
+
+- `resolved` — semantic result is safe for present use;
+- `blocked_unknown` — a required admitted semantic dependency is presently stopped;
+- `admission_proof_unavailable` — durable admission-shaped history exists but the current process lacks exact live admission proof.
+
+Only `resolved` exposes `usable_standing` and
+`usable_current_state_ids`.
+
+## Time and snapshot
+
+The caller supplies one explicit timezone-aware `as_of`; no ambient clock is
+read.
+
+One resolver operation uses one coherent SQLite read snapshot covering:
 
 - synthetic-store domain trust;
 - Living schema/data integrity;
-- Current persistence schema/data integrity;
-- Current admission schema/data integrity;
-- canonical suppression-ledger integrity.
+- Current persistence integrity;
+- Current admission integrity;
+- suppression-ledger integrity;
+- durable corroboration of the live receipt set;
+- semantic derivation;
+- suppression decisions.
 
-Admission classification, semantic derivation and present-use decisions therefore
-belong to one database reality.
+Process-local receipt registry state is sampled conservatively against that
+snapshot. A receipt that cannot be corroborated by the snapshot fails closed.
 
-## Result axes
+## Namespace boundary
 
-`CurrentResolverStatus` is separate from `CurrentStanding`:
+v0.1 is **Room-only**.
 
-- `resolved` — all admitted effects required by the semantic answer remain
-  presently usable;
-- `blocked_unknown` — at least one required admitted effect is stopped from use.
-
-`CurrentStanding` retains its semantic meaning.
-
-A blocked decision exposes no `usable_standing` or
-`usable_current_state_ids`. Its complete semantic answer is kept only as
-`audit_resolution` for inspection and later review; a delivery boundary must
-not present that audit object as current model context.
-
-A safe `resolved` result can itself have semantic standing current,
-last_known, unresolved, expired, ended, conflicting, no_current, or unknown.
+Shared Current operational resolution remains CLOSED until HOME has a concrete
+Shared governance admission primitive. A semantic
+`shared_governance` label cannot mint authority.
 
 ## Dependency set v0.1
 
-For one admitted key at one `as_of`, the conservative dependency set is:
+For one resolved key:
 
-- every semantic head candidate returned by Current View;
-- every effective end event attached to those candidate heads.
+- every semantic head candidate;
+- every effective end event attached to those candidates.
 
-State present-use evaluation already carries inherited stop-use from admitted
-supersession ancestors.
+State present-use already propagates suppression from supersession ancestors.
 
-Other keys, future effects and persisted-but-unadmitted effects do not enter the
-dependency set.
+Other keys and future effects do not poison the selected present answer.
 
-If suppression touches a participating conflict/end/current effect, v0.1 returns
-`blocked_unknown`; it does not simplify the semantic problem by deleting that
-effect.
+## Historical construction evidence
 
-## Exact blocking provenance
+Author self-review had already rejected earlier exact head
+`d1dc4663f4e5cfbfa150e015adf184800b2fe6b1` for omitting admission entirely.
 
-Every blocked result retains exact existing `CurrentSuppressionBlock`
-provenance:
+Independent review #50 then rejected
+`3da3abd49f25cc3a7af59e39cc1302d87291fb46` for treating durable admission
+audit as sufficient proof.
 
-- source_ref;
-- source_id;
-- suppression_id;
-- origin effect kind;
-- origin effect id.
-
-Identical inherited blocks may be deduplicated for presentation only.
+Neither failed head is rewritten by later remediation.
 
 ## Non-goals
 
-Current Resolver v0.1 does not provide:
+v0.1 does not provide:
 
+- restart-safe recreation of admission proof;
 - model/Wake delivery;
 - prose rendering or pronoun choice;
 - restore/unsuppress;
-- deletion/reversal of stop-use;
 - suppression-driven fallback/resurrection;
-- Shared Current admission/governance;
-- restart-safe recreation of live admission receipts;
+- Shared governance/admission;
 - relationship automation;
 - Heartbeat/proximity;
 - identity continuity;
@@ -188,11 +195,10 @@ Current Resolver v0.1 does not provide:
 
 ## Review rule
 
-After author stabilization, freeze one exact head and apply #18:
+After author stabilization, freeze a new exact head and apply #18:
 
 **Fresh discovery -> Minimal proof -> Bounded coverage sweep.**
 
-Independent review should attack both sides of the boundary:
-
-- unadmitted persistence must never become operational Current;
-- suppression must never manufacture a different semantic answer.
+The next independent review should reproduce the #50 manufactured-durable-audit
+class and attack the live-receipt / durable-corroboration / restart boundary
+without treating author tests or CI as proof.
