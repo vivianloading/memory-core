@@ -67,6 +67,7 @@ class WakeUseBoundary:
     identity_continuity_claim_authority: WakeAuthority = WakeAuthority.NONE
     relationship_claim_authority: WakeAuthority = WakeAuthority.NONE
     model_delivery_authority: WakeAuthority = WakeAuthority.NONE
+    memory_write_authority: WakeAuthority = WakeAuthority.NONE
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -75,6 +76,7 @@ class WakeUseBoundary:
             "identity_continuity_claim_authority",
             "relationship_claim_authority",
             "model_delivery_authority",
+            "memory_write_authority",
         ):
             if getattr(self, field_name) is not WakeAuthority.NONE:
                 raise WakePacketError(
