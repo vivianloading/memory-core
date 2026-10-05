@@ -822,6 +822,97 @@ class WakePacketTests(unittest.TestCase):
             ("A", "B"),
         )
 
+    def test_multi_candidate_room_now_cannot_hide_conflict(self) -> None:
+        a = self.state("conflict-a", value="A")
+        b = self.state("conflict-b", value="B")
+        candidates = (
+            CurrentCandidate(
+                record=a,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("HEAD",),
+            ),
+            CurrentCandidate(
+                record=b,
+                end_events=(),
+                standing=CurrentStanding.CURRENT,
+                reason_codes=("HEAD",),
+            ),
+        )
+        packet, _ = self.assemble(
+            room_current=self.view(
+                self.resolved_decision(
+                    standing=CurrentStanding.CONFLICTING,
+                    candidates=candidates,
+                )
+            )
+        )
+        valid = packet.room_now.items[0]
+        self.assertEqual(valid.standing, CurrentStanding.CONFLICTING)
+
+        with self.assertRaises(WakePacketError):
+            replace(valid, standing=CurrentStanding.CURRENT)
+
+    def test_single_candidate_conflict_label_must_match_candidate(self) -> None:
+        valid = self._valid_room_item()
+        self.assertEqual(len(valid.candidates), 1)
+        self.assertEqual(
+            valid.candidates[0].standing,
+            CurrentStanding.CURRENT,
+        )
+        with self.assertRaises(WakePacketError):
+            replace(valid, standing=CurrentStanding.CONFLICTING)
+
+    def test_single_conflicting_candidate_remains_valid(self) -> None:
+        record = self.state("single-conflicting")
+        candidate = CurrentCandidate(
+            record=record,
+            end_events=(),
+            standing=CurrentStanding.CONFLICTING,
+            reason_codes=("MULTIPLE_EFFECTIVE_END_EVENTS",),
+        )
+        decision = CurrentResolverDecision(
+            namespace=CurrentNamespace.ROOM,
+            owner_id="room-wake",
+            key=record.key,
+            as_of=self.t0,
+            status=CurrentResolverStatus.RESOLVED,
+            semantic_resolution=CurrentResolution(
+                namespace=CurrentNamespace.ROOM,
+                owner_id="room-wake",
+                key=record.key,
+                standing=CurrentStanding.CONFLICTING,
+                current_state_ids=(record.state_id,),
+                historical_state_ids=(),
+                future_state_ids=(),
+                candidates=(candidate,),
+                reason_codes=("CONFLICTING_HEAD_SEMANTICS",),
+            ),
+            dependencies=(
+                CurrentResolverDependency(
+                    effect_kind=CurrentUseEffectKind.STATE,
+                    effect_id=record.state_id,
+                ),
+            ),
+            blocks=(),
+            missing_live_admission_effects=(),
+            reason_codes=("SEMANTIC_DEPENDENCIES_USABLE",),
+        )
+        packet, _ = self.assemble(room_current=self.view(decision))
+        item = packet.room_now.items[0]
+        self.assertEqual(item.standing, CurrentStanding.CONFLICTING)
+        self.assertEqual(len(item.candidates), 1)
+        self.assertEqual(
+            item.candidates[0].standing,
+            CurrentStanding.CONFLICTING,
+        )
+
+    def test_room_now_rejects_duplicate_candidate_state_ids(self) -> None:
+        valid = self._valid_room_item()
+        candidate = valid.candidates[0]
+        with self.assertRaises(WakePacketError):
+            replace(valid, candidates=(candidate, candidate))
+
     def test_ended_result_is_not_carried_but_does_not_make_layer_partial(self) -> None:
         record = self.state("ended-state")
         candidate = CurrentCandidate(
