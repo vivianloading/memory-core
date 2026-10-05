@@ -221,6 +221,7 @@ class WakeMapItem:
 @dataclass(frozen=True)
 class WakeEndEvidence:
     end_event_id: str
+    state_id: str
     end_kind: EndKind
     episode_id: str | None
     perspective_instance_id: str | None
@@ -228,6 +229,7 @@ class WakeEndEvidence:
 
     def __post_init__(self) -> None:
         _text("end_event_id", self.end_event_id)
+        _text("state_id", self.state_id)
         if not isinstance(self.end_kind, EndKind):
             raise WakePacketError("end_kind is invalid")
         if self.episode_id is not None:
@@ -261,6 +263,9 @@ class WakeEndEvidence:
 @dataclass(frozen=True)
 class WakeCurrentCandidate:
     state_id: str
+    namespace: CurrentNamespace
+    owner_id: str
+    key: str
     value: str
     state_kind: CurrentStateKind
     standing: CurrentStanding
@@ -275,9 +280,17 @@ class WakeCurrentCandidate:
     def __post_init__(self) -> None:
         for field_name in (
             "state_id",
+            "owner_id",
+            "key",
             "value",
         ):
             _text(field_name, getattr(self, field_name))
+        if not isinstance(self.namespace, CurrentNamespace):
+            raise WakePacketError("candidate namespace is invalid")
+        if self.namespace is not CurrentNamespace.ROOM:
+            raise WakePacketError(
+                "Wake Room Now candidate must retain Room namespace"
+            )
         if not isinstance(self.state_kind, CurrentStateKind):
             raise WakePacketError("candidate state_kind is invalid")
         if not isinstance(
@@ -336,6 +349,20 @@ class WakeCurrentCandidate:
             raise WakePacketError(
                 "end_evidence must contain WakeEndEvidence values"
             )
+        if any(
+            item.state_id != self.state_id
+            for item in self.end_evidence
+        ):
+            raise WakePacketError(
+                "Room end evidence must target its carried candidate state"
+            )
+        end_event_ids = tuple(
+            item.end_event_id for item in self.end_evidence
+        )
+        if len(set(end_event_ids)) != len(end_event_ids):
+            raise WakePacketError(
+                "Room Current candidate cannot repeat an end_event_id"
+            )
 
 
 @dataclass(frozen=True)
@@ -385,6 +412,15 @@ class WakeRoomNowItem:
         ):
             raise WakePacketError(
                 "Room Now item cannot repeat a candidate state_id"
+            )
+        if any(
+            candidate.namespace is not CurrentNamespace.ROOM
+            or candidate.owner_id != self.room_id
+            or candidate.key != self.key
+            for candidate in self.candidates
+        ):
+            raise WakePacketError(
+                "Room Now item labels must match every candidate semantic identity"
             )
         if len({item.state_kind for item in self.candidates}) != 1:
             raise WakePacketError(
@@ -482,6 +518,25 @@ class WakeRoomNowSection:
         if len(set(room_keys)) != len(room_keys):
             raise WakePacketError(
                 "Room Now section requires one aggregate item per Room/key"
+            )
+        state_ids = tuple(
+            candidate.state_id
+            for item in self.items
+            for candidate in item.candidates
+        )
+        if len(set(state_ids)) != len(state_ids):
+            raise WakePacketError(
+                "Room Now section cannot carry one state_id more than once"
+            )
+        end_event_ids = tuple(
+            evidence.end_event_id
+            for item in self.items
+            for candidate in item.candidates
+            for evidence in candidate.end_evidence
+        )
+        if len(set(end_event_ids)) != len(end_event_ids):
+            raise WakePacketError(
+                "Room Now section cannot carry one end_event_id more than once"
             )
         if (
             self.availability is WakeLayerAvailability.UNAVAILABLE
@@ -1063,6 +1118,9 @@ def _wake_current_candidate(
         )
     return WakeCurrentCandidate(
         state_id=record.state_id,
+        namespace=record.namespace,
+        owner_id=record.owner_id,
+        key=record.key,
         value=record.value,
         state_kind=record.state_kind,
         standing=candidate.standing,
@@ -1075,6 +1133,7 @@ def _wake_current_candidate(
         end_evidence=tuple(
             WakeEndEvidence(
                 end_event_id=event.end_event_id,
+                state_id=event.state_id,
                 end_kind=event.end_kind,
                 episode_id=event.episode_id,
                 perspective_instance_id=event.perspective_instance_id,
