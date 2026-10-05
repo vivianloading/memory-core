@@ -1,5 +1,8 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from home_memory_core.current_resolver import (
     CurrentResolvedView,
@@ -42,6 +45,7 @@ from home_memory_core.wake_packet import (
     WakePrivacyScopeKind,
     WakeRouteDecision,
     WakeRoomNowItem,
+    WakeRoomNowSection,
     assemble_wake_packet_v0_1,
 )
 
@@ -313,6 +317,146 @@ class WakePacketTests(unittest.TestCase):
                 source_refs=(),
                 end_evidence=(),
             )
+
+    def _valid_room_item(self) -> WakeRoomNowItem:
+        packet, _ = self.assemble(
+            room_current=self.view(self.resolved_decision())
+        )
+        return packet.room_now.items[0]
+
+    def test_room_now_section_rejects_untyped_nested_items(self) -> None:
+        with self.assertRaises(WakePacketError):
+            WakeRoomNowSection(
+                availability=WakeLayerAvailability.READY,
+                items=({"value": "not-a-wake-item"},),
+                reason_codes=(),
+            )
+
+    def test_room_now_item_rejects_candidate_lookalikes_and_mutable_lists(self) -> None:
+        valid = self._valid_room_item()
+        with self.assertRaises(WakePacketError):
+            replace(
+                valid,
+                candidates=(
+                    SimpleNamespace(
+                        state_kind=CurrentStateKind.PROJECT_STATUS,
+                    ),
+                ),
+            )
+        mutable = list(valid.candidates)
+        with self.assertRaises(WakePacketError):
+            replace(valid, candidates=mutable)
+
+    def test_unavailable_lookalike_string_cannot_carry_room_items(self) -> None:
+        with self.assertRaises(WakePacketError):
+            WakeRoomNowSection(
+                availability="unavailable",
+                items=(self._valid_room_item(),),
+                reason_codes=(),
+            )
+
+    def test_packet_binds_room_now_to_map_attached_room(self) -> None:
+        packet, _ = self.assemble(
+            room_current=self.view(self.resolved_decision())
+        )
+        item = packet.room_now.items[0]
+        other_item = replace(
+            item,
+            room_id="room-other",
+            privacy_scope=WakePrivacyScope(
+                kind=WakePrivacyScopeKind.ROOM,
+                scope_id="room-other",
+            ),
+        )
+        with self.assertRaises(WakePacketError):
+            replace(
+                packet,
+                room_now=WakeRoomNowSection(
+                    availability=WakeLayerAvailability.READY,
+                    items=(other_item,),
+                    reason_codes=(),
+                ),
+            )
+
+    def test_unattached_map_cannot_retain_room_now_content(self) -> None:
+        packet, _ = self.assemble(
+            room_current=self.view(self.resolved_decision())
+        )
+        unattached_map = replace(
+            packet.map.item,
+            route_decision=WakeRouteDecision.UNATTACHED,
+            room_id=None,
+            active_attachment_event_id="route-unattached",
+        )
+        with self.assertRaises(WakePacketError):
+            replace(
+                packet,
+                map=replace(packet.map, item=unattached_map),
+            )
+
+    def test_unattributed_perspective_sentinel_is_rejected_by_wake_types(self) -> None:
+        from home_memory_core.interpretation import (
+            SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+        )
+
+        valid = self._valid_room_item()
+        candidate = valid.candidates[0]
+        with self.assertRaises(WakePacketError):
+            replace(
+                candidate,
+                perspective_instance_id=SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+            )
+        with self.assertRaises(WakePacketError):
+            replace(
+                self.assemble(room_current=self.view())[0].map.item,
+                perspective_instance_id=SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+            )
+
+    def test_dst_fold_distinguishes_different_absolute_instants(self) -> None:
+        ny = ZoneInfo("America/New_York")
+        fold0 = datetime(2026, 11, 1, 1, 30, tzinfo=ny, fold=0)
+        fold1 = datetime(2026, 11, 1, 1, 30, tzinfo=ny, fold=1)
+        self.assertNotEqual(
+            fold0.astimezone(UTC),
+            fold1.astimezone(UTC),
+        )
+        view = self.view(
+            self.resolved_decision(),
+            as_of=fold0,
+        )
+        shifted_decisions = tuple(
+            replace(decision, as_of=fold0)
+            for decision in view.items
+        )
+        view = replace(view, as_of=fold0, items=shifted_decisions)
+
+        with self.assertRaises(WakePacketError):
+            assemble_wake_packet_v0_1(
+                wake_id="wake-fold-mismatch",
+                as_of=fold1,
+                episode=self.episode,
+                route=self.route,
+                continuity_edges=(self.edge,),
+                room_current=view,
+            )
+
+    def test_dst_fold_equivalent_utc_instant_is_accepted(self) -> None:
+        ny = ZoneInfo("America/New_York")
+        fold0 = datetime(2026, 11, 1, 1, 30, tzinfo=ny, fold=0)
+        same_utc = fold0.astimezone(UTC)
+        decision = replace(self.resolved_decision(), as_of=fold0)
+        view = self.view(decision, as_of=fold0)
+
+        packet, _ = assemble_wake_packet_v0_1(
+            wake_id="wake-fold-equivalent",
+            as_of=same_utc,
+            episode=self.episode,
+            route=self.route,
+            continuity_edges=(self.edge,),
+            room_current=view,
+        )
+
+        self.assertEqual(packet.as_of, same_utc)
 
     def test_five_layers_are_explicit_even_when_not_implemented(self) -> None:
         packet, receipt = self.assemble(
