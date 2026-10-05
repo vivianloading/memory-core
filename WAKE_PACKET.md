@@ -395,7 +395,7 @@ Not in Wake Packet v0.1:
 - real personal data;
 - merge authorization.
 
-## 17. Review gate
+## 18. Review gate
 
 After author stabilization and the narrow reconnaissance:
 
