@@ -43,7 +43,8 @@ Every v0.1 carried item has a mechanically fixed use boundary:
 - current-first-person speech authority: `none`;
 - identity-continuity claim authority: `none`;
 - relationship-claim authority: `none`;
-- model-delivery authority: `none`.
+- model-delivery authority: `none`;
+- memory-write / re-ingestion authority: `none`.
 
 Those fields are not configurable in v0.1.
 
@@ -228,6 +229,11 @@ Wake must not use SQLite row order, retrieval frequency, access recency, or
 
 A later slice needs an explicit evidence/time/salience contract.
 
+That contract must keep at least **event/reference time** separate from
+**recorded/ingestion time** and declare which one any "recent" ordering uses.
+Backfilled life evidence must not become recent-in-life merely because HOME
+learned it recently.
+
 ## 9. Nearby Doors
 
 Nearby Doors is `unavailable` in v0.1.
@@ -330,6 +336,14 @@ reconnaissance focused on mechanics, not product imitation:
 
 External findings may add attacks or mechanical patterns. They do not decide
 HOME's five-layer semantics, first-person policy, privacy, or authority model.
+
+The first reconnaissance reinforced three v0.1 decisions:
+
+- scope must stay explicit rather than inheriting from a generic memory store;
+- read-only/mutation control is not the same thing as semantic or instruction
+  authority;
+- recall/carriage and ingestion should remain mechanically separate so injected
+  context cannot silently become fresh memory evidence.
 
 ## 16. Non-goals
 
