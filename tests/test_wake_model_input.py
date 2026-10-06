@@ -67,7 +67,6 @@ from home_memory_core.wake_model_input import (
     WakeModelInputAuthorizationError,
     WakeModelInputIntegrityError,
     open_wake_model_input_boundary,
-    serialize_home_model_input_request,
 )
 from home_memory_core.wake_packet import (
     WakeAuthority,
@@ -434,7 +433,7 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
         )
         self.assertIs(
             source.temporal_semantics,
-            WakeContextTemporalSemantics.AT_COMPLETED_LOCAL_HANDOFF_CUT,
+            WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF,
         )
         self.assertEqual(source.as_of, self.as_of)
 
@@ -449,6 +448,10 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
         self.assertEqual(
             constructed.receipt.source_handoff_generation,
             handoff_receipt.generation,
+        )
+        self.assertEqual(
+            constructed.receipt.model_input_boundary_id,
+            self.model_boundary.boundary_id,
         )
 
         self.assertIs(
@@ -631,7 +634,7 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            serialize_home_model_input_request(
+            model_input_module._serialize_home_model_input_request(
                 request=first.request
             ),
             first.serialized_text,
