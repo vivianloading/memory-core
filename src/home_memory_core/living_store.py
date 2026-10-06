@@ -854,8 +854,9 @@ class LivingStore:
     @contextmanager
     def _write_transaction(self) -> Iterator[sqlite3.Connection]:
         permit = self._home_state_coordinator.acquire_writer()
-        connection = self._connect()
+        connection: sqlite3.Connection | None = None
         try:
+            connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
             assert_living_schema(connection)
@@ -864,11 +865,12 @@ class LivingStore:
             connection.commit()
             permit.record_successful_commit()
         except BaseException:
-            if connection.in_transaction:
+            if connection is not None and connection.in_transaction:
                 connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
             permit.release()
 
     def _read_connection(self) -> sqlite3.Connection:
