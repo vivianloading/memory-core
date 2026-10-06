@@ -141,8 +141,10 @@ The execution layer does not invent a replacement canonical digest for upstream
 Handoff or Model Input evidence. Upstream digests remain upstream-owned facts.
 
 The execution request carries an execution-layer
-`source_construction_binding_digest` only to bind the public semantic shape of
-the exact source receipt into this layer's own receipt.
+`source_construction_receipt_binding_digest` only to bind the public semantic
+shape of the exact upstream receipt. The preparation receipt separately carries
+`source_binding_digest`, which binds the complete typed `ExecutionSourceBinding`.
+Neither value replaces an upstream-owned digest.
 
 ## 6. Preparation evidence
 
