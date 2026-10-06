@@ -110,6 +110,7 @@ class WakeHandoffReceipt:
     wake_id: str
     issuance_id: str
     coordinator_id: str
+    home_process_instance_id: str
     canonical_db_binding_digest: str
     local_transport_boundary_id: str
     generation: int
@@ -137,6 +138,7 @@ class WakeHandoffReceipt:
             "wake_id",
             "issuance_id",
             "coordinator_id",
+            "home_process_instance_id",
             "local_transport_boundary_id",
             "handoff_nonce",
         ):
@@ -270,6 +272,9 @@ class LocalWakeTransportBoundary:
                 wake_id=envelope.wake_id,
                 issuance_id=envelope.issuance_id,
                 coordinator_id=cut.coordinator_id,
+                home_process_instance_id=(
+                    cut.home_process_instance_id
+                ),
                 canonical_db_binding_digest=(
                     cut.canonical_db_binding_digest
                 ),
