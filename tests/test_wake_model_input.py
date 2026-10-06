@@ -3,7 +3,7 @@ import inspect
 import json
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -345,6 +345,40 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
                 strings.extend(self._all_strings(child))
         return strings
 
+    def _semantic_field_names(self, value):
+        names = []
+        if isinstance(value, dict):
+            field_pairs = value.get("fields")
+            if isinstance(field_pairs, list):
+                for pair in field_pairs:
+                    if (
+                        isinstance(pair, list)
+                        and len(pair) == 2
+                        and isinstance(pair[0], str)
+                    ):
+                        names.append(pair[0])
+                        names.extend(
+                            self._semantic_field_names(pair[1])
+                        )
+            for key, child in value.items():
+                if key != "fields":
+                    names.extend(
+                        self._semantic_field_names(child)
+                    )
+        elif isinstance(value, list):
+            for child in value:
+                names.extend(self._semantic_field_names(child))
+        return names
+
+    def _presentation_candidate_values(self, payload_json):
+        payload = json.loads(payload_json)
+        values = []
+        for layer in payload["presentation"]["layers"]:
+            for block in layer["blocks"]:
+                for candidate in block.get("candidates", []):
+                    values.append(candidate["value"])
+        return values
+
     def test_public_construct_consumes_only_exact_handoff_receipt(self) -> None:
         parameters = set(
             inspect.signature(
@@ -588,12 +622,42 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
             "developer",
             "tool_calls",
             "tool_call",
-            "home_policy",
         ):
             self.assertNotIn(
                 forbidden_key,
                 keys,
             )
+
+        semantic_field_names = self._semantic_field_names(
+            parsed["request"]
+        )
+        for forbidden_field in (
+            "role",
+            "system",
+            "developer",
+            "tool_calls",
+            "tool_call",
+            "system_prompt",
+            "developer_prompt",
+        ):
+            self.assertNotIn(
+                forbidden_field,
+                semantic_field_names,
+            )
+        self.assertEqual(
+            semantic_field_names.count("home_policy"),
+            1,
+        )
+        self.assertEqual(
+            semantic_field_names.count(
+                "speaker_selection_rule"
+            ),
+            1,
+        )
+        self.assertEqual(
+            semantic_field_names.count("tools"),
+            1,
+        )
 
         self.assertIn(
             malicious.request.wake_context.payload_json,
@@ -655,6 +719,96 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
             ),
             first.serialized_text,
         )
+
+    def test_serializer_covers_every_public_request_field(self) -> None:
+        constructed = self.model_boundary.construct(
+            handoff_receipt=self._handoff(
+                request_id="request-complete-semantic",
+                episode_id="episode-c",
+            )
+        )
+        parsed = json.loads(constructed.serialized_text)
+        serialized_names = self._semantic_field_names(
+            parsed["request"]
+        )
+        expected = [
+            item.name
+            for item in fields(constructed.request)
+            if not item.name.startswith("_")
+        ]
+        for field_name in expected:
+            self.assertIn(
+                field_name,
+                serialized_names,
+            )
+
+    def test_old_handoff_is_not_reissued_after_home_changes(self) -> None:
+        old_handoff = self._handoff(
+            request_id="request-old-cut"
+        )
+
+        self._admit_state(
+            state_id="state-after-handoff",
+            key="project.after.handoff",
+            value="new-after-local-handoff",
+        )
+
+        old_constructed = self.model_boundary.construct(
+            handoff_receipt=old_handoff
+        )
+        self.assertNotIn(
+            "new-after-local-handoff",
+            self._presentation_candidate_values(
+                old_constructed.request.wake_context.payload_json
+            ),
+        )
+
+        fresh_handoff = self._handoff(
+            request_id="request-fresh-cut"
+        )
+        fresh_constructed = self.model_boundary.construct(
+            handoff_receipt=fresh_handoff
+        )
+        self.assertIn(
+            "new-after-local-handoff",
+            self._presentation_candidate_values(
+                fresh_constructed.request.wake_context.payload_json
+            ),
+        )
+        self.assertIs(
+            old_constructed.request.wake_context.temporal_semantics,
+            WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF,
+        )
+        self.assertEqual(
+            old_constructed.request.source_handoff.as_of,
+            self.as_of,
+        )
+
+    def test_construction_receipt_is_exact_and_boundary_local(self) -> None:
+        constructed = self.model_boundary.construct(
+            handoff_receipt=self._handoff(
+                request_id="request-construction-origin",
+                episode_id="episode-c",
+            )
+        )
+        copied = replace(constructed.receipt)
+        self.assertIsNot(copied, constructed.receipt)
+        with self.assertRaises(
+            WakeModelInputAuthorizationError
+        ):
+            self.model_boundary.require_live_construction(
+                receipt=copied
+            )
+
+        foreign = open_wake_model_input_boundary(
+            local_transport_boundary=self.local_boundary
+        )
+        with self.assertRaises(
+            WakeModelInputAuthorizationError
+        ):
+            foreign.require_live_construction(
+                receipt=constructed.receipt
+            )
 
     def test_live_construction_detects_request_policy_and_serialization_mutation(self) -> None:
         first = self.model_boundary.construct(
@@ -811,6 +965,12 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
         self.assertIs(
             request.capabilities.memory_write,
             MemoryWriteCapability.NONE,
+        )
+        self.assertFalse(
+            hasattr(
+                model_input_module,
+                "serialize_home_model_input_request",
+            )
         )
         for name in (
             "send",
