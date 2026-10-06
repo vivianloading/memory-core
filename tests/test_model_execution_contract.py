@@ -389,8 +389,12 @@ class ModelExecutionContractTests(unittest.TestCase):
             second.audit_serialized_text,
         )
         self.assertEqual(
-            first.receipt.source_construction_binding_digest,
-            second.receipt.source_construction_binding_digest,
+            first.request.source.source_construction_receipt_binding_digest,
+            second.request.source.source_construction_receipt_binding_digest,
+        )
+        self.assertEqual(
+            first.receipt.source_binding_digest,
+            second.receipt.source_binding_digest,
         )
         self.assertEqual(
             first.receipt.topology_policy_digest,
