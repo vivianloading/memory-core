@@ -406,6 +406,10 @@ class DryRunExecutionRequest:
             raise ModelExecutionContractIntegrityError(
                 "request and Wake data authority boundaries differ"
             )
+        if self.use_boundary != self.home_policy.value.use_boundary:
+            raise ModelExecutionContractIntegrityError(
+                "request and HOME policy authority boundaries differ"
+            )
 
 
 @dataclass(frozen=True)
@@ -1036,6 +1040,26 @@ def _require_exact_source_representation(
 
     _exact_request_texts(constructed.request)
     _exact_receipt_texts(receipt)
+
+    source = constructed.request.source_handoff
+    if (
+        source.handoff_id != receipt.source_handoff_id
+        or source.request_id != receipt.request_id
+        or source.episode_id != receipt.episode_id
+        or source.wake_id != receipt.wake_id
+        or source.issuance_id != receipt.issuance_id
+        or source.home_process_instance_id
+        != receipt.home_process_instance_id
+        or source.local_transport_boundary_id
+        != receipt.local_transport_boundary_id
+        or source.generation != receipt.source_handoff_generation
+        or source.handoff_receipt_digest
+        != receipt.source_handoff_receipt_digest
+        or source.envelope_digest != receipt.source_envelope_digest
+    ):
+        raise ModelExecutionContractIntegrityError(
+            "source handoff identity differs from construction receipt"
+        )
 
     if (
         constructed.request.home_policy.carried_context_position
