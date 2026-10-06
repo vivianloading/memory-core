@@ -305,9 +305,7 @@ The governing rule is:
 
 Merged PR: [#73](https://github.com/vivianloading/memory-core/pull/73)
 
-- reviewed head: `9b02ec90d9414934e50e8db39cc356c718d6` — **not used**
-- canonical reviewed head:
-  `9b02ec90d9414934e50f1100f2432bc7534c7453`
+- reviewed head: `9b02ec90d9414934e50f1100f2432bc7534c7453`
 - reviewed tree: `98abb8e8ea8f93f20c6fd22369f742f17f751883`
 - merge commit: `41f8810748ccb32999c05e626ec61464f037db88`
 - merge tree: `98abb8e8ea8f93f20c6fd22369f742f17f751883`
