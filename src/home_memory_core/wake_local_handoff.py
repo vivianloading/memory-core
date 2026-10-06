@@ -14,6 +14,7 @@ from home_memory_core.home_state_ordering import (
     HomeStateOrderingIntegrityError,
     home_state_coordinator_for_path,
 )
+from home_memory_core.process_boundary import current_home_process_instance_id
 from home_memory_core.wake_issuance import (
     WakeIssuanceAuthority,
 )
@@ -200,6 +201,9 @@ class LocalWakeTransportBoundary:
                 "coordinator must be HomeStateOrderingCoordinator"
             )
         self._coordinator = coordinator
+        self._home_process_instance_id = (
+            current_home_process_instance_id()
+        )
         self._boundary_id = f"wake-local-transport-{uuid4().hex}"
         self._acceptance_guard = Lock()
         self._used_nonces: set[str] = set()
@@ -214,6 +218,7 @@ class LocalWakeTransportBoundary:
         *,
         receipt: WakeHandoffReceipt,
     ) -> WakeHandoffEnvelope:
+        self._assert_live_process()
         if not isinstance(receipt, WakeHandoffReceipt):
             raise TypeError("receipt must be WakeHandoffReceipt")
         with self._acceptance_guard:
@@ -221,6 +226,13 @@ class LocalWakeTransportBoundary:
         if state is None or state.receipt is not receipt:
             raise WakeLocalHandoffAuthorizationError(
                 "Wake handoff receipt is not the exact live local acceptance receipt"
+            )
+        if (
+            receipt.home_process_instance_id
+            != self._home_process_instance_id
+        ):
+            raise WakeLocalHandoffAuthorizationError(
+                "Wake handoff receipt belongs to another HOME process incarnation"
             )
         if receipt.local_transport_boundary_id != self._boundary_id:
             raise WakeLocalHandoffAuthorizationError(
@@ -245,12 +257,22 @@ class LocalWakeTransportBoundary:
             )
         return state.envelope
 
+    def _assert_live_process(self) -> None:
+        if (
+            current_home_process_instance_id()
+            != self._home_process_instance_id
+        ):
+            raise WakeLocalHandoffAuthorizationError(
+                "local Wake transport boundary belongs to another HOME process incarnation"
+            )
+
     def _accept_exact(
         self,
         *,
         envelope: WakeHandoffEnvelope,
         cut: HomeStateCut,
     ) -> WakeHandoffReceipt:
+        self._assert_live_process()
         if not isinstance(envelope, WakeHandoffEnvelope):
             raise TypeError("envelope must be WakeHandoffEnvelope")
         self._coordinator.require_active_cut(cut=cut)
