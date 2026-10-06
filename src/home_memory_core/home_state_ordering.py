@@ -6,6 +6,8 @@ from pathlib import Path
 from threading import Condition, Lock, get_ident
 from uuid import uuid4
 
+from home_memory_core.process_boundary import current_home_process_instance_id
+
 
 _HOME_STATE_COORDINATOR_REGISTRY_GUARD = Lock()
 _HOME_STATE_COORDINATORS: dict[
@@ -33,6 +35,7 @@ class HomeStateCut:
     coordinator_id: str
     canonical_db_binding_digest: str
     generation: int
+    home_process_instance_id: str
     owner_thread_id: int
     cut_id: str
     _marker: object = field(repr=False, compare=False)
@@ -55,6 +58,10 @@ class HomeStateCut:
             raise HomeStateOrderingIntegrityError(
                 "HOME state cut generation must be non-negative integer"
             )
+        _text(
+            "home_process_instance_id",
+            self.home_process_instance_id,
+        )
         if (
             not isinstance(self.owner_thread_id, int)
             or isinstance(self.owner_thread_id, bool)
@@ -129,6 +136,9 @@ class HomeStateOrderingCoordinator:
             str(resolved).encode("utf-8")
         ).hexdigest()
         self._coordinator_id = f"home-ordering-{uuid4().hex}"
+        self._home_process_instance_id = (
+            current_home_process_instance_id()
+        )
         self._condition = Condition(Lock())
         self._generation = 0
         self._writer_owner_thread_id: int | None = None
@@ -145,10 +155,12 @@ class HomeStateOrderingCoordinator:
 
     @property
     def generation(self) -> int:
+        self._require_live_process()
         with self._condition:
             return self._generation
 
     def acquire_writer(self) -> HomeStateWritePermit:
+        self._require_live_process()
         owner = get_ident()
         with self._condition:
             if (
@@ -178,6 +190,7 @@ class HomeStateOrderingCoordinator:
             return permit
 
     def acquire_cut(self) -> HomeStateCut:
+        self._require_live_process()
         owner = get_ident()
         with self._condition:
             if (
@@ -204,6 +217,9 @@ class HomeStateOrderingCoordinator:
                     self._canonical_db_binding_digest
                 ),
                 generation=self._generation,
+                home_process_instance_id=(
+                    self._home_process_instance_id
+                ),
                 owner_thread_id=owner,
                 cut_id=f"home-cut-{uuid4().hex}",
                 _marker=_HOME_STATE_CUT_MARKER,
@@ -212,6 +228,7 @@ class HomeStateOrderingCoordinator:
             return cut
 
     def require_active_cut(self, *, cut: HomeStateCut) -> None:
+        self._require_live_process()
         if not isinstance(cut, HomeStateCut):
             raise TypeError("cut must be HomeStateCut")
         owner = get_ident()
@@ -219,6 +236,13 @@ class HomeStateOrderingCoordinator:
             if self._active_cut is not cut:
                 raise HomeStateOrderingIntegrityError(
                     "HOME state cut is not the exact active cut"
+                )
+            if (
+                cut.home_process_instance_id
+                != self._home_process_instance_id
+            ):
+                raise HomeStateOrderingIntegrityError(
+                    "HOME state cut belongs to another process incarnation"
                 )
             if cut.coordinator_id != self._coordinator_id:
                 raise HomeStateOrderingIntegrityError(
@@ -241,6 +265,7 @@ class HomeStateOrderingCoordinator:
                 )
 
     def release_cut(self, *, cut: HomeStateCut) -> None:
+        self._require_live_process()
         if not isinstance(cut, HomeStateCut):
             raise TypeError("cut must be HomeStateCut")
         owner = get_ident()
@@ -266,6 +291,7 @@ class HomeStateOrderingCoordinator:
         permit: HomeStateWritePermit,
         owner_thread_id: int,
     ) -> int:
+        self._require_live_process()
         with self._condition:
             self._require_live_writer(
                 permit=permit,
@@ -280,6 +306,7 @@ class HomeStateOrderingCoordinator:
         permit: HomeStateWritePermit,
         owner_thread_id: int,
     ) -> None:
+        self._require_live_process()
         with self._condition:
             self._require_live_writer(
                 permit=permit,
@@ -288,6 +315,13 @@ class HomeStateOrderingCoordinator:
             self._writer_owner_thread_id = None
             self._writer_permit = None
             self._condition.notify_all()
+
+    def _require_live_process(self) -> None:
+        current = current_home_process_instance_id()
+        if current != self._home_process_instance_id:
+            raise HomeStateOrderingIntegrityError(
+                "HOME state coordinator belongs to another process incarnation"
+            )
 
     def _require_live_writer(
         self,
