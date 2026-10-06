@@ -179,9 +179,15 @@ class ExecutionSourceBinding:
     home_process_instance_id: str
     local_transport_boundary_id: str
     model_input_boundary_id: str
+    canonical_db_binding_digest: str
     source_handoff_generation: int
     source_handoff_receipt_digest: str
     source_envelope_digest: str
+    presentation_plan_digest: str
+    rendered_payload_digest: str
+    accepted_status: str
+    source_as_of: datetime
+    temporal_semantics: WakeContextTemporalSemantics
     policy_digest: str
     source_request_semantic_digest: str
     source_serialized_representation_digest: str
@@ -206,13 +212,17 @@ class ExecutionSourceBinding:
             "home_process_instance_id",
             "local_transport_boundary_id",
             "model_input_boundary_id",
+            "accepted_status",
             "source_serializer_version",
             "source_media_type",
         ):
             _exact_nonempty_text(field_name, getattr(self, field_name))
         for field_name in (
+            "canonical_db_binding_digest",
             "source_handoff_receipt_digest",
             "source_envelope_digest",
+            "presentation_plan_digest",
+            "rendered_payload_digest",
             "policy_digest",
             "source_request_semantic_digest",
             "source_serialized_representation_digest",
@@ -225,6 +235,18 @@ class ExecutionSourceBinding:
         ):
             raise ModelExecutionContractIntegrityError(
                 "source handoff generation must be non-negative exact int"
+            )
+        if type(self.source_as_of) is not datetime:
+            raise ModelExecutionContractIntegrityError(
+                "source as_of must remain exact datetime"
+            )
+        _aware("source as_of", self.source_as_of)
+        if (
+            self.temporal_semantics
+            is not WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF
+        ):
+            raise ModelExecutionContractIntegrityError(
+                "source temporal semantics are invalid"
             )
         _require_none_boundary(
             field_name="execution source use boundary",
@@ -399,6 +421,9 @@ class DryRunExecutionPreparationReceipt:
     model_input_boundary_id: str
     execution_contract_boundary_id: str
     source_construction_id: str
+    source_handoff_generation: int
+    source_as_of: datetime
+    temporal_semantics: WakeContextTemporalSemantics
     source_construction_binding_digest: str
     source_request_semantic_digest: str
     source_serialized_representation_digest: str
@@ -436,6 +461,25 @@ class DryRunExecutionPreparationReceipt:
             "audit_media_type",
         ):
             _exact_nonempty_text(field_name, getattr(self, field_name))
+        if (
+            type(self.source_handoff_generation) is not int
+            or self.source_handoff_generation < 0
+        ):
+            raise ModelExecutionContractIntegrityError(
+                "preparation source generation must be non-negative exact int"
+            )
+        if type(self.source_as_of) is not datetime:
+            raise ModelExecutionContractIntegrityError(
+                "preparation source as_of must remain exact datetime"
+            )
+        _aware("preparation source as_of", self.source_as_of)
+        if (
+            self.temporal_semantics
+            is not WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF
+        ):
+            raise ModelExecutionContractIntegrityError(
+                "preparation temporal semantics are invalid"
+            )
         for field_name in (
             "source_construction_binding_digest",
             "source_request_semantic_digest",
@@ -596,6 +640,13 @@ class ModelExecutionContractBoundary:
             ),
             execution_contract_boundary_id=self._boundary_id,
             source_construction_id=construction_receipt.construction_id,
+            source_handoff_generation=(
+                construction_receipt.source_handoff_generation
+            ),
+            source_as_of=constructed.request.source_handoff.as_of,
+            temporal_semantics=(
+                constructed.request.source_handoff.temporal_semantics
+            ),
             source_construction_binding_digest=source_binding_digest,
             source_request_semantic_digest=(
                 construction_receipt.request_semantic_digest
@@ -742,6 +793,17 @@ class ModelExecutionContractBoundary:
             raise ModelExecutionContractIntegrityError(
                 "upstream construction digests differ from preparation binding"
             )
+        if (
+            receipt.source_handoff_generation
+            != state.source_construction_receipt.source_handoff_generation
+            or receipt.source_as_of
+            != constructed.request.source_handoff.as_of
+            or receipt.temporal_semantics
+            is not constructed.request.source_handoff.temporal_semantics
+        ):
+            raise ModelExecutionContractIntegrityError(
+                "source cut semantics differ from preparation binding"
+            )
 
         expected_policy = _canonical_topology_policy()
         topology_digest = _semantic_digest(actual_request.topology_policy)
@@ -806,7 +868,10 @@ def _build_dry_run_request(
         raise ModelExecutionContractAuthorizationError(
             "source construction receipt is not the exact artifact receipt"
         )
-    source_binding = _source_binding(receipt=receipt)
+    source_binding = _source_binding(
+        constructed=constructed,
+        receipt=receipt,
+    )
     topology_policy = _canonical_topology_policy()
     source_request = constructed.request
     return DryRunExecutionRequest(
@@ -840,8 +905,14 @@ def _build_dry_run_request(
 
 def _source_binding(
     *,
+    constructed: ConstructedHomeModelInput,
     receipt: RequestConstructionReceipt,
 ) -> ExecutionSourceBinding:
+    if constructed.receipt is not receipt:
+        raise ModelExecutionContractAuthorizationError(
+            "source binding requires exact construction receipt"
+        )
+    source = constructed.request.source_handoff
     binding_digest = _semantic_digest(receipt)
     return ExecutionSourceBinding(
         construction_id=receipt.construction_id,
@@ -853,11 +924,17 @@ def _source_binding(
         home_process_instance_id=receipt.home_process_instance_id,
         local_transport_boundary_id=receipt.local_transport_boundary_id,
         model_input_boundary_id=receipt.model_input_boundary_id,
+        canonical_db_binding_digest=source.canonical_db_binding_digest,
         source_handoff_generation=receipt.source_handoff_generation,
         source_handoff_receipt_digest=(
             receipt.source_handoff_receipt_digest
         ),
         source_envelope_digest=receipt.source_envelope_digest,
+        presentation_plan_digest=source.presentation_plan_digest,
+        rendered_payload_digest=source.rendered_payload_digest,
+        accepted_status=source.accepted_status,
+        source_as_of=source.as_of,
+        temporal_semantics=source.temporal_semantics,
         policy_digest=receipt.policy_digest,
         source_request_semantic_digest=receipt.request_semantic_digest,
         source_serialized_representation_digest=(
