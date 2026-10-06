@@ -640,6 +640,51 @@ class WakeLocalHandoffTests(unittest.TestCase):
         finally:
             self.coordinator.release_cut(cut=cut)
 
+    def test_legacy_memory_delivery_guard_does_not_freeze_living_writers(self) -> None:
+        guard_entered = threading.Event()
+        release_guard = threading.Event()
+        living_done = threading.Event()
+        errors = []
+
+        def hold_legacy_guard() -> None:
+            try:
+                with self.memory._request_delivery_ordering_guard():
+                    guard_entered.set()
+                    if not release_guard.wait(timeout=2):
+                        raise AssertionError(
+                            "legacy Memory guard release timed out"
+                        )
+            except BaseException as error:
+                errors.append(error)
+
+        def write_living() -> None:
+            try:
+                self.living.add_room(
+                    RoomRecord(room_id="room-during-legacy-memory-guard")
+                )
+                living_done.set()
+            except BaseException as error:
+                errors.append(error)
+
+        guard_thread = threading.Thread(
+            target=hold_legacy_guard
+        )
+        guard_thread.start()
+        self.assertTrue(guard_entered.wait(timeout=2))
+
+        writer_thread = threading.Thread(
+            target=write_living
+        )
+        writer_thread.start()
+        self.assertTrue(living_done.wait(timeout=2))
+
+        release_guard.set()
+        guard_thread.join(timeout=2)
+        writer_thread.join(timeout=2)
+
+        self.assertEqual(errors, [])
+        self.assertTrue(living_done.is_set())
+
     def test_living_route_writer_waits_until_local_acceptance(self) -> None:
         correction = RoomAttachmentEvent(
             attachment_event_id="route-b-correction",
