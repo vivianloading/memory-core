@@ -14,6 +14,7 @@ from home_memory_core.wake_model_input import (
     CarriedContextPosition,
     ConstructedHomeModelInput,
     HomeModelInputPolicy,
+    HomeModelInputRequest,
     MemoryWriteCapability,
     ModelExecutionAvailability,
     ModelInputCapabilities,
@@ -26,7 +27,6 @@ from home_memory_core.wake_model_input import (
     ToolCapability,
     WakeContextTemporalSemantics,
     WakeModelInputBoundary,
-    WakeModelInputIntegrityError,
 )
 from home_memory_core.wake_packet import WakeAuthority, WakeUseBoundary
 
@@ -1000,7 +1000,7 @@ def _require_exact_source_representation(
 
 
 def _exact_request_texts(request: object) -> None:
-    if type(request) is not _home_model_input_request_type():
+    if type(request) is not HomeModelInputRequest:
         raise ModelExecutionContractIntegrityError(
             "source model-input request must retain exact runtime type"
         )
@@ -1009,6 +1009,11 @@ def _exact_request_texts(request: object) -> None:
         raise ModelExecutionContractIntegrityError(
             "source handoff must retain exact runtime type"
         )
+    if type(source.as_of) is not datetime:
+        raise ModelExecutionContractIntegrityError(
+            "source handoff as_of must retain exact datetime runtime type"
+        )
+
     for name in (
         "handoff_id",
         "request_id",
@@ -1089,11 +1094,6 @@ def _exact_receipt_texts(receipt: RequestConstructionReceipt) -> None:
         )
 
 
-def _home_model_input_request_type() -> type:
-    from home_memory_core.wake_model_input import HomeModelInputRequest
-
-    return HomeModelInputRequest
-
 
 def _semantic_digest(value: object) -> str:
     return _sha256_text(_canonical_semantic_json(value))
@@ -1132,7 +1132,7 @@ def _canonical_semantic_value(value: object) -> object:
             ),
             "value": _canonical_semantic_value(value.value),
         }
-    if isinstance(value, datetime):
+    if type(value) is datetime:
         _aware("semantic datetime", value)
         return {
             "__home_datetime__": value.isoformat(timespec="microseconds"),
