@@ -330,3 +330,60 @@ envelope digest, and exact receipt digest.
 The accepted envelope remains retrievable only as evidence of the already
 completed local acceptance. Neither that retrieval nor the receipt grants
 permission to perform a future network/model delivery.
+
+
+## 16. Independent review #74 — contended Memory re-entry NO-GO
+
+Independent review #74 returned **FAIL / NO-GO** on exact head
+`5cf37e52f6ad96a28d07a1ed9d1f811caf917c06`.
+
+The failed head preserved legacy Memory lock ordering as:
+
+`legacy Memory RLock -> HOME writer permit`.
+
+That ordering was intentional for ordinary cross-thread Memory writers: a writer
+waiting behind a slow legacy Memory callback must not hold a whole-HOME writer
+permit.
+
+However, #74 demonstrated a contended same-thread deadlock:
+
+1. a Wake handoff thread owned the active HOME cut;
+2. a second Memory writer acquired the legacy Memory RLock and then waited at
+   HOME `acquire_writer()` for the cut;
+3. the cut-owning thread attempted an ordinary Memory write;
+4. it blocked waiting for the legacy RLock before reaching HOME's same-thread
+   re-entry rejection;
+5. the waiting Memory writer could not proceed until the cut released.
+
+No writer was shown committing through the cut. The blocker was failure to fail
+closed and loss of cut progress.
+
+### Remediation
+
+Memory canonical write entry now performs a **non-blocking HOME same-thread
+writer re-entry preflight before waiting for the legacy Memory lock**.
+
+The preflight:
+
+- checks only whether the current thread already owns the active HOME cut or
+  supported writer operation;
+- fails closed immediately on unsafe same-thread re-entry;
+- does not acquire a writer permit;
+- does not wait for another thread's cut/writer;
+- does not serialize or grant authority.
+
+Ordinary cross-thread Memory writer ordering remains:
+
+`non-blocking preflight -> legacy Memory RLock -> HOME writer permit`.
+
+Therefore a writer waiting behind a slow legacy Memory callback still does not
+hold the HOME permit.
+
+A dedicated regression creates the exact #74 contention family: one thread owns
+the cut, another Memory writer holds the legacy RLock while waiting at the HOME
+gate, and the cut owner attempts a Memory write. The cut-owner write must reject
+promptly with `HomeStateOrderingReentryError` before waiting for the legacy
+lock, after which cut release allows the waiting writer to complete.
+
+#74 remains historical on its own exact SHA. Any repaired head requires a fresh
+exact-SHA independent review.
