@@ -196,6 +196,42 @@ class ModelExecutionContractTests(unittest.TestCase):
             constructed.receipt.construction_id,
         )
         self.assertEqual(
+            prepared.request.source.source_handoff_generation,
+            constructed.receipt.source_handoff_generation,
+        )
+        self.assertEqual(
+            prepared.request.source.source_as_of,
+            constructed.request.source_handoff.as_of,
+        )
+        self.assertIs(
+            prepared.request.source.temporal_semantics,
+            constructed.request.source_handoff.temporal_semantics,
+        )
+        self.assertEqual(
+            prepared.request.source.canonical_db_binding_digest,
+            constructed.request.source_handoff.canonical_db_binding_digest,
+        )
+        self.assertEqual(
+            prepared.request.source.presentation_plan_digest,
+            constructed.request.source_handoff.presentation_plan_digest,
+        )
+        self.assertEqual(
+            prepared.request.source.rendered_payload_digest,
+            constructed.request.source_handoff.rendered_payload_digest,
+        )
+        self.assertEqual(
+            prepared.receipt.source_handoff_generation,
+            constructed.receipt.source_handoff_generation,
+        )
+        self.assertEqual(
+            prepared.receipt.source_as_of,
+            constructed.request.source_handoff.as_of,
+        )
+        self.assertIs(
+            prepared.receipt.temporal_semantics,
+            constructed.request.source_handoff.temporal_semantics,
+        )
+        self.assertEqual(
             prepared.receipt.source_request_semantic_digest,
             constructed.receipt.request_semantic_digest,
         )
