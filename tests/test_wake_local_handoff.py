@@ -39,6 +39,7 @@ from home_memory_core.current_view import (
 )
 from home_memory_core.evidence import create_evidence_ref
 from home_memory_core.home_state_ordering import (
+    HomeStateOrderingCoordinator,
     HomeStateOrderingReentryError,
     home_state_coordinator_for_path,
 )
@@ -62,6 +63,7 @@ from home_memory_core.storage import MemoryStore
 from home_memory_core.wake_issuance import open_wake_issuance_authority
 from home_memory_core.wake_local_handoff import (
     LocalWakeTransportBoundary,
+    WakeLocalHandoffAuthority,
     WakeLocalHandoffAuthorizationError,
     WakeLocalHandoffIntegrityError,
     open_wake_local_handoff_authority,
@@ -434,6 +436,46 @@ class WakeLocalHandoffTests(unittest.TestCase):
             cut_generation,
         )
         return receipt
+
+    def test_noncanonical_same_path_coordinator_cannot_enter_handoff_path(self) -> None:
+        twin = HomeStateOrderingCoordinator(
+            db_path=self.db
+        )
+        self.assertIsNot(twin, self.coordinator)
+        self.assertEqual(
+            twin.canonical_db_binding_digest,
+            self.coordinator.canonical_db_binding_digest,
+        )
+        self.assertNotEqual(
+            twin.coordinator_id,
+            self.coordinator.coordinator_id,
+        )
+
+        with self.assertRaises(
+            WakeLocalHandoffIntegrityError
+        ):
+            LocalWakeTransportBoundary(
+                coordinator=twin
+            )
+
+        with self.assertRaises(
+            WakeLocalHandoffIntegrityError
+        ):
+            WakeLocalHandoffAuthority(
+                wake_issuance_authority=self.issuer,
+                coordinator=twin,
+                local_transport_boundary=self.boundary,
+            )
+
+        receipt = self.handoff.handoff(
+            request_id="request-canonical-control",
+            episode_id="episode-c",
+            user_input="canonical coordinator only",
+        )
+        self.assertEqual(
+            receipt.coordinator_id,
+            self.coordinator.coordinator_id,
+        )
 
     def test_handoff_freshly_builds_and_locally_accepts_exact_envelope(self) -> None:
         self._admit_state(
