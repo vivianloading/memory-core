@@ -104,11 +104,38 @@
     "WakeModelInput"
   ],
   "wake_layer_reality": {
-    "map": "AVAILABLE_TYPED",
-    "shared_now": "CLOSED",
-    "room_now": "AVAILABLE_FROM_CURRENT_RESOLVER",
-    "recent_life": "UNAVAILABLE",
-    "nearby_doors": "UNAVAILABLE"
+    "map": {
+      "producer": "typed Living / Episode orientation",
+      "availability_domain": [
+        "READY"
+      ]
+    },
+    "shared_now": {
+      "producer": "none operational at anchor",
+      "availability_domain": [
+        "CLOSED"
+      ]
+    },
+    "room_now": {
+      "producer": "CurrentResolver via attached Room path",
+      "availability_domain": [
+        "READY",
+        "PARTIAL",
+        "UNAVAILABLE"
+      ]
+    },
+    "recent_life": {
+      "producer": "none approved at anchor",
+      "availability_domain": [
+        "UNAVAILABLE"
+      ]
+    },
+    "nearby_doors": {
+      "producer": "none approved at anchor",
+      "availability_domain": [
+        "UNAVAILABLE"
+      ]
+    }
   },
   "latest_exact_head_evidence": {
     "reviewed_head": "41b15cb6ad72fb3ed879febd58948277e374604a",
@@ -120,7 +147,11 @@
     "portable_migration_rehearsal": "GREEN",
     "independent_review_issue": 81,
     "independent_review_result": "SCOPED_PASS",
-    "real_personal_data": "CLOSED"
+    "real_personal_data": "CLOSED",
+    "workflow_run_id": 37423852941,
+    "reviewed_head_tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9",
+    "anchor_tree_equals_reviewed_head_tree": true,
+    "anchor_merge_has_separate_ci_run": false
   },
   "historical_review_lineage": {
     "current_persistence": {
@@ -230,7 +261,11 @@
     "No identity-continuity determination",
     "No restart-safe recreation of live Current admission authority",
     "Real personal data remains CLOSED",
-    "No production readiness"
+    "No production readiness",
+    "No cross-process Wake handoff ordering",
+    "No raw SQLite coordination outside supported writer paths",
+    "No durable/restart-safe handoff generation",
+    "No durable/restart-safe issuance or construction receipts"
   ],
   "portability": {
     "architectural_requirement": true,
@@ -239,7 +274,12 @@
     "two_hop_synthetic_migration_rehearsal": "GREEN",
     "macos_mac_mini_rehearsal": "NOT_YET_PROVEN",
     "secrets_mode": "disabled",
-    "tracker_issue": 4
+    "tracker_issue": 4,
+    "runtime_root_model": "relocatable_config_root",
+    "database_path_policy": "relative_to_runtime_root_and_confined_within_it",
+    "backup_restore_integrity": "manifest + SHA-256/length + SQLite validation + unsafe-overwrite refusal",
+    "ci_runner_os": "ubuntu-latest",
+    "future_secret_posture": "rebind through explicit provider on destination host; do not treat host credentials as portable semantic state"
   },
   "superseded_unmerged_capture": {
     "issue": 48,
@@ -249,14 +289,19 @@
     "note": "Preserved as historical construction metadata; superseded by this later checkpoint."
   },
   "next_gate": {
-    "question": "How may one exact live HOME model-input artifact map toward provider/model execution without collapsing HOME policy, user turn, and Wake sibling data into one ambiguous prompt?",
+    "question": "How may one exact live HOME model-input artifact map toward provider/model execution semantics without collapsing HOME policy, user turn, and Wake sibling data into one ambiguous prompt?",
     "candidate": "thin local typed Execution Contract / dry-run adapter",
-    "candidate_is_frozen": false
+    "candidate_is_frozen": false,
+    "live_network_or_model_execution_required_for_first_slice": false
   },
   "capture_process": {
     "issue": 82,
+    "pull_request": 83,
     "branch": "engineering-snapshot-2026-10-06-post-wake-model-input",
-    "note": "Capture metadata is created after the anchor and is not part of the anchored tree.",
-    "pull_request": 83
+    "human_readable_snapshot_path": "snapshots/2026-10-06-post-wake-model-input-baseline.md",
+    "machine_manifest_path": "snapshots/2026-10-06-post-wake-model-input-baseline.json",
+    "readme_index_path": "snapshots/README.md",
+    "source_note": "Human-readable body was promoted from an independently authored post-Wake Model Input candidate, then narrowly corrected against the live anchored repository and existing PR #83.",
+    "note": "Capture metadata is post-anchor and is not part of the anchored tree."
   }
 }
