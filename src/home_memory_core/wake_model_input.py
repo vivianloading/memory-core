@@ -725,6 +725,14 @@ class WakeModelInputBoundary:
             )
 
         constructed = state.constructed
+        if (
+            constructed.media_type != WAKE_MODEL_INPUT_MEDIA_TYPE
+            or constructed.media_type != receipt.media_type
+        ):
+            raise WakeModelInputIntegrityError(
+                "constructed model-input media type differs from attested representation metadata"
+            )
+
         request_digest = _semantic_digest(constructed.request)
         if (
             request_digest != state.request_digest
