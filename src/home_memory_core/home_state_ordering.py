@@ -342,6 +342,8 @@ class HomeStateOrderingCoordinator:
 def home_state_coordinator_for_path(
     db_path: str | Path,
 ) -> HomeStateOrderingCoordinator:
+    # Fail before consulting inherited process-local registries after fork.
+    current_home_process_instance_id()
     resolved = Path(db_path).expanduser().resolve()
     key = str(resolved)
     with _HOME_STATE_COORDINATOR_REGISTRY_GUARD:
