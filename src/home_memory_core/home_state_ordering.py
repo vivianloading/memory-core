@@ -159,21 +159,23 @@ class HomeStateOrderingCoordinator:
         with self._condition:
             return self._generation
 
+    def require_writer_entry_allowed(self) -> None:
+        """Fail closed on unsafe same-thread writer re-entry without waiting.
+
+        This is a preflight only. It grants no writer permit and does not
+        serialize against other threads. Canonical writer entry must still call
+        acquire_writer() after any outer store-specific lock is acquired.
+        """
+        self._require_live_process()
+        owner = get_ident()
+        with self._condition:
+            self._reject_unsafe_writer_reentry(owner_thread_id=owner)
+
     def acquire_writer(self) -> HomeStateWritePermit:
         self._require_live_process()
         owner = get_ident()
         with self._condition:
-            if (
-                self._active_cut is not None
-                and self._active_cut.owner_thread_id == owner
-            ):
-                raise HomeStateOrderingReentryError(
-                    "same-thread HOME writer cannot run inside a delivery cut"
-                )
-            if self._writer_owner_thread_id == owner:
-                raise HomeStateOrderingReentryError(
-                    "nested HOME supported writer transaction is not allowed"
-                )
+            self._reject_unsafe_writer_reentry(owner_thread_id=owner)
 
             while (
                 self._active_cut is not None
@@ -315,6 +317,23 @@ class HomeStateOrderingCoordinator:
             self._writer_owner_thread_id = None
             self._writer_permit = None
             self._condition.notify_all()
+
+    def _reject_unsafe_writer_reentry(
+        self,
+        *,
+        owner_thread_id: int,
+    ) -> None:
+        if (
+            self._active_cut is not None
+            and self._active_cut.owner_thread_id == owner_thread_id
+        ):
+            raise HomeStateOrderingReentryError(
+                "same-thread HOME writer cannot run inside a delivery cut"
+            )
+        if self._writer_owner_thread_id == owner_thread_id:
+            raise HomeStateOrderingReentryError(
+                "nested HOME supported writer transaction is not allowed"
+            )
 
     def _require_live_process(self) -> None:
         current = current_home_process_instance_id()
