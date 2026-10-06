@@ -60,6 +60,38 @@ class HomeStateOrderingCoordinatorTests(unittest.TestCase):
         permit.release()
         self.assertEqual(self.coordinator.generation, before)
 
+    def test_writer_entry_preflight_does_not_grant_or_wait_on_foreign_cut(self) -> None:
+        cut_acquired = threading.Event()
+        release_cut = threading.Event()
+        errors = []
+
+        def foreign_cut_owner() -> None:
+            try:
+                cut = self.coordinator.acquire_cut()
+                cut_acquired.set()
+                if not release_cut.wait(timeout=2):
+                    raise AssertionError("foreign cut release timed out")
+                self.coordinator.release_cut(cut=cut)
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(
+            target=foreign_cut_owner
+        )
+        thread.start()
+        self.assertTrue(cut_acquired.wait(timeout=2))
+
+        before = self.coordinator.generation
+        started = time.monotonic()
+        self.coordinator.require_writer_entry_allowed()
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(self.coordinator.generation, before)
+
+        release_cut.set()
+        thread.join(timeout=2)
+        self.assertEqual(errors, [])
+        self.assertFalse(thread.is_alive())
+
     def test_same_thread_writer_inside_cut_fails_closed(self) -> None:
         cut = self.coordinator.acquire_cut()
         try:
