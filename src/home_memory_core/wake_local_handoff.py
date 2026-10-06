@@ -13,6 +13,7 @@ from home_memory_core.home_state_ordering import (
     HomeStateOrderingCoordinator,
     HomeStateOrderingIntegrityError,
     home_state_coordinator_for_path,
+    require_canonical_home_state_coordinator,
 )
 from home_memory_core.process_boundary import current_home_process_instance_id
 from home_memory_core.wake_issuance import (
@@ -202,6 +203,14 @@ class LocalWakeTransportBoundary:
             raise TypeError(
                 "coordinator must be HomeStateOrderingCoordinator"
             )
+        try:
+            require_canonical_home_state_coordinator(
+                coordinator
+            )
+        except HomeStateOrderingIntegrityError as error:
+            raise WakeLocalHandoffIntegrityError(
+                "local Wake transport boundary requires canonical HOME coordinator"
+            ) from error
         self._coordinator = coordinator
         self._origin = self
         self._home_process_instance_id = (
@@ -271,6 +280,14 @@ class LocalWakeTransportBoundary:
         return state.envelope
 
     def _assert_live_process(self) -> None:
+        try:
+            require_canonical_home_state_coordinator(
+                self._coordinator
+            )
+        except HomeStateOrderingIntegrityError as error:
+            raise WakeLocalHandoffAuthorizationError(
+                "local Wake transport boundary lost canonical coordinator binding"
+            ) from error
         if getattr(self, "_origin", None) is not self:
             raise WakeLocalHandoffAuthorizationError(
                 "local Wake transport boundary is not the originating boundary object"
@@ -375,6 +392,14 @@ class WakeLocalHandoffAuthority:
             raise TypeError(
                 "local_transport_boundary must be LocalWakeTransportBoundary"
             )
+        try:
+            require_canonical_home_state_coordinator(
+                coordinator
+            )
+        except HomeStateOrderingIntegrityError as error:
+            raise WakeLocalHandoffIntegrityError(
+                "Wake handoff authority requires canonical HOME coordinator"
+            ) from error
         if local_transport_boundary._coordinator is not coordinator:
             raise WakeLocalHandoffIntegrityError(
                 "local transport boundary uses another HOME coordinator"
@@ -405,6 +430,15 @@ class WakeLocalHandoffAuthority:
         episode_id: str,
         user_input: str,
     ) -> WakeHandoffReceipt:
+        try:
+            require_canonical_home_state_coordinator(
+                self._coordinator
+            )
+        except HomeStateOrderingIntegrityError as error:
+            raise WakeLocalHandoffAuthorizationError(
+                "Wake handoff authority lost canonical coordinator binding"
+            ) from error
+
         for field_name, value in {
             "request_id": request_id,
             "episode_id": episode_id,
