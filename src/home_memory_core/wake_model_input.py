@@ -725,12 +725,20 @@ class WakeModelInputBoundary:
             )
 
         constructed = state.constructed
+        if type(constructed.media_type) is not str:
+            raise WakeModelInputIntegrityError(
+                "constructed model-input media type must remain exact str"
+            )
         if (
             constructed.media_type != WAKE_MODEL_INPUT_MEDIA_TYPE
             or constructed.media_type != receipt.media_type
         ):
             raise WakeModelInputIntegrityError(
                 "constructed model-input media type differs from attested representation metadata"
+            )
+        if type(constructed.serialized_text) is not str:
+            raise WakeModelInputIntegrityError(
+                "constructed serialized model input must remain exact str"
             )
 
         request_digest = _semantic_digest(constructed.request)
