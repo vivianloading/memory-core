@@ -358,6 +358,30 @@ class HomeStateOrderingCoordinator:
             )
 
 
+def require_canonical_home_state_coordinator(
+    coordinator: HomeStateOrderingCoordinator,
+) -> HomeStateOrderingCoordinator:
+    """Require the exact live registry coordinator for its canonical DB path.
+
+    Matching path/digest is insufficient: ordering depends on shared object
+    identity because the condition, active cut, writer permit, and generation
+    are process-local state held by that one registry instance.
+    """
+    if not isinstance(coordinator, HomeStateOrderingCoordinator):
+        raise TypeError(
+            "coordinator must be HomeStateOrderingCoordinator"
+        )
+    coordinator._require_live_process()
+    key = str(coordinator._resolved_db_path)
+    with _HOME_STATE_COORDINATOR_REGISTRY_GUARD:
+        registered = _HOME_STATE_COORDINATORS.get(key)
+    if registered is not coordinator:
+        raise HomeStateOrderingIntegrityError(
+            "HOME state coordinator is not the canonical registry instance"
+        )
+    return coordinator
+
+
 def home_state_coordinator_for_path(
     db_path: str | Path,
 ) -> HomeStateOrderingCoordinator:
