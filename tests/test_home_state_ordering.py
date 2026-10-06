@@ -2,7 +2,10 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import home_memory_core.home_state_ordering as ordering_module
 
 from home_memory_core.home_state_ordering import (
     HomeStateOrderingIntegrityError,
@@ -96,6 +99,19 @@ class HomeStateOrderingCoordinatorTests(unittest.TestCase):
                 self.coordinator.acquire_writer()
         finally:
             permit.release()
+
+    def test_process_incarnation_change_fails_closed(self) -> None:
+        with patch.object(
+            ordering_module,
+            "current_home_process_instance_id",
+            return_value="process-other",
+        ):
+            with self.assertRaises(Exception):
+                _ = self.coordinator.generation
+            with self.assertRaises(Exception):
+                self.coordinator.acquire_writer()
+            with self.assertRaises(Exception):
+                self.coordinator.acquire_cut()
 
     def test_other_thread_writer_waits_behind_cut(self) -> None:
         cut = self.coordinator.acquire_cut()
