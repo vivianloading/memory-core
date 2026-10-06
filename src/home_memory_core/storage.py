@@ -1091,7 +1091,7 @@ class MemoryStore:
                     "MemoryStore initialization lost its SQLite write transaction"
                 )
 
-        def add_source(self, source: SourceRecord) -> None:
+    def add_source(self, source: SourceRecord) -> None:
         self._validate_source_record_integrity(source=source)
 
         with self._write_transaction() as connection:
@@ -1145,7 +1145,7 @@ class MemoryStore:
                 source_id=source_id,
             )
 
-        def suppress_source(
+    def suppress_source(
         self,
         suppression: SuppressionRecord,
     ) -> None:
@@ -1234,7 +1234,7 @@ class MemoryStore:
 
             return source_id not in suppressed_ids
 
-        def add_interpretation(
+    def add_interpretation(
         self,
         interpretation: InterpretationRecord,
     ) -> None:
@@ -1366,7 +1366,7 @@ class MemoryStore:
                 suppressions=suppressions,
             )
 
-        def add_thread(self, thread: InterpretationThread) -> None:
+    def add_thread(self, thread: InterpretationThread) -> None:
         self._validate_thread_record(thread=thread)
 
         with self._write_transaction() as connection:
@@ -1407,7 +1407,7 @@ class MemoryStore:
                 thread_id=thread_id,
             )
 
-        def admit_interpretation(
+    def admit_interpretation(
         self,
         admission: ThreadAdmissionRecord,
     ) -> None:
@@ -1498,7 +1498,7 @@ class MemoryStore:
                 thread_id=thread_id,
             )
 
-        def add_supersession(
+    def add_supersession(
         self,
         supersession: SupersessionRecord,
     ) -> None:
