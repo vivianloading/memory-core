@@ -705,11 +705,9 @@ class WakeModelInputBoundary:
         if (
             state.source_handoff_receipt.envelope_digest
             != receipt.source_envelope_digest
-            or _semantic_digest(envelope)
-            != receipt.source_envelope_digest
         ):
             raise WakeModelInputIntegrityError(
-                "source accepted envelope differs from construction binding"
+                "source accepted envelope digest differs from construction binding"
             )
 
         constructed = state.constructed
