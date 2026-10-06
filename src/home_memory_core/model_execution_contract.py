@@ -23,6 +23,7 @@ from home_memory_core.wake_model_input import (
     NetworkDeliveryAvailability,
     RequestConstructionReceipt,
     SpeakerSelectionRule,
+    ToolCapability,
     WakeContextTemporalSemantics,
     WakeModelInputBoundary,
     WakeModelInputIntegrityError,
@@ -288,8 +289,8 @@ class ExecutionPreparationCapabilities:
     model_execution: ModelExecutionAvailability
     network_delivery: NetworkDeliveryAvailability
     provider_mapping: ProviderMappingAvailability
-    tools: object
-    memory_write: object
+    tools: ToolCapability
+    memory_write: MemoryWriteCapability
     _marker: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -309,11 +310,6 @@ class ExecutionPreparationCapabilities:
             raise ModelExecutionContractIntegrityError(
                 "dry-run preparation cannot grant provider mapping"
             )
-        from home_memory_core.wake_model_input import (
-            MemoryWriteCapability,
-            ToolCapability,
-        )
-
         if self.tools is not ToolCapability.NONE:
             raise ModelExecutionContractIntegrityError(
                 "dry-run preparation tools must remain none"
@@ -964,15 +960,6 @@ def _require_exact_source_representation(
     _exact_request_texts(constructed.request)
     _exact_receipt_texts(receipt)
 
-    if receipt.request_semantic_digest != _semantic_digest(
-        constructed.request
-    ):
-        # The upstream boundary owns the canonical request digest. This
-        # execution-layer check intentionally uses only the execution contract's
-        # own complete-semantic encoder as an additional typed acceptance guard;
-        # it does not redefine the upstream digest value.
-        pass
-
     if (
         constructed.request.home_policy.carried_context_position
         is not CarriedContextPosition.SIBLING_DATA
@@ -990,9 +977,9 @@ def _require_exact_source_representation(
         or constructed.request.capabilities.network_delivery
         is not NetworkDeliveryAvailability.UNAVAILABLE
         or constructed.request.capabilities.tools
-        is not _tool_none()
+        is not ToolCapability.NONE
         or constructed.request.capabilities.memory_write
-        is not _memory_write_none()
+        is not MemoryWriteCapability.NONE
     ):
         raise ModelExecutionContractIntegrityError(
             "source model-input capabilities are not closed"
@@ -1106,18 +1093,6 @@ def _home_model_input_request_type() -> type:
     from home_memory_core.wake_model_input import HomeModelInputRequest
 
     return HomeModelInputRequest
-
-
-def _tool_none() -> object:
-    from home_memory_core.wake_model_input import ToolCapability
-
-    return ToolCapability.NONE
-
-
-def _memory_write_none() -> object:
-    from home_memory_core.wake_model_input import MemoryWriteCapability
-
-    return MemoryWriteCapability.NONE
 
 
 def _semantic_digest(value: object) -> str:
