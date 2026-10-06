@@ -217,3 +217,47 @@ Freeze one exact head and apply HOME #18:
 **Fresh discovery -> Minimal proof -> Bounded coverage sweep.**
 
 Independent reviewer has no merge authority.
+
+
+## 12. Independent review #79 — live artifact media-type integrity NO-GO
+
+Independent review #79 returned **FAIL / NO-GO** on exact head
+`4b414e7872c7e9797992a3a661db69db1eb37a2b`.
+
+The review independently validated the completed-handoff-only source boundary,
+fixed HOME policy, adversarial Wake strings remaining sibling data, deterministic
+request serialization, old-handoff temporal behavior, and multiple exact
+provenance/digest controls before finding one local integrity blocker.
+
+The failed head validated `ConstructedHomeModelInput.media_type` at initial
+construction and bound the fixed media type in `RequestConstructionReceipt`,
+but `require_live_construction()` did not re-check the registered artifact's
+current public `media_type` before returning it.
+
+A forced mutation could therefore create:
+
+- receipt media type = `application/vnd.home.model-input+json`;
+- registered artifact media type = another string;
+- unchanged request and serialized text;
+
+and the live seam would still return that artifact.
+
+This was a representation-metadata integrity failure. It did **not** establish
+network/model delivery, authority escalation, prompt-injection success, or
+model behavior.
+
+### Remediation
+
+Live construction verification now requires:
+
+`constructed.media_type == receipt.media_type == WAKE_MODEL_INPUT_MEDIA_TYPE`
+
+before returning the exact registered artifact.
+
+A dedicated regression reproduces the #79 forced-mutation family by replacing
+the frozen artifact's media type with
+`application/x-synthetic-metadata-probe` and requires
+`WakeModelInputIntegrityError` from the live seam.
+
+#79 remains historical on its own exact SHA. Any repaired head requires a fresh
+exact-SHA independent review.
