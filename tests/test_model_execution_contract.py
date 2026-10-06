@@ -6,7 +6,7 @@ import unittest
 from dataclasses import fields, replace
 from unittest.mock import patch
 
-from test_wake_model_input import WakeModelInputBoundaryTests
+import test_wake_model_input as wake_model_input_test
 
 import home_memory_core.model_execution_contract as execution_module
 
@@ -39,7 +39,7 @@ class SameTextStr(str):
 
 class ModelExecutionContractTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.fixture = WakeModelInputBoundaryTests(
+        self.fixture = wake_model_input_test.WakeModelInputBoundaryTests(
             methodName="test_fixed_policy_and_capability_closure"
         )
         self.fixture.setUp()
