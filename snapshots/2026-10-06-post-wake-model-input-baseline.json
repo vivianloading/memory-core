@@ -124,47 +124,91 @@
   },
   "historical_review_lineage": {
     "current_persistence": {
-      "fail_issues": [16, 17, 19],
+      "fail_issues": [
+        16,
+        17,
+        19
+      ],
       "pass_issue": 20
     },
     "current_admission": {
-      "stale_issues": [23],
-      "fail_issues": [25, 26, 27],
+      "stale_issues": [
+        23
+      ],
+      "fail_issues": [
+        25,
+        26,
+        27
+      ],
       "pass_issue": 29
     },
     "current_suppression_present_use": {
-      "fail_issues": [33, 34, 35, 36],
+      "fail_issues": [
+        33,
+        34,
+        35,
+        36
+      ],
       "pass_issue": 37
     },
     "current_suppression_asof": {
-      "fail_issues": [40, 41, 42, 43, 44],
+      "fail_issues": [
+        40,
+        41,
+        42,
+        43,
+        44
+      ],
       "pass_issue": 45
     },
     "current_resolver": {
-      "author_no_go_heads": ["d1dc4663f4e5cfbfa150e015adf184800b2fe6b1"],
-      "fail_issues": [50],
+      "author_no_go_heads": [
+        "d1dc4663f4e5cfbfa150e015adf184800b2fe6b1"
+      ],
+      "fail_issues": [
+        50
+      ],
       "predecessor_pass_issue": 51,
       "final_pass_issue": 52
     },
     "wake_packet": {
-      "stale_issues": [55],
-      "fail_issues": [57, 58, 59, 60, 61],
+      "stale_issues": [
+        55
+      ],
+      "fail_issues": [
+        57,
+        58,
+        59,
+        60,
+        61
+      ],
       "pass_issue": 62
     },
     "wake_issuance": {
-      "fail_issues": [65, 66],
+      "fail_issues": [
+        65,
+        66
+      ],
       "pass_issue": 67
     },
     "wake_presentation": {
-      "fail_issues": [70],
+      "fail_issues": [
+        70
+      ],
       "pass_issue": 71
     },
     "wake_local_handoff": {
-      "fail_issues": [74, 75],
+      "fail_issues": [
+        74,
+        75
+      ],
       "pass_issue": 76
     },
     "wake_model_input": {
-      "fail_issues": [79, 80],
+      "fail_issues": [
+        79,
+        80
+      ],
       "pass_issue": 81
     }
   },
@@ -212,6 +256,7 @@
   "capture_process": {
     "issue": 82,
     "branch": "engineering-snapshot-2026-10-06-post-wake-model-input",
-    "note": "Capture metadata is created after the anchor and is not part of the anchored tree."
+    "note": "Capture metadata is created after the anchor and is not part of the anchored tree.",
+    "pull_request": 83
   }
 }
