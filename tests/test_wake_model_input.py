@@ -1,4 +1,5 @@
 import copy
+from collections import UserString
 import inspect
 import json
 import tempfile
@@ -881,6 +882,51 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
         ):
             self.model_boundary.require_live_construction(
                 receipt=fourth.receipt
+            )
+
+    def test_live_construction_rejects_same_text_non_string_representation_metadata(self) -> None:
+        media_constructed = self.model_boundary.construct(
+            handoff_receipt=self._handoff(
+                request_id="request-media-type-user-string",
+                episode_id="episode-c",
+            )
+        )
+        object.__setattr__(
+            media_constructed,
+            "media_type",
+            UserString(media_constructed.receipt.media_type),
+        )
+        self.assertNotIsInstance(
+            media_constructed.media_type,
+            str,
+        )
+        with self.assertRaises(
+            WakeModelInputIntegrityError
+        ):
+            self.model_boundary.require_live_construction(
+                receipt=media_constructed.receipt
+            )
+
+        text_constructed = self.model_boundary.construct(
+            handoff_receipt=self._handoff(
+                request_id="request-serialized-user-string",
+                episode_id="episode-c",
+            )
+        )
+        object.__setattr__(
+            text_constructed,
+            "serialized_text",
+            UserString(text_constructed.serialized_text),
+        )
+        self.assertNotIsInstance(
+            text_constructed.serialized_text,
+            str,
+        )
+        with self.assertRaises(
+            WakeModelInputIntegrityError
+        ):
+            self.model_boundary.require_live_construction(
+                receipt=text_constructed.receipt
             )
 
     def test_live_construction_rejects_forced_artifact_media_type_mutation(self) -> None:
