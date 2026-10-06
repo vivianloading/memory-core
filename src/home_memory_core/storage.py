@@ -1784,6 +1784,10 @@ class MemoryStore:
 
     @contextmanager
     def _write_transaction(self) -> Iterator[sqlite3.Connection]:
+        # Fail unsafe same-thread HOME re-entry before waiting for the legacy
+        # Memory lock. This is only a non-blocking preflight; ordinary writers
+        # still acquire the legacy lock before the HOME writer permit.
+        self._home_state_coordinator.require_writer_entry_allowed()
         with self._authority_ordering_lock:
             permit = self._home_state_coordinator.acquire_writer()
             connection: sqlite3.Connection | None = None
