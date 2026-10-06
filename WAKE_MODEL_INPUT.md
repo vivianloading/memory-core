@@ -49,8 +49,10 @@ It does not accept or reconstruct from caller-provided:
 
 This layer does not re-issue Wake and does not reopen the local ordering cut.
 
-The request therefore represents the already completed handoff cut. It does not
-claim that HOME has remained unchanged since that cut.
+The request carries Presentation semantics at the original issuance `as_of`
+and records that this issuance cut was protected through completed local
+handoff. It does not reinterpret `as_of` as a handoff wall-clock timestamp,
+and it does not claim that HOME has remained unchanged after the cut released.
 
 ## 3. Fixed HOME policy
 
@@ -133,6 +135,7 @@ A successful construction receipt binds:
 - complete typed request semantic digest;
 - deterministic serialized representation digest;
 - serializer version/media type;
+- exact model-input construction boundary id;
 - six Wake authority axes = NONE.
 
 It proves only:
