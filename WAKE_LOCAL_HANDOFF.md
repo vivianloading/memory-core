@@ -387,3 +387,63 @@ lock, after which cut release allows the waiting writer to complete.
 
 #74 remains historical on its own exact SHA. Any repaired head requires a fresh
 exact-SHA independent review.
+
+
+## 17. Independent review #75 — noncanonical coordinator identity NO-GO
+
+Independent review #75 returned **FAIL / NO-GO** on exact head
+`2b71b9728df38f43df4d28dcbbd3a7e44809ef93`.
+
+The #74 contended Memory re-entry family passed independently and the bounded
+sweep completed. The new blocker was a distinct coordinator-identity gap.
+
+The failed head allowed public construction of another
+`HomeStateOrderingCoordinator` for the same resolved canonical DB path.
+That object had the same database-binding digest but independent process-local:
+
+- condition state;
+- active cut;
+- writer permit;
+- generation.
+
+Ordinary Memory/Living/Current writers remained bound to the path registry's
+canonical coordinator. A manually constructed Wake handoff authority/boundary
+could instead bind to the same-path twin and successfully perform local
+acceptance. Such a receipt therefore proved a cut on the wrong mutex state.
+
+The blocker was **shared coordinator object identity**, not path/digest
+equivalence.
+
+### Remediation
+
+The ordering layer now exposes a canonical-identity requirement that accepts
+only the exact live coordinator object currently registered for its resolved
+canonical DB path.
+
+Wake Local Handoff applies that requirement at multiple operational boundaries:
+
+- `LocalWakeTransportBoundary` construction;
+- `WakeLocalHandoffAuthority` construction;
+- every public `handoff()` entry;
+- live local-acceptance verification.
+
+A same-path manually constructed coordinator is rejected even when its DB
+binding digest matches exactly.
+
+The ordinary factory remains:
+
+`home_state_coordinator_for_path(canonical_path)`
+
+and valid Wake handoff construction uses that exact returned object.
+
+This requirement is process-local object identity. It does not turn the
+coordinator id or DB digest into durable authority, identity, or cross-process
+synchronization.
+
+Author regression coverage constructs a same-path twin coordinator, confirms
+matching DB digest but distinct object/id, confirms boundary and authority
+construction reject it, then confirms the canonical factory path still
+successfully hands off and records the registry coordinator id.
+
+#75 remains historical on its own exact SHA. The repaired head requires a fresh
+exact-SHA independent review.
