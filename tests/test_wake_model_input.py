@@ -883,6 +883,31 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
                 receipt=fourth.receipt
             )
 
+    def test_live_construction_rejects_forced_artifact_media_type_mutation(self) -> None:
+        constructed = self.model_boundary.construct(
+            handoff_receipt=self._handoff(
+                request_id="request-media-type-mutation",
+                episode_id="episode-c",
+            )
+        )
+        self.assertEqual(
+            constructed.media_type,
+            constructed.receipt.media_type,
+        )
+
+        object.__setattr__(
+            constructed,
+            "media_type",
+            "application/x-synthetic-metadata-probe",
+        )
+
+        with self.assertRaises(
+            WakeModelInputIntegrityError
+        ):
+            self.model_boundary.require_live_construction(
+                receipt=constructed.receipt
+            )
+
     def test_source_handoff_mutation_remains_owned_by_handoff_layer(self) -> None:
         handoff_receipt = self._handoff(
             request_id="request-source-mutation",
