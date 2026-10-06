@@ -158,6 +158,9 @@ The receipt binds:
 
 - exact source construction id;
 - request / Episode / Wake / issuance / source handoff ids;
+- canonical database binding;
+- exact source handoff generation / issuance cut `as_of` / temporal semantics;
+- Presentation plan / rendered-payload digests;
 - HOME process;
 - Model Input boundary;
 - Execution Contract boundary;
