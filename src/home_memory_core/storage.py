@@ -1767,20 +1767,22 @@ class MemoryStore:
     @contextmanager
     def _write_transaction(self) -> Iterator[sqlite3.Connection]:
         permit = self._home_state_coordinator.acquire_writer()
-        connection = self._connect_raw()
+        connection: sqlite3.Connection | None = None
 
         try:
+            connection = self._connect_raw()
             connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
             yield connection
             connection.commit()
             permit.record_successful_commit()
         except BaseException:
-            if connection.in_transaction:
+            if connection is not None and connection.in_transaction:
                 connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
             permit.release()
 
     def _connect_raw(self) -> sqlite3.Connection:
