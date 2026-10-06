@@ -1,0 +1,307 @@
+{
+  "snapshot_schema": "home-engineering-snapshot-v0.1",
+  "snapshot_id": "2026-10-06-post-wake-model-input-baseline",
+  "date": "2026-10-06",
+  "repository": "vivianloading/memory-core",
+  "purpose": "Post-Current and post-Wake-model-input engineering baseline before provider/model execution",
+  "anchor": {
+    "branch": "main",
+    "commit": "951f35763069f4e5787c173f1ecb8cc7b7ce3759",
+    "tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9"
+  },
+  "milestones": [
+    {
+      "name": "Current persistence Slice 1",
+      "pr": 15,
+      "reviewed_head": "4198361392865b1c3f800c4cf8f42f12af39154e",
+      "merge_commit": "ede9610fd1c9a6da6fcef32044bdf7021c3964a4",
+      "independent_gate_issue": 20,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current authority-aware admission v0.1",
+      "pr": 22,
+      "reviewed_head": "145198fdb7a60c789b6cd612e9983ac7e874e56d",
+      "merge_commit": "be74dbed0e8686337a316d378220ccbe8c3abe71",
+      "independent_gate_issue": 29,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current suppression propagation / present-use",
+      "pr": 31,
+      "reviewed_head": "7ab54d4db2ae8006c967f5198ae546143f5ae513",
+      "merge_commit": "557ea3720eba31758f518000c6f991be8293678f",
+      "independent_gate_issue": 37,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Suppression lifecycle + historical as-of",
+      "pr": 39,
+      "reviewed_head": "eeb76df2f192f3dbbc4d8586a306bdf80871cbcf",
+      "merge_commit": "dd297511aaa3d29e30bea3e49ac15424368e00cb",
+      "independent_gate_issue": 45,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current Resolver v0.1",
+      "pr": 47,
+      "reviewed_head": "77d27af25be1e0a95f6a6bc8f99f2a26156628ea",
+      "merge_commit": "60a0152878bbc96b77c1a2ff0c7f087cb5b0a06f",
+      "independent_gate_issue": 52,
+      "independent_gate_result": "SCOPED_PASS",
+      "predecessor_gate": {
+        "issue": 51,
+        "head": "d05a4f4f691edaba16f4548e111c5f26cbedff44",
+        "result": "PASS_WITH_NON_BLOCKING_FINDINGS"
+      }
+    },
+    {
+      "name": "Typed Wake Packet v0.1",
+      "pr": 54,
+      "reviewed_head": "b61194d09f09a903f4f17f3b2a17489ecb73d77d",
+      "merge_commit": "bed8e247eb5fed58f54952dca96dfbabbf1e0384",
+      "independent_gate_issue": 62,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Runtime-bound Wake Issuance v0.1",
+      "pr": 64,
+      "reviewed_head": "8659554b781cc7f26174950e8db39cc356c718d6",
+      "merge_commit": "d0f7b1da3986eaa2debad25b0836bde6c2182a97",
+      "independent_gate_issue": 67,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Presentation v0.1",
+      "pr": 69,
+      "reviewed_head": "63fe9537e768b4c4e7a998e275b30f1d2a88081c",
+      "merge_commit": "15ac6f9e9159c4079f7b471eaee9b44ed7609572",
+      "independent_gate_issue": 71,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Local Handoff Ordering v0.1",
+      "pr": 73,
+      "reviewed_head": "9b02ec90d9414934e50f1100f2432bc7534c7453",
+      "merge_commit": "41f8810748ccb32999c05e626ec61464f037db88",
+      "independent_gate_issue": 76,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Model Input Boundary v0.1",
+      "pr": 78,
+      "reviewed_head": "41b15cb6ad72fb3ed879febd58948277e374604a",
+      "merge_commit": "951f35763069f4e5787c173f1ecb8cc7b7ce3759",
+      "independent_gate_issue": 81,
+      "independent_gate_result": "SCOPED_PASS"
+    }
+  ],
+  "wake_spine": [
+    "WakePacket",
+    "WakeIssuance",
+    "WakePresentation",
+    "WakeLocalHandoff",
+    "WakeModelInput"
+  ],
+  "wake_layer_reality": {
+    "map": {
+      "producer": "typed Living / Episode orientation",
+      "availability_domain": [
+        "READY"
+      ]
+    },
+    "shared_now": {
+      "producer": "none operational at anchor",
+      "availability_domain": [
+        "CLOSED"
+      ]
+    },
+    "room_now": {
+      "producer": "CurrentResolver via attached Room path",
+      "availability_domain": [
+        "READY",
+        "PARTIAL",
+        "UNAVAILABLE"
+      ]
+    },
+    "recent_life": {
+      "producer": "none approved at anchor",
+      "availability_domain": [
+        "UNAVAILABLE"
+      ]
+    },
+    "nearby_doors": {
+      "producer": "none approved at anchor",
+      "availability_domain": [
+        "UNAVAILABLE"
+      ]
+    }
+  },
+  "latest_exact_head_evidence": {
+    "reviewed_head": "41b15cb6ad72fb3ed879febd58948277e374604a",
+    "workflow_run_number": 438,
+    "python_3_11": "GREEN",
+    "python_3_12": "GREEN",
+    "compile": "GREEN",
+    "full_unit_suite": "GREEN",
+    "portable_migration_rehearsal": "GREEN",
+    "independent_review_issue": 81,
+    "independent_review_result": "SCOPED_PASS",
+    "real_personal_data": "CLOSED",
+    "workflow_run_id": 37423852941,
+    "reviewed_head_tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9",
+    "anchor_tree_equals_reviewed_head_tree": true,
+    "anchor_merge_has_separate_ci_run": false
+  },
+  "historical_review_lineage": {
+    "current_persistence": {
+      "fail_issues": [
+        16,
+        17,
+        19
+      ],
+      "pass_issue": 20
+    },
+    "current_admission": {
+      "stale_issues": [
+        23
+      ],
+      "fail_issues": [
+        25,
+        26,
+        27
+      ],
+      "pass_issue": 29
+    },
+    "current_suppression_present_use": {
+      "fail_issues": [
+        33,
+        34,
+        35,
+        36
+      ],
+      "pass_issue": 37
+    },
+    "current_suppression_asof": {
+      "fail_issues": [
+        40,
+        41,
+        42,
+        43,
+        44
+      ],
+      "pass_issue": 45
+    },
+    "current_resolver": {
+      "author_no_go_heads": [
+        "d1dc4663f4e5cfbfa150e015adf184800b2fe6b1"
+      ],
+      "fail_issues": [
+        50
+      ],
+      "predecessor_pass_issue": 51,
+      "final_pass_issue": 52
+    },
+    "wake_packet": {
+      "stale_issues": [
+        55
+      ],
+      "fail_issues": [
+        57,
+        58,
+        59,
+        60,
+        61
+      ],
+      "pass_issue": 62
+    },
+    "wake_issuance": {
+      "fail_issues": [
+        65,
+        66
+      ],
+      "pass_issue": 67
+    },
+    "wake_presentation": {
+      "fail_issues": [
+        70
+      ],
+      "pass_issue": 71
+    },
+    "wake_local_handoff": {
+      "fail_issues": [
+        74,
+        75
+      ],
+      "pass_issue": 76
+    },
+    "wake_model_input": {
+      "fail_issues": [
+        79,
+        80
+      ],
+      "pass_issue": 81
+    }
+  },
+  "open_boundaries": [
+    "No provider-specific request mapping",
+    "No network model delivery",
+    "No actual model execution",
+    "No proof of model receipt/read/obedience/response",
+    "No arbitrary-future-model prompt-injection resistance claim",
+    "No post-execution current-first-person generation safety claim",
+    "No executable tool authority",
+    "No Wake-derived memory-write or re-ingestion authority",
+    "Shared operational Current remains CLOSED",
+    "Recent Life producer remains UNAVAILABLE",
+    "Nearby Doors producer remains UNAVAILABLE",
+    "No Heartbeat/proximity behavior",
+    "No relationship-state automation",
+    "No Adoption implementation",
+    "No identity-continuity determination",
+    "No restart-safe recreation of live Current admission authority",
+    "Real personal data remains CLOSED",
+    "No production readiness",
+    "No cross-process Wake handoff ordering",
+    "No raw SQLite coordination outside supported writer paths",
+    "No durable/restart-safe handoff generation",
+    "No durable/restart-safe issuance or construction receipts"
+  ],
+  "portability": {
+    "architectural_requirement": true,
+    "relocatable_runtime_root": true,
+    "closed_synthetic_backup_restore": true,
+    "two_hop_synthetic_migration_rehearsal": "GREEN",
+    "macos_mac_mini_rehearsal": "NOT_YET_PROVEN",
+    "secrets_mode": "disabled",
+    "tracker_issue": 4,
+    "runtime_root_model": "relocatable_config_root",
+    "database_path_policy": "relative_to_runtime_root_and_confined_within_it",
+    "backup_restore_integrity": "manifest + SHA-256/length + SQLite validation + unsafe-overwrite refusal",
+    "ci_runner_os": "ubuntu-latest",
+    "future_secret_posture": "rebind through explicit provider on destination host; do not treat host credentials as portable semantic state"
+  },
+  "superseded_unmerged_capture": {
+    "issue": 48,
+    "pull_request": 49,
+    "anchor": "dd297511aaa3d29e30bea3e49ac15424368e00cb",
+    "status": "NEVER_MERGED",
+    "note": "Preserved as historical construction metadata; superseded by this later checkpoint."
+  },
+  "next_gate": {
+    "question": "How may one exact live HOME model-input artifact map toward provider/model execution semantics without collapsing HOME policy, user turn, and Wake sibling data into one ambiguous prompt?",
+    "candidate": "thin local typed Execution Contract / dry-run adapter",
+    "candidate_is_frozen": false,
+    "live_network_or_model_execution_required_for_first_slice": false
+  },
+  "capture_process": {
+    "issue": 82,
+    "pull_request": 83,
+    "branch": "engineering-snapshot-2026-10-06-post-wake-model-input",
+    "human_readable_snapshot_path": "snapshots/2026-10-06-post-wake-model-input-baseline.md",
+    "machine_manifest_path": "snapshots/2026-10-06-post-wake-model-input-baseline.json",
+    "readme_index_path": "snapshots/README.md",
+    "source_note": "Human-readable body was promoted from an independently authored post-Wake Model Input candidate, then narrowly corrected against the live anchored repository and existing PR #83.",
+    "note": "Capture metadata is post-anchor and is not part of the anchored tree."
+  }
+}
