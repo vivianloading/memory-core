@@ -1,0 +1,427 @@
+{
+  "snapshot_schema": "home-engineering-snapshot-v0.1",
+  "snapshot_id": "2026-10-06-post-wake-model-input-baseline",
+  "date": "2026-10-06",
+  "repository": "vivianloading/memory-core",
+  "purpose": "Post-Wake-Model-Input / pre-model-execution engineering baseline",
+  "inherits_snapshot": "2026-10-02-pre-persistence-baseline",
+  "anchor": {
+    "branch": "main",
+    "commit": "951f35763069f4e5787c173f1ecb8cc7b7ce3759",
+    "tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9",
+    "parents": [
+      "41f8810748ccb32999c05e626ec61464f037db88",
+      "41b15cb6ad72fb3ed879febd58948277e374604a"
+    ]
+  },
+  "milestones": [
+    {
+      "name": "Current persistence Slice 1",
+      "pr": 15,
+      "independent_gate_issue": 20,
+      "reviewed_head": "4198361392865b1c3f800c4cf8f42f12af39154e",
+      "reviewed_tree": "3edef0d46e53e7629d1b3246969890e69e49608f",
+      "merge_commit": "ede9610fd1c9a6da6fcef32044bdf7021c3964a4",
+      "merge_tree": "3edef0d46e53e7629d1b3246969890e69e49608f",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Room Current authority-aware admission Slice 2",
+      "pr": 22,
+      "independent_gate_issue": 29,
+      "reviewed_head": "145198fdb7a60c789b6cd612e9983ac7e874e56d",
+      "reviewed_tree": "a70e3c12b850b4d4e7f5088ef494c00eb5ca4599",
+      "merge_commit": "be74dbed0e8686337a316d378220ccbe8c3abe71",
+      "merge_tree": "a70e3c12b850b4d4e7f5088ef494c00eb5ca4599",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current suppression present-use Slice 3A",
+      "pr": 31,
+      "independent_gate_issue": 37,
+      "reviewed_head": "7ab54d4db2ae8006c967f5198ae546143f5ae513",
+      "reviewed_tree": "719731e7cfa53014c32a1d9eafe161854adf7d25",
+      "merge_commit": "557ea3720eba31758f518000c6f991be8293678f",
+      "merge_tree": "719731e7cfa53014c32a1d9eafe161854adf7d25",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Suppression lifecycle as-of Slice 3B1",
+      "pr": 39,
+      "independent_gate_issue": 45,
+      "reviewed_head": "eeb76df2f192f3dbbc4d8586a306bdf80871cbcf",
+      "reviewed_tree": "f94a7d6819d0e4d950cdf29b13307b8054c0fbcd",
+      "merge_commit": "dd297511aaa3d29e30bea3e49ac15424368e00cb",
+      "merge_tree": "f94a7d6819d0e4d950cdf29b13307b8054c0fbcd",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Current resolver v0.1",
+      "pr": 47,
+      "independent_gate_issue": 52,
+      "reviewed_head": "77d27af25be1e0a95f6a6bc8f99f2a26156628ea",
+      "reviewed_tree": "a6c2ad1ed78b0d03cef9909b0f4ddb0583f45e94",
+      "merge_commit": "60a0152878bbc96b77c1a2ff0c7f087cb5b0a06f",
+      "merge_tree": "a6c2ad1ed78b0d03cef9909b0f4ddb0583f45e94",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Packet v0.1",
+      "pr": 54,
+      "independent_gate_issue": 62,
+      "reviewed_head": "b61194d09f09a903f4f17f3b2a17489ecb73d77d",
+      "reviewed_tree": "7012d340876cb7edaebd08977df55c0ea95cac0c",
+      "merge_commit": "bed8e247eb5fed58f54952dca96dfbabbf1e0384",
+      "merge_tree": "7012d340876cb7edaebd08977df55c0ea95cac0c",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Issuance v0.1",
+      "pr": 64,
+      "independent_gate_issue": 67,
+      "reviewed_head": "8659554b781cc7f26174950e8db39cc356c718d6",
+      "reviewed_tree": "910951a6866590779dbc298831876b08c9a5e874",
+      "merge_commit": "d0f7b1da3986eaa2debad25b0836bde6c2182a97",
+      "merge_tree": "910951a6866590779dbc298831876b08c9a5e874",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Presentation v0.1",
+      "pr": 69,
+      "independent_gate_issue": 71,
+      "reviewed_head": "63fe9537e768b4c4e7a998e275b30f1d2a88081c",
+      "reviewed_tree": "da6d15927fd0d30710f606855c70de6edaf67b64",
+      "merge_commit": "15ac6f9e9159c4079f7b471eaee9b44ed7609572",
+      "merge_tree": "da6d15927fd0d30710f606855c70de6edaf67b64",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Local Handoff Ordering v0.1",
+      "pr": 73,
+      "independent_gate_issue": 76,
+      "reviewed_head": "9b02ec90d9414934e50f1100f2432bc7534c7453",
+      "reviewed_tree": "98abb8e8ea8f93f20c6fd22369f742f17f751883",
+      "merge_commit": "41f8810748ccb32999c05e626ec61464f037db88",
+      "merge_tree": "98abb8e8ea8f93f20c6fd22369f742f17f751883",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    },
+    {
+      "name": "Wake Model Input Boundary v0.1",
+      "pr": 78,
+      "independent_gate_issue": 81,
+      "reviewed_head": "41b15cb6ad72fb3ed879febd58948277e374604a",
+      "reviewed_tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9",
+      "merge_commit": "951f35763069f4e5787c173f1ecb8cc7b7ce3759",
+      "merge_tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9",
+      "reviewed_tree_equals_merge_tree": true,
+      "independent_gate_result": "SCOPED_PASS"
+    }
+  ],
+  "latest_exact_head_evidence": {
+    "reviewed_head": "41b15cb6ad72fb3ed879febd58948277e374604a",
+    "reviewed_tree": "7a58e00d41233b9b9911c51e9e0f3b153e9e66d9",
+    "independent_gate_issue": 81,
+    "independent_gate_result": "SCOPED_PASS",
+    "workflow_run_number": 438,
+    "workflow_run_id": 37423852941,
+    "python_3_11": {
+      "compile": "GREEN",
+      "full_unit_suite": "GREEN",
+      "portable_migration_rehearsal": "GREEN"
+    },
+    "python_3_12": {
+      "compile": "GREEN",
+      "full_unit_suite": "GREEN",
+      "portable_migration_rehearsal": "GREEN"
+    },
+    "anchor_tree_equals_reviewed_head_tree": true,
+    "merge_commit_has_separate_workflow_run": false,
+    "real_personal_data": "CLOSED"
+  },
+  "independent_review_history": {
+    "current_persistence": {
+      "fail_heads": [
+        {
+          "issue": 16,
+          "head": "9408a3cbd6256298cbd9000580f9330df448f34e"
+        },
+        {
+          "issue": 17,
+          "head": "42764d8427ab5a1d3897f697ca7c0947e61c3e6b"
+        },
+        {
+          "issue": 19,
+          "head": "464dac091b8623aa3d3b6923b9b41c398d61cdb7"
+        }
+      ],
+      "pass": {
+        "issue": 20,
+        "head": "4198361392865b1c3f800c4cf8f42f12af39154e",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "current_admission": {
+      "stale_issues": [
+        23
+      ],
+      "fail_heads": [
+        {
+          "issue": 25,
+          "head": "6d1f25cc94255c3d564456359953125ca985cf92"
+        },
+        {
+          "issue": 26,
+          "head": "18881898853e78e498e259ff85d57d577b5c3c43"
+        },
+        {
+          "issue": 27,
+          "head": "a41c31f42316d4d65ad524b8aa996e6e92c7a2a5"
+        }
+      ],
+      "pass": {
+        "issue": 29,
+        "head": "145198fdb7a60c789b6cd612e9983ac7e874e56d",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "current_suppression": {
+      "fail_heads": [
+        {
+          "issue": 33,
+          "head": "94dd9bb1fad1e6797b0cc1d811081e4a9bc7e489"
+        },
+        {
+          "issue": 34,
+          "head": "eef0afdb474ffd5227770b02ae01f66da7bc7e03"
+        },
+        {
+          "issue": 35,
+          "head": "3d2b2a299a84e573a68fc33e891df60ffc155dea"
+        },
+        {
+          "issue": 36,
+          "head": "e16d19df8134d5798615fc88665b4c67c5624dd4"
+        },
+        {
+          "issue": 40,
+          "head": "4900a6159b4c7f1bd3b5cc5da1793e6db9552931"
+        },
+        {
+          "issue": 41,
+          "head": "d866684b1e59df26cf4b4589020f823f3af84113"
+        },
+        {
+          "issue": 42,
+          "head": "68ff15cb2b026aaf3a318ca26b2c0603a19c6a5b"
+        },
+        {
+          "issue": 43,
+          "head": "710e1bf54d4433835b22ea3ff72c095d2364990f"
+        },
+        {
+          "issue": 44,
+          "head": "4431db8ffba16bf5ddbebf04c7c4814cc67825fd"
+        }
+      ],
+      "passes": [
+        {
+          "issue": 37,
+          "head": "7ab54d4db2ae8006c967f5198ae546143f5ae513",
+          "result": "SCOPED_PASS"
+        },
+        {
+          "issue": 45,
+          "head": "eeb76df2f192f3dbbc4d8586a306bdf80871cbcf",
+          "result": "SCOPED_PASS"
+        }
+      ]
+    },
+    "current_resolver": {
+      "author_rejected_heads": [
+        "d1dc4663f4e5cfbfa150e015adf184800b2fe6b1"
+      ],
+      "fail_heads": [
+        {
+          "issue": 50,
+          "head": "3da3abd49f25cc3a7af59e39cc1302d87291fb46"
+        }
+      ],
+      "intermediate": [
+        {
+          "issue": 51,
+          "head": "d05a4f4f691edaba16f4548e111c5f26cbedff44",
+          "result": "PASS_WITH_NON_BLOCKING_FINDING"
+        }
+      ],
+      "pass": {
+        "issue": 52,
+        "head": "77d27af25be1e0a95f6a6bc8f99f2a26156628ea",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "wake_packet": {
+      "stale_issues": [
+        55
+      ],
+      "fail_heads": [
+        {
+          "issue": 57,
+          "head": "3cf6a41dc98ccaf15958d16604576d823c5c9447"
+        },
+        {
+          "issue": 58,
+          "head": "34acfe30d0d021220cb7691ec39b64d693b7a55f"
+        },
+        {
+          "issue": 59,
+          "head": "0ea9ac64c1ea7225304014447db656b2f86745e2"
+        },
+        {
+          "issue": 60,
+          "head": "3f4cb30c897a33805131a5eaab9a083a85dc2f2d"
+        },
+        {
+          "issue": 61,
+          "head": "ff495957eb14ed9e0400d351495904e3347767ff"
+        }
+      ],
+      "pass": {
+        "issue": 62,
+        "head": "b61194d09f09a903f4f17f3b2a17489ecb73d77d",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "wake_issuance": {
+      "fail_heads": [
+        {
+          "issue": 65,
+          "head": "941b11af3bcddee3257943b6c40745747697db4f"
+        },
+        {
+          "issue": 66,
+          "head": "1529219d06f9217d67346a9e51b1ede7a48b014a"
+        }
+      ],
+      "pass": {
+        "issue": 67,
+        "head": "8659554b781cc7f26174950e8db39cc356c718d6",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "wake_presentation": {
+      "fail_heads": [
+        {
+          "issue": 70,
+          "head": "5c467fb34b7137372bfc9f6de441960d8cc67b49"
+        }
+      ],
+      "pass": {
+        "issue": 71,
+        "head": "63fe9537e768b4c4e7a998e275b30f1d2a88081c",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "wake_local_handoff": {
+      "fail_heads": [
+        {
+          "issue": 74,
+          "head": "5cf37e52f6ad96a28d07a1ed9d1f811caf917c06"
+        },
+        {
+          "issue": 75,
+          "head": "2b71b9728df38f43df4d28dcbbd3a7e44809ef93"
+        }
+      ],
+      "pass": {
+        "issue": 76,
+        "head": "9b02ec90d9414934e50f1100f2432bc7534c7453",
+        "result": "SCOPED_PASS"
+      }
+    },
+    "wake_model_input": {
+      "fail_heads": [
+        {
+          "issue": 79,
+          "head": "4b414e7872c7e9797992a3a661db69db1eb37a2b"
+        },
+        {
+          "issue": 80,
+          "head": "e8ab5910d95f535c1c7266e34b8707b354f642c1"
+        }
+      ],
+      "pass": {
+        "issue": 81,
+        "head": "41b15cb6ad72fb3ed879febd58948277e374604a",
+        "result": "SCOPED_PASS"
+      }
+    }
+  },
+  "wake_spine": [
+    "WakePacket",
+    "IssuedWakePacket",
+    "WakePresentationPlan / RenderedWakePresentation",
+    "WakeHandoffEnvelope / WakeHandoffReceipt",
+    "HomeModelInputRequest / ConstructedHomeModelInput"
+  ],
+  "invariant_summary": [
+    "History != Current",
+    "Storage presence != authority",
+    "Current != latest row",
+    "Suppression != deletion",
+    "Suppression != resurrection",
+    "Historical projection != present permission",
+    "Route != authority",
+    "Authority != identity",
+    "Perspective != authentication",
+    "Carry != speak",
+    "Presentation != delivery",
+    "Local handoff != network delivery",
+    "Model input != model execution",
+    "Digest equality != shared authority state",
+    "Value equality != typed exactness",
+    "Downstream evidence does not redefine upstream evidence"
+  ],
+  "open_boundaries": [
+    "No network/model delivery",
+    "No provider-specific request construction",
+    "No model execution or invocation",
+    "No proof of external-model obedience or prompt-injection resistance",
+    "No model response provenance",
+    "No model tools",
+    "No model-triggered memory write",
+    "No current-first-person generation-safety claim after execution",
+    "No cross-process Wake handoff ordering",
+    "No durable restart-safe handoff/model-input authority receipts",
+    "No raw-SQLite coordination for unsupported writers",
+    "No restore/unsuppress semantics",
+    "Shared Current admission/governance remains closed",
+    "Shared Now has no producer",
+    "Recent Life has no approved producer",
+    "Nearby Doors has no approved producer",
+    "No relationship-state automation",
+    "No identity-continuity determination",
+    "No production inhabitant-policy establishment",
+    "Real personal data remains CLOSED",
+    "No production-readiness claim"
+  ],
+  "portability": {
+    "tracker_issue": 4,
+    "tracker_state": "open",
+    "canonical_store": "SQLite",
+    "portable_migration_rehearsal": "GREEN on reviewed head via Actions #438",
+    "host_migration_is_identity_evidence": false
+  },
+  "capture_process": {
+    "branch": "engineering-snapshot-2026-10-06-post-wake-model-input-independent",
+    "note": "Capture branch and snapshot files are created after the anchor and are not part of the anchored tree."
+  }
+}
