@@ -23,6 +23,19 @@ for the exact-head reviews that produced the state.
 - Snapshot metadata must never be used as identity evidence, Room authority,
   Current truth, model instruction authority, or real-data permission.
 
-The first snapshot is the pre-persistence / pre-Wake semantic baseline after
-Living continuity, Room participation authority, and Current View v0.1 were
-merged into main.
+## Canonical snapshots
+
+1. `2026-10-02-pre-persistence-baseline`
+   - anchor: `661590f6f71525023fbf2f9d96d3332acfdf774c`
+   - clean semantic boundary after Living continuity, Room participation
+     authority, and Current View v0.1; before Current persistence / Wake.
+
+2. `2026-10-06-post-wake-model-input-baseline`
+   - anchor: `951f35763069f4e5787c173f1ecb8cc7b7ce3759`
+   - clean engineering boundary after Current persistence/admission/suppression/
+     resolver and Wake Packet -> Issuance -> Presentation -> Local Handoff ->
+     Model Input; before provider/model execution.
+
+Issue #48 / PR #49 was an intermediate post-Current-suppression capture attempt
+that never merged. It remains historical construction metadata and is not a
+canonical snapshot on `main`.
