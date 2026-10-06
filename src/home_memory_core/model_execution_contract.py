@@ -193,7 +193,7 @@ class ExecutionSourceBinding:
     source_serialized_representation_digest: str
     source_serializer_version: str
     source_media_type: str
-    source_construction_binding_digest: str
+    source_construction_receipt_binding_digest: str
     use_boundary: WakeUseBoundary
     _marker: object = field(repr=False, compare=False)
 
@@ -226,7 +226,7 @@ class ExecutionSourceBinding:
             "policy_digest",
             "source_request_semantic_digest",
             "source_serialized_representation_digest",
-            "source_construction_binding_digest",
+            "source_construction_receipt_binding_digest",
         ):
             _digest(field_name, getattr(self, field_name))
         if (
@@ -428,7 +428,7 @@ class DryRunExecutionPreparationReceipt:
     source_handoff_generation: int
     source_as_of: datetime
     temporal_semantics: WakeContextTemporalSemantics
-    source_construction_binding_digest: str
+    source_binding_digest: str
     source_request_semantic_digest: str
     source_serialized_representation_digest: str
     topology_policy_digest: str
@@ -485,7 +485,7 @@ class DryRunExecutionPreparationReceipt:
                 "preparation temporal semantics are invalid"
             )
         for field_name in (
-            "source_construction_binding_digest",
+            "source_binding_digest",
             "source_request_semantic_digest",
             "source_serialized_representation_digest",
             "topology_policy_digest",
@@ -651,7 +651,7 @@ class ModelExecutionContractBoundary:
             temporal_semantics=(
                 constructed.request.source_handoff.temporal_semantics
             ),
-            source_construction_binding_digest=source_binding_digest,
+            source_binding_digest=source_binding_digest,
             source_request_semantic_digest=(
                 construction_receipt.request_semantic_digest
             ),
@@ -783,7 +783,7 @@ class ModelExecutionContractBoundary:
         if (
             source_binding_digest != state.source_binding_digest
             or source_binding_digest
-            != receipt.source_construction_binding_digest
+            != receipt.source_binding_digest
         ):
             raise ModelExecutionContractIntegrityError(
                 "prepared source binding changed"
@@ -946,7 +946,7 @@ def _source_binding(
         ),
         source_serializer_version=receipt.serializer_version,
         source_media_type=receipt.media_type,
-        source_construction_binding_digest=binding_digest,
+        source_construction_receipt_binding_digest=binding_digest,
         use_boundary=receipt.use_boundary,
         _marker=_SOURCE_BINDING_MARKER,
     )
