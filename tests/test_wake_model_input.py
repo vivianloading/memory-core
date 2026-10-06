@@ -53,6 +53,7 @@ from home_memory_core.storage import MemoryStore
 from home_memory_core.wake_issuance import open_wake_issuance_authority
 from home_memory_core.wake_local_handoff import (
     WakeLocalHandoffAuthorizationError,
+    WakeLocalHandoffIntegrityError,
     open_wake_local_handoff_authority,
 )
 from home_memory_core.wake_model_input import (
@@ -332,6 +333,18 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
                 keys.update(self._dict_keys(child))
         return keys
 
+    def _all_strings(self, value):
+        strings = []
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict):
+            for child in value.values():
+                strings.extend(self._all_strings(child))
+        elif isinstance(value, list):
+            for child in value:
+                strings.extend(self._all_strings(child))
+        return strings
+
     def test_public_construct_consumes_only_exact_handoff_receipt(self) -> None:
         parameters = set(
             inspect.signature(
@@ -547,9 +560,12 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
             handoff_receipt=malicious_handoff
         )
 
+        presentation_payload = json.loads(
+            malicious.request.wake_context.payload_json
+        )
         self.assertIn(
             adversarial,
-            malicious.request.wake_context.payload_json,
+            self._all_strings(presentation_payload),
         )
         self.assertEqual(
             malicious.receipt.policy_digest,
@@ -580,8 +596,8 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
             )
 
         self.assertIn(
-            adversarial,
-            malicious.serialized_text,
+            malicious.request.wake_context.payload_json,
+            self._all_strings(parsed),
         )
         self._assert_none_boundary(
             malicious.request.use_boundary
@@ -731,7 +747,7 @@ class WakeModelInputBoundaryTests(unittest.TestCase):
             "mutated-upstream",
         )
         with self.assertRaises(
-            WakeLocalHandoffAuthorizationError
+            WakeLocalHandoffIntegrityError
         ):
             self.model_boundary.require_live_construction(
                 receipt=constructed.receipt
