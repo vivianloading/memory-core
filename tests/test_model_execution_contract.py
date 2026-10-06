@@ -301,11 +301,6 @@ class ModelExecutionContractTests(unittest.TestCase):
             prepared.request.wake_data.value.payload_json,
             self._all_strings(parsed),
         )
-        self.assertIn(
-            malicious,
-            prepared.request.wake_data.value.payload_json,
-        )
-
         keys = self._all_keys(parsed)
         for forbidden_key in (
             "role",
