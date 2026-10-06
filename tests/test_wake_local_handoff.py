@@ -687,6 +687,116 @@ class WakeLocalHandoffTests(unittest.TestCase):
         finally:
             self.coordinator.release_cut(cut=cut)
 
+    def test_contended_same_thread_memory_reentry_rejects_before_legacy_lock(self) -> None:
+        cut_ready = threading.Event()
+        attempt_now = threading.Event()
+        waiting_writer_at_home_gate = threading.Event()
+        owner_done = threading.Event()
+        waiting_writer_done = threading.Event()
+        owner_result = {}
+        errors = []
+        waiting_writer_ident = {}
+
+        waiting_source = create_source_record(
+            source_id="source-contended-waiter",
+            content="waiting writer",
+            authored_by="test",
+            scope="room-r",
+        )
+        owner_source = create_source_record(
+            source_id="source-contended-owner",
+            content="cut owner writer",
+            authored_by="test",
+            scope="room-r",
+        )
+
+        original_acquire_writer = self.coordinator.acquire_writer
+
+        def observed_acquire_writer():
+            if (
+                threading.get_ident()
+                == waiting_writer_ident.get("ident")
+            ):
+                waiting_writer_at_home_gate.set()
+            return original_acquire_writer()
+
+        def waiting_writer() -> None:
+            waiting_writer_ident["ident"] = threading.get_ident()
+            try:
+                self.memory.add_source(waiting_source)
+                waiting_writer_done.set()
+            except BaseException as error:
+                errors.append(error)
+
+        def cut_owner() -> None:
+            cut = self.coordinator.acquire_cut()
+            try:
+                cut_ready.set()
+                if not attempt_now.wait(timeout=3):
+                    raise AssertionError("contended reentry attempt was not released")
+                started = time.monotonic()
+                try:
+                    self.memory.add_source(owner_source)
+                except BaseException as error:
+                    owner_result["error"] = error
+                else:
+                    owner_result["error"] = None
+                owner_result["elapsed"] = time.monotonic() - started
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                try:
+                    self.coordinator.release_cut(cut=cut)
+                except BaseException as error:
+                    errors.append(error)
+                owner_done.set()
+
+        with patch.object(
+            self.coordinator,
+            "acquire_writer",
+            side_effect=observed_acquire_writer,
+        ):
+            owner_thread = threading.Thread(
+                target=cut_owner,
+                daemon=True,
+            )
+            owner_thread.start()
+            self.assertTrue(cut_ready.wait(timeout=2))
+
+            waiter_thread = threading.Thread(
+                target=waiting_writer,
+                daemon=True,
+            )
+            waiter_thread.start()
+            self.assertTrue(
+                waiting_writer_at_home_gate.wait(timeout=2)
+            )
+            self.assertFalse(waiting_writer_done.is_set())
+
+            attempt_now.set()
+            self.assertTrue(
+                owner_done.wait(timeout=2),
+                "cut owner deadlocked behind the contended legacy Memory lock",
+            )
+            self.assertIsInstance(
+                owner_result.get("error"),
+                HomeStateOrderingReentryError,
+            )
+            self.assertLess(owner_result.get("elapsed", 99.0), 1.0)
+
+            self.assertTrue(waiting_writer_done.wait(timeout=2))
+            owner_thread.join(timeout=1)
+            waiter_thread.join(timeout=1)
+
+        self.assertEqual(errors, [])
+        self.assertFalse(owner_thread.is_alive())
+        self.assertFalse(waiter_thread.is_alive())
+        self.assertIsNotNone(
+            self.memory.get_source_for_audit("source-contended-waiter")
+        )
+        with self.assertRaises(KeyError):
+            self.memory.get_source_for_audit("source-contended-owner")
+
     def test_legacy_memory_delivery_guard_does_not_freeze_living_writers(self) -> None:
         guard_entered = threading.Event()
         release_guard = threading.Event()
