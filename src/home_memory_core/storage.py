@@ -1,13 +1,12 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from functools import wraps
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Any, Callable, TypeVar
 
 from home_memory_core.evidence import EvidenceRef
+from home_memory_core.home_state_ordering import home_state_coordinator_for_path
 from home_memory_core.lineage import (
     LineageIntegrityError,
     LineageResolutionInput,
@@ -43,7 +42,6 @@ from home_memory_core.thread import (
 )
 
 
-_WRITE_RESULT = TypeVar("_WRITE_RESULT")
 _AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
 _AUTHORITY_LOCKS: dict[str, RLock] = {}
 
@@ -824,6 +822,8 @@ def _execute_sql_script_in_current_transaction(
 
 
 def _authority_lock_for_path(db_path: Path) -> RLock:
+    """Legacy Memory-only request-delivery ordering lock."""
+
     key = str(db_path.expanduser().resolve())
     with _AUTHORITY_LOCK_REGISTRY_GUARD:
         lock = _AUTHORITY_LOCKS.get(key)
@@ -833,27 +833,15 @@ def _authority_lock_for_path(db_path: Path) -> RLock:
         return lock
 
 
-def _authority_ordered_write(
-    method: Callable[..., _WRITE_RESULT],
-) -> Callable[..., _WRITE_RESULT]:
-    """Serialize authority-affecting writes with request handoff.
-
-    This is intentionally a same-process v0.1 coordination primitive. Raw
-    SQLite access and other processes remain outside this contract.
-    """
-
-    @wraps(method)
-    def wrapper(self: "MemoryStore", *args: Any, **kwargs: Any) -> _WRITE_RESULT:
-        with self._authority_ordering_lock:
-            return method(self, *args, **kwargs)
-
-    return wrapper
-
-
 class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
-        self._authority_ordering_lock = _authority_lock_for_path(self.db_path)
+        self._authority_ordering_lock = _authority_lock_for_path(
+            self.db_path
+        )
+        self._home_state_coordinator = (
+            home_state_coordinator_for_path(self.db_path)
+        )
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1123,7 +1111,6 @@ class MemoryStore:
                     "MemoryStore initialization lost its SQLite write transaction"
                 )
 
-    @_authority_ordered_write
     def add_source(self, source: SourceRecord) -> None:
         self._validate_source_record_integrity(source=source)
 
@@ -1178,7 +1165,6 @@ class MemoryStore:
                 source_id=source_id,
             )
 
-    @_authority_ordered_write
     def suppress_source(
         self,
         suppression: SuppressionRecord,
@@ -1268,7 +1254,6 @@ class MemoryStore:
 
             return source_id not in suppressed_ids
 
-    @_authority_ordered_write
     def add_interpretation(
         self,
         interpretation: InterpretationRecord,
@@ -1401,7 +1386,6 @@ class MemoryStore:
                 suppressions=suppressions,
             )
 
-    @_authority_ordered_write
     def add_thread(self, thread: InterpretationThread) -> None:
         self._validate_thread_record(thread=thread)
 
@@ -1443,7 +1427,6 @@ class MemoryStore:
                 thread_id=thread_id,
             )
 
-    @_authority_ordered_write
     def admit_interpretation(
         self,
         admission: ThreadAdmissionRecord,
@@ -1535,7 +1518,6 @@ class MemoryStore:
                 thread_id=thread_id,
             )
 
-    @_authority_ordered_write
     def add_supersession(
         self,
         supersession: SupersessionRecord,
@@ -1760,10 +1742,11 @@ class MemoryStore:
 
     @contextmanager
     def _request_delivery_ordering_guard(self) -> Iterator[None]:
-        """Serialize one request handoff against authority-affecting writes.
+        """Legacy Memory-only request-delivery ordering boundary.
 
-        v0.1 scope: one Python process. The guard is shared by MemoryStore
-        instances that address the same resolved SQLite path.
+        This deliberately does not become a whole-HOME delivery cut: the legacy
+        boundary still executes an arbitrary callback. Wake Local Handoff uses
+        the separate HOME coordinator and no arbitrary callback.
         """
         with self._authority_ordering_lock:
             yield
@@ -1801,19 +1784,32 @@ class MemoryStore:
 
     @contextmanager
     def _write_transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connect_raw()
+        # Fail unsafe same-thread HOME re-entry before waiting for the legacy
+        # Memory lock. This is only a non-blocking preflight; ordinary writers
+        # still acquire the legacy lock before the HOME writer permit.
+        self._home_state_coordinator.require_writer_entry_allowed()
+        with self._authority_ordering_lock:
+            permit = self._home_state_coordinator.acquire_writer()
+            connection: sqlite3.Connection | None = None
 
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            assert_synthetic_store_domain(connection)
-            yield connection
-            connection.commit()
-        except BaseException:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            connection.close()
+            try:
+                connection = self._connect_raw()
+                connection.execute("BEGIN IMMEDIATE")
+                assert_synthetic_store_domain(connection)
+                yield connection
+                connection.commit()
+                permit.record_successful_commit()
+            except BaseException:
+                if (
+                    connection is not None
+                    and connection.in_transaction
+                ):
+                    connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+                permit.release()
 
     def _connect_raw(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -33,6 +35,10 @@ from home_memory_core.current_view import (
     ValidityRule,
 )
 from home_memory_core.evidence import EvidenceRef
+from home_memory_core.home_state_ordering import (
+    HomeStateWritePermit,
+    home_state_coordinator_for_path,
+)
 from home_memory_core.living_store import (
     ATTACHMENT_TABLE,
     EPISODE_TABLE,
@@ -85,6 +91,32 @@ class PersistedCurrentEndEvent:
     room_attachment_event_id: str | None
 
 
+class _CurrentWriteTransaction:
+    def __init__(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        permit: HomeStateWritePermit,
+    ) -> None:
+        self.connection = connection
+        self._permit = permit
+        self._committed = False
+
+    @property
+    def committed(self) -> bool:
+        return self._committed
+
+    def commit(self) -> int:
+        if self._committed:
+            raise CurrentStoreIntegrityError(
+                "Current write transaction can commit only once"
+            )
+        self.connection.commit()
+        generation = self._permit.record_successful_commit()
+        self._committed = True
+        return generation
+
+
 class CurrentStore:
     """Synthetic-only durable history backing the derived Current View.
 
@@ -95,6 +127,9 @@ class CurrentStore:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self._home_state_coordinator = (
+            home_state_coordinator_for_path(self.db_path)
+        )
 
     def initialize(self) -> None:
         if not self.db_path.exists():
@@ -132,24 +167,17 @@ class CurrentStore:
         record: CurrentStateRecord,
         source_bindings: tuple[CurrentSourceBinding, ...],
     ) -> None:
-        connection = self._write_connection()
         try:
-            self._append_state_in_transaction(
-                connection=connection,
-                record=record,
-                source_bindings=source_bindings,
-            )
-            connection.commit()
+            with self._write_transaction() as transaction:
+                self._append_state_in_transaction(
+                    connection=transaction.connection,
+                    record=record,
+                    source_bindings=source_bindings,
+                )
         except sqlite3.IntegrityError as error:
-            connection.rollback()
             raise CurrentStoreConflictError(
                 f"Current state conflicts with persisted history: {getattr(record, 'state_id', '<invalid>')}"
             ) from error
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def _append_state_in_transaction(
         self,
@@ -199,24 +227,17 @@ class CurrentStore:
         event: CurrentStateEndEvent,
         source_bindings: tuple[CurrentSourceBinding, ...],
     ) -> None:
-        connection = self._write_connection()
         try:
-            self._append_end_event_in_transaction(
-                connection=connection,
-                event=event,
-                source_bindings=source_bindings,
-            )
-            connection.commit()
+            with self._write_transaction() as transaction:
+                self._append_end_event_in_transaction(
+                    connection=transaction.connection,
+                    event=event,
+                    source_bindings=source_bindings,
+                )
         except sqlite3.IntegrityError as error:
-            connection.rollback()
             raise CurrentStoreConflictError(
                 f"Current end event conflicts with persisted history: {getattr(event, 'end_event_id', '<invalid>')}"
             ) from error
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def _append_end_event_in_transaction(
         self,
@@ -317,18 +338,35 @@ class CurrentStore:
         finally:
             connection.close()
 
-    def _write_connection(self) -> sqlite3.Connection:
-        connection = self._connect()
+    @contextmanager
+    def _write_transaction(
+        self,
+    ) -> Iterator[_CurrentWriteTransaction]:
+        permit = self._home_state_coordinator.acquire_writer()
+        connection: sqlite3.Connection | None = None
+        transaction: _CurrentWriteTransaction | None = None
         try:
+            connection = self._connect()
+            transaction = _CurrentWriteTransaction(
+                connection=connection,
+                permit=permit,
+            )
             connection.execute("BEGIN IMMEDIATE")
             self._assert_upstream(connection)
             assert_source_suppression_ledger(connection)
             assert_current_schema(connection)
             assert_current_data_integrity(connection)
-            return connection
-        except Exception:
-            connection.close()
+            yield transaction
+            if not transaction.committed:
+                transaction.commit()
+        except BaseException:
+            if connection is not None and connection.in_transaction:
+                connection.rollback()
             raise
+        finally:
+            if connection is not None:
+                connection.close()
+            permit.release()
 
     def _read_connection(self) -> sqlite3.Connection:
         connection = self._connect_read_only()

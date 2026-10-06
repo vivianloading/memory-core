@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -19,6 +21,7 @@ from home_memory_core.living_continuity import (
     resolve_continuity_topology,
     resolve_room_attachment,
 )
+from home_memory_core.home_state_ordering import home_state_coordinator_for_path
 from home_memory_core.interpretation import SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
 from home_memory_core.store_domain import assert_synthetic_store_domain
 
@@ -478,6 +481,9 @@ class LivingStore:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self._home_state_coordinator = (
+            home_state_coordinator_for_path(self.db_path)
+        )
 
     def initialize(self) -> None:
         """Install Living Layer tables inside an existing synthetic HOME store.
@@ -588,20 +594,16 @@ class LivingStore:
         if not isinstance(room, RoomRecord):
             raise TypeError("room must be RoomRecord")
 
-        connection = self._write_connection()
         try:
-            connection.execute(
-                f"INSERT INTO {ROOM_TABLE} (room_id) VALUES (?)",
-                (room.room_id,),
-            )
-            connection.commit()
+            with self._write_transaction() as connection:
+                connection.execute(
+                    f"INSERT INTO {ROOM_TABLE} (room_id) VALUES (?)",
+                    (room.room_id,),
+                )
         except sqlite3.IntegrityError as error:
-            connection.rollback()
             raise LivingStoreConflictError(
                 f"room record conflicts with persisted state: {room.room_id}"
             ) from error
-        finally:
-            connection.close()
 
     def get_room(self, room_id: str) -> RoomRecord:
         connection = self._read_connection()
@@ -620,33 +622,29 @@ class LivingStore:
         if not isinstance(episode, EpisodeRecord):
             raise TypeError("episode must be EpisodeRecord")
 
-        connection = self._write_connection()
         try:
-            connection.execute(
-                f"""
-                INSERT INTO {EPISODE_TABLE} (
-                    episode_id,
-                    perspective_instance_id,
-                    runtime_instance_id,
-                    model_ref
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (
-                    episode.episode_id,
-                    episode.perspective_instance_id,
-                    episode.runtime_instance_id,
-                    episode.model_ref,
-                ),
-            )
-            connection.commit()
+            with self._write_transaction() as connection:
+                connection.execute(
+                    f"""
+                    INSERT INTO {EPISODE_TABLE} (
+                        episode_id,
+                        perspective_instance_id,
+                        runtime_instance_id,
+                        model_ref
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        episode.episode_id,
+                        episode.perspective_instance_id,
+                        episode.runtime_instance_id,
+                        episode.model_ref,
+                    ),
+                )
         except sqlite3.IntegrityError as error:
-            connection.rollback()
             raise LivingStoreConflictError(
                 "episode record conflicts with persisted state: "
                 f"{episode.episode_id}"
             ) from error
-        finally:
-            connection.close()
 
     def get_episode(self, episode_id: str) -> EpisodeRecord:
         connection = self._read_connection()
@@ -678,50 +676,46 @@ class LivingStore:
                 "partial/verified require a future typed verifier"
             )
 
-        connection = self._write_connection()
         try:
-            episodes = self._read_all_episodes(connection)
-            existing_edges = self._read_all_continuity_edges(connection)
+            with self._write_transaction() as connection:
+                episodes = self._read_all_episodes(connection)
+                existing_edges = self._read_all_continuity_edges(connection)
 
-            try:
-                resolve_continuity_topology(
-                    episodes=episodes,
-                    edges=existing_edges + (edge,),
+                try:
+                    resolve_continuity_topology(
+                        episodes=episodes,
+                        edges=existing_edges + (edge,),
+                    )
+                except LivingContinuityError as error:
+                    raise LivingStoreIntegrityError(str(error)) from error
+
+                connection.execute(
+                    f"""
+                    INSERT INTO {CONTINUITY_EDGE_TABLE} (
+                        edge_id,
+                        previous_episode_id,
+                        next_episode_id,
+                        transfer_mode,
+                        continuity_status,
+                        support_refs_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        edge.edge_id,
+                        edge.previous_episode_id,
+                        edge.next_episode_id,
+                        edge.transfer_mode.value,
+                        edge.continuity_status.value,
+                        _encode_support_refs(edge.support_refs),
+                    ),
                 )
-            except LivingContinuityError as error:
-                raise LivingStoreIntegrityError(str(error)) from error
-
-            connection.execute(
-                f"""
-                INSERT INTO {CONTINUITY_EDGE_TABLE} (
-                    edge_id,
-                    previous_episode_id,
-                    next_episode_id,
-                    transfer_mode,
-                    continuity_status,
-                    support_refs_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    edge.edge_id,
-                    edge.previous_episode_id,
-                    edge.next_episode_id,
-                    edge.transfer_mode.value,
-                    edge.continuity_status.value,
-                    _encode_support_refs(edge.support_refs),
-                ),
-            )
-            connection.commit()
         except (sqlite3.IntegrityError, LivingStoreIntegrityError) as error:
-            connection.rollback()
             if isinstance(error, LivingStoreIntegrityError):
                 raise
             raise LivingStoreConflictError(
                 "continuity edge conflicts with persisted state: "
                 f"{edge.edge_id}"
             ) from error
-        finally:
-            connection.close()
 
     def list_continuity_edges(self) -> tuple[ContinuityEdge, ...]:
         connection = self._read_connection()
@@ -749,72 +743,68 @@ class LivingStore:
         if not isinstance(event, RoomAttachmentEvent):
             raise TypeError("event must be RoomAttachmentEvent")
 
-        connection = self._write_connection()
         try:
-            episode_exists = connection.execute(
-                f"SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id = ?",
-                (event.episode_id,),
-            ).fetchone()
-            if episode_exists is None:
-                raise LivingStoreIntegrityError(
-                    "room attachment episode is missing"
-                )
-
-            if event.route_kind is RoomRouteKind.ATTACHED:
-                room_exists = connection.execute(
-                    f"SELECT 1 FROM {ROOM_TABLE} WHERE room_id = ?",
-                    (event.room_id,),
+            with self._write_transaction() as connection:
+                episode_exists = connection.execute(
+                    f"SELECT 1 FROM {EPISODE_TABLE} WHERE episode_id = ?",
+                    (event.episode_id,),
                 ).fetchone()
-                if room_exists is None:
+                if episode_exists is None:
                     raise LivingStoreIntegrityError(
-                        "room attachment target room is missing"
+                        "room attachment episode is missing"
                     )
 
-            existing = self._read_room_attachment_events(
-                connection,
-                episode_id=event.episode_id,
-            )
-            try:
-                resolve_room_attachment(
-                    episode_id=event.episode_id,
-                    events=existing + (event,),
-                )
-            except LivingContinuityError as error:
-                raise LivingStoreIntegrityError(str(error)) from error
+                if event.route_kind is RoomRouteKind.ATTACHED:
+                    room_exists = connection.execute(
+                        f"SELECT 1 FROM {ROOM_TABLE} WHERE room_id = ?",
+                        (event.room_id,),
+                    ).fetchone()
+                    if room_exists is None:
+                        raise LivingStoreIntegrityError(
+                            "room attachment target room is missing"
+                        )
 
-            connection.execute(
-                f"""
-                INSERT INTO {ATTACHMENT_TABLE} (
-                    attachment_event_id,
-                    episode_id,
-                    route_kind,
-                    room_id,
-                    basis,
-                    supersedes_attachment_event_id,
-                    support_refs_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.attachment_event_id,
-                    event.episode_id,
-                    event.route_kind.value,
-                    event.room_id,
-                    event.basis,
-                    event.supersedes_attachment_event_id,
-                    _encode_support_refs(event.support_refs),
-                ),
-            )
-            connection.commit()
+                existing = self._read_room_attachment_events(
+                    connection,
+                    episode_id=event.episode_id,
+                )
+                try:
+                    resolve_room_attachment(
+                        episode_id=event.episode_id,
+                        events=existing + (event,),
+                    )
+                except LivingContinuityError as error:
+                    raise LivingStoreIntegrityError(str(error)) from error
+
+                connection.execute(
+                    f"""
+                    INSERT INTO {ATTACHMENT_TABLE} (
+                        attachment_event_id,
+                        episode_id,
+                        route_kind,
+                        room_id,
+                        basis,
+                        supersedes_attachment_event_id,
+                        support_refs_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.attachment_event_id,
+                        event.episode_id,
+                        event.route_kind.value,
+                        event.room_id,
+                        event.basis,
+                        event.supersedes_attachment_event_id,
+                        _encode_support_refs(event.support_refs),
+                    ),
+                )
         except (sqlite3.IntegrityError, LivingStoreIntegrityError) as error:
-            connection.rollback()
             if isinstance(error, LivingStoreIntegrityError):
                 raise
             raise LivingStoreConflictError(
                 "room attachment conflicts with persisted state: "
                 f"{event.attachment_event_id}"
             ) from error
-        finally:
-            connection.close()
 
     def list_room_attachment_events(
         self,
@@ -861,17 +851,27 @@ class LivingStore:
         finally:
             connection.close()
 
-    def _write_connection(self) -> sqlite3.Connection:
-        connection = self._connect()
+    @contextmanager
+    def _write_transaction(self) -> Iterator[sqlite3.Connection]:
+        permit = self._home_state_coordinator.acquire_writer()
+        connection: sqlite3.Connection | None = None
         try:
+            connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
             assert_synthetic_store_domain(connection)
             assert_living_schema(connection)
             assert_living_data_integrity(connection)
-            return connection
-        except Exception:
-            connection.close()
+            yield connection
+            connection.commit()
+            permit.record_successful_commit()
+        except BaseException:
+            if connection is not None and connection.in_transaction:
+                connection.rollback()
             raise
+        finally:
+            if connection is not None:
+                connection.close()
+            permit.release()
 
     def _read_connection(self) -> sqlite3.Connection:
         connection = self._connect()

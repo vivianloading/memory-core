@@ -327,55 +327,50 @@ class CurrentAdmissionAuthority:
         assert record.episode_id is not None
         assert record.perspective_instance_id is not None
 
-        connection = self._current_store._write_connection()
         try:
-            assert_current_admission_schema(connection)
-            assert_current_admission_data_integrity(connection)
-            predecessor_admission_id = self._require_supersession_receipt(
-                connection=connection,
-                record=record,
-                receipt=supersedes_receipt,
-            )
-            with self._room_authority._hold_grant_for_operation(
-                grant=grant,
-                session_id=grant.session_id,
-                episode_id=record.episode_id,
-                perspective_instance_id=record.perspective_instance_id,
-                room_id=record.owner_id,
-                required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
-            ):
-                room_attachment_event_id = (
-                    self._current_store._append_state_in_transaction(
-                        connection=connection,
-                        record=record,
-                        source_bindings=source_bindings,
-                    )
-                )
-                if room_attachment_event_id is None:
-                    raise CurrentAdmissionIntegrityError(
-                        "Room Current admission requires exact attachment provenance"
-                    )
-                receipt = self._insert_state_admission(
+            with self._current_store._write_transaction() as transaction:
+                connection = transaction.connection
+                assert_current_admission_schema(connection)
+                assert_current_admission_data_integrity(connection)
+                predecessor_admission_id = self._require_supersession_receipt(
                     connection=connection,
                     record=record,
-                    grant=grant,
-                    room_attachment_event_id=room_attachment_event_id,
-                    predecessor_admission_id=predecessor_admission_id,
+                    receipt=supersedes_receipt,
                 )
-                assert_current_admission_data_integrity(connection)
-                connection.commit()
-                self._register_receipt(receipt)
-                return receipt
+                with self._room_authority._hold_grant_for_operation(
+                    grant=grant,
+                    session_id=grant.session_id,
+                    episode_id=record.episode_id,
+                    perspective_instance_id=record.perspective_instance_id,
+                    room_id=record.owner_id,
+                    required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
+                ):
+                    room_attachment_event_id = (
+                        self._current_store._append_state_in_transaction(
+                            connection=connection,
+                            record=record,
+                            source_bindings=source_bindings,
+                        )
+                    )
+                    if room_attachment_event_id is None:
+                        raise CurrentAdmissionIntegrityError(
+                            "Room Current admission requires exact attachment provenance"
+                        )
+                    receipt = self._insert_state_admission(
+                        connection=connection,
+                        record=record,
+                        grant=grant,
+                        room_attachment_event_id=room_attachment_event_id,
+                        predecessor_admission_id=predecessor_admission_id,
+                    )
+                    assert_current_admission_data_integrity(connection)
+                    transaction.commit()
+                    self._register_receipt(receipt)
+                    return receipt
         except sqlite3.IntegrityError as error:
-            connection.rollback()
             raise CurrentAdmissionConflictError(
                 f"Current state admission conflicts with persisted history: {record.state_id}"
             ) from error
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def admit_room_end_event(
         self,
@@ -397,75 +392,70 @@ class CurrentAdmissionAuthority:
                 "Room Current end-event admission requires Episode/Perspective provenance"
             )
 
-        connection = self._current_store._write_connection()
         try:
-            assert_current_admission_schema(connection)
-            assert_current_admission_data_integrity(connection)
-            target_receipt = self._require_live_receipt(
-                connection=connection,
-                receipt=target_state_receipt,
-                effect_kind=CurrentAdmissionEffectKind.STATE,
-                effect_id=event.state_id,
-            )
-            target = connection.execute(
-                f"SELECT namespace,owner_id FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
-                (event.state_id,),
-            ).fetchone()
-            if target is None:
-                raise CurrentAdmissionIntegrityError(
-                    "Current end-event target disappeared before admission"
+            with self._current_store._write_transaction() as transaction:
+                connection = transaction.connection
+                assert_current_admission_schema(connection)
+                assert_current_admission_data_integrity(connection)
+                target_receipt = self._require_live_receipt(
+                    connection=connection,
+                    receipt=target_state_receipt,
+                    effect_kind=CurrentAdmissionEffectKind.STATE,
+                    effect_id=event.state_id,
                 )
-            namespace = CurrentNamespace(target["namespace"])
-            if namespace is not CurrentNamespace.ROOM:
-                raise CurrentAdmissionAuthorizationError(
-                    "Slice 2 v0.1 admits Room Current only; Shared admission is closed"
-                )
-            room_id = target["owner_id"]
-            with self._room_authority._hold_grant_for_operation(
-                grant=grant,
-                session_id=grant.session_id,
-                episode_id=event.episode_id,
-                perspective_instance_id=event.perspective_instance_id,
-                room_id=room_id,
-                required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
-            ):
-                room_attachment_event_id, written_namespace, written_owner = (
-                    self._current_store._append_end_event_in_transaction(
+                target = connection.execute(
+                    f"SELECT namespace,owner_id FROM {CURRENT_STATE_TABLE} WHERE state_id=?",
+                    (event.state_id,),
+                ).fetchone()
+                if target is None:
+                    raise CurrentAdmissionIntegrityError(
+                        "Current end-event target disappeared before admission"
+                    )
+                namespace = CurrentNamespace(target["namespace"])
+                if namespace is not CurrentNamespace.ROOM:
+                    raise CurrentAdmissionAuthorizationError(
+                        "Slice 2 v0.1 admits Room Current only; Shared admission is closed"
+                    )
+                room_id = target["owner_id"]
+                with self._room_authority._hold_grant_for_operation(
+                    grant=grant,
+                    session_id=grant.session_id,
+                    episode_id=event.episode_id,
+                    perspective_instance_id=event.perspective_instance_id,
+                    room_id=room_id,
+                    required_scope=RoomParticipationScope.CHANGE_CURRENT_STANCE,
+                ):
+                    room_attachment_event_id, written_namespace, written_owner = (
+                        self._current_store._append_end_event_in_transaction(
+                            connection=connection,
+                            event=event,
+                            source_bindings=source_bindings,
+                        )
+                    )
+                    if (
+                        written_namespace is not CurrentNamespace.ROOM
+                        or written_owner != room_id
+                        or room_attachment_event_id is None
+                    ):
+                        raise CurrentAdmissionIntegrityError(
+                            "Current end-event target changed during admission"
+                        )
+                    receipt = self._insert_end_admission(
                         connection=connection,
                         event=event,
-                        source_bindings=source_bindings,
+                        grant=grant,
+                        room_id=room_id,
+                        room_attachment_event_id=room_attachment_event_id,
+                        target_state_admission_id=target_receipt.admission_id,
                     )
-                )
-                if (
-                    written_namespace is not CurrentNamespace.ROOM
-                    or written_owner != room_id
-                    or room_attachment_event_id is None
-                ):
-                    raise CurrentAdmissionIntegrityError(
-                        "Current end-event target changed during admission"
-                    )
-                receipt = self._insert_end_admission(
-                    connection=connection,
-                    event=event,
-                    grant=grant,
-                    room_id=room_id,
-                    room_attachment_event_id=room_attachment_event_id,
-                    target_state_admission_id=target_receipt.admission_id,
-                )
-                assert_current_admission_data_integrity(connection)
-                connection.commit()
-                self._register_receipt(receipt)
-                return receipt
+                    assert_current_admission_data_integrity(connection)
+                    transaction.commit()
+                    self._register_receipt(receipt)
+                    return receipt
         except sqlite3.IntegrityError as error:
-            connection.rollback()
             raise CurrentAdmissionConflictError(
                 f"Current end-event admission conflicts with persisted history: {event.end_event_id}"
             ) from error
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def require_live_receipt(
         self,
