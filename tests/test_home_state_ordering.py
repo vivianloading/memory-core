@@ -112,7 +112,16 @@ class HomeStateOrderingCoordinatorTests(unittest.TestCase):
                 self.coordinator.acquire_writer()
             with self.assertRaises(Exception):
                 self.coordinator.acquire_cut()
-            with self.assertRaises(Exception):
+
+        with patch.object(
+            ordering_module,
+            "current_home_process_instance_id",
+            side_effect=RuntimeError("inherited-process-boundary"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "inherited-process-boundary",
+            ):
                 home_state_coordinator_for_path(self.db)
 
     def test_other_thread_writer_waits_behind_cut(self) -> None:
