@@ -288,3 +288,45 @@ Freeze one exact head and apply HOME #18:
 **Fresh discovery -> Minimal proof -> Bounded coverage sweep.**
 
 Independent review may issue an exact-SHA verdict but has no merge authority.
+
+
+## 15. Current implementation shape
+
+The author implementation uses one global in-process coordinator registry keyed
+by resolved canonical SQLite path.
+
+MemoryStore, LivingStore, and CurrentStore instances for the same path therefore
+share one exact `HomeStateOrderingCoordinator` object.
+
+CurrentAdmission durable writes participate through
+`CurrentStore._write_transaction()`; admission keeps its original semantic
+ordering by committing while the Room grant hold is still active, then
+registering the process-local admission receipt before releasing the writer
+operation.
+
+The coordinator uses a non-reentrant condition/state protocol rather than one
+shared RLock:
+
+- `acquire_writer()` waits behind another thread's active cut;
+- `acquire_cut()` waits behind another thread's active writer;
+- same-thread writer/cut nesting fails closed;
+- successful commit records generation while the writer permit is still held;
+- permit/cut release wakes waiting operations.
+
+MemoryStore additionally retains its historical Memory-only RLock. Ordinary
+Memory writes acquire that legacy lock before the HOME writer permit. This
+preserves old RequestBoundDeliveryBoundary semantics without allowing its
+arbitrary callback to become a whole-HOME cut.
+
+`WakeLocalHandoffAuthority.handoff()` exposes only
+`request_id / episode_id / user_input`. It performs fresh issuance,
+Presentation planning/rendering, exact envelope construction, process-local
+acceptance, and receipt issuance under one HOME cut.
+
+`LocalWakeTransportBoundary` has no network/model callback. It binds exact
+origin object identity, HOME process incarnation, one-shot nonce, exact accepted
+envelope digest, and exact receipt digest.
+
+The accepted envelope remains retrievable only as evidence of the already
+completed local acceptance. Neither that retrieval nor the receipt grants
+permission to perform a future network/model delivery.
