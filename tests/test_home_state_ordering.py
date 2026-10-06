@@ -112,6 +112,8 @@ class HomeStateOrderingCoordinatorTests(unittest.TestCase):
                 self.coordinator.acquire_writer()
             with self.assertRaises(Exception):
                 self.coordinator.acquire_cut()
+            with self.assertRaises(Exception):
+                home_state_coordinator_for_path(self.db)
 
     def test_other_thread_writer_waits_behind_cut(self) -> None:
         cut = self.coordinator.acquire_cut()
