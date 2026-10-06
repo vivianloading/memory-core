@@ -1,3 +1,4 @@
+import copy
 import inspect
 import json
 import tempfile
@@ -593,6 +594,52 @@ class WakeLocalHandoffTests(unittest.TestCase):
         ):
             self.boundary.require_live_acceptance(
                 receipt=copied
+            )
+
+    def test_forced_receipt_mutation_breaks_live_acceptance_digest(self) -> None:
+        receipt = self.handoff.handoff(
+            request_id="request-receipt-mutation",
+            episode_id="episode-c",
+            user_input="original",
+        )
+        self.boundary.require_live_acceptance(
+            receipt=receipt
+        )
+        object.__setattr__(
+            receipt,
+            "request_id",
+            "request-changed-after-accept",
+        )
+
+        with self.assertRaises(
+            WakeLocalHandoffIntegrityError
+        ):
+            self.boundary.require_live_acceptance(
+                receipt=receipt
+            )
+
+    def test_shallow_copied_local_transport_boundary_is_not_origin(self) -> None:
+        receipt = self.handoff.handoff(
+            request_id="request-boundary-copy",
+            episode_id="episode-c",
+            user_input="copy boundary",
+        )
+        alias = copy.copy(self.boundary)
+        self.assertIsNot(alias, self.boundary)
+        self.assertIs(
+            alias._accepted,
+            self.boundary._accepted,
+        )
+        self.assertEqual(
+            alias.boundary_id,
+            self.boundary.boundary_id,
+        )
+
+        with self.assertRaises(
+            WakeLocalHandoffAuthorizationError
+        ):
+            alias.require_live_acceptance(
+                receipt=receipt
             )
 
     def test_mutated_accepted_envelope_breaks_live_acceptance_digest(self) -> None:
