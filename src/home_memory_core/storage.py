@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock, RLock
 
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.home_state_ordering import home_state_coordinator_for_path
@@ -39,6 +40,10 @@ from home_memory_core.thread import (
     ThreadAdmissionRecord,
     ThreadTopology,
 )
+
+
+_AUTHORITY_LOCK_REGISTRY_GUARD = Lock()
+_AUTHORITY_LOCKS: dict[str, RLock] = {}
 
 
 LEGACY_SUPPRESSION_SCHEMA_VERSION = "source-suppression-v0.1"
@@ -816,9 +821,24 @@ def _execute_sql_script_in_current_transaction(
         )
 
 
+def _authority_lock_for_path(db_path: Path) -> RLock:
+    """Legacy Memory-only request-delivery ordering lock."""
+
+    key = str(db_path.expanduser().resolve())
+    with _AUTHORITY_LOCK_REGISTRY_GUARD:
+        lock = _AUTHORITY_LOCKS.get(key)
+        if lock is None:
+            lock = RLock()
+            _AUTHORITY_LOCKS[key] = lock
+        return lock
+
+
 class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self._authority_ordering_lock = _authority_lock_for_path(
+            self.db_path
+        )
         self._home_state_coordinator = (
             home_state_coordinator_for_path(self.db_path)
         )
@@ -1722,16 +1742,14 @@ class MemoryStore:
 
     @contextmanager
     def _request_delivery_ordering_guard(self) -> Iterator[None]:
-        """Legacy Memory delivery cut on the shared HOME state coordinator.
+        """Legacy Memory-only request-delivery ordering boundary.
 
-        This remains same-process only. New Wake handoff does not execute an
-        arbitrary transport callback inside this legacy boundary.
+        This deliberately does not become a whole-HOME delivery cut: the legacy
+        boundary still executes an arbitrary callback. Wake Local Handoff uses
+        the separate HOME coordinator and no arbitrary callback.
         """
-        cut = self._home_state_coordinator.acquire_cut()
-        try:
+        with self._authority_ordering_lock:
             yield
-        finally:
-            self._home_state_coordinator.release_cut(cut=cut)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -1766,24 +1784,28 @@ class MemoryStore:
 
     @contextmanager
     def _write_transaction(self) -> Iterator[sqlite3.Connection]:
-        permit = self._home_state_coordinator.acquire_writer()
-        connection: sqlite3.Connection | None = None
+        with self._authority_ordering_lock:
+            permit = self._home_state_coordinator.acquire_writer()
+            connection: sqlite3.Connection | None = None
 
-        try:
-            connection = self._connect_raw()
-            connection.execute("BEGIN IMMEDIATE")
-            assert_synthetic_store_domain(connection)
-            yield connection
-            connection.commit()
-            permit.record_successful_commit()
-        except BaseException:
-            if connection is not None and connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            if connection is not None:
-                connection.close()
-            permit.release()
+            try:
+                connection = self._connect_raw()
+                connection.execute("BEGIN IMMEDIATE")
+                assert_synthetic_store_domain(connection)
+                yield connection
+                connection.commit()
+                permit.record_successful_commit()
+            except BaseException:
+                if (
+                    connection is not None
+                    and connection.in_transaction
+                ):
+                    connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+                permit.release()
 
     def _connect_raw(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
