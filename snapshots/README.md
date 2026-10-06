@@ -36,6 +36,7 @@ for the exact-head reviews that produced the state.
      resolver and Wake Packet -> Issuance -> Presentation -> Local Handoff ->
      Model Input; before provider/model execution.
 
-Issue #48 / PR #49 was an intermediate post-Current-suppression capture attempt
-that never merged. It remains historical construction metadata and is not a
-canonical snapshot on `main`.
+Issue #48 / PR #49 was an intermediate post-Current-suppression capture attempt.
+It was **never merged** and is **superseded** by the later 2026-10-06
+post-Wake-model-input capture. It remains historical construction metadata and
+is not a canonical snapshot on `main`.
