@@ -343,12 +343,14 @@ class CurrentStore:
         self,
     ) -> Iterator[_CurrentWriteTransaction]:
         permit = self._home_state_coordinator.acquire_writer()
-        connection = self._connect()
-        transaction = _CurrentWriteTransaction(
-            connection=connection,
-            permit=permit,
-        )
+        connection: sqlite3.Connection | None = None
+        transaction: _CurrentWriteTransaction | None = None
         try:
+            connection = self._connect()
+            transaction = _CurrentWriteTransaction(
+                connection=connection,
+                permit=permit,
+            )
             connection.execute("BEGIN IMMEDIATE")
             self._assert_upstream(connection)
             assert_source_suppression_ledger(connection)
@@ -358,11 +360,12 @@ class CurrentStore:
             if not transaction.committed:
                 transaction.commit()
         except BaseException:
-            if connection.in_transaction:
+            if connection is not None and connection.in_transaction:
                 connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
             permit.release()
 
     def _read_connection(self) -> sqlite3.Connection:
