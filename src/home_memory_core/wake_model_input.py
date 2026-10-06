@@ -11,6 +11,7 @@ from uuid import uuid4
 from home_memory_core.process_boundary import current_home_process_instance_id
 from home_memory_core.wake_local_handoff import (
     LocalWakeTransportBoundary,
+    WAKE_LOCAL_ACCEPTANCE_STATUS,
     WakeHandoffReceipt,
 )
 from home_memory_core.wake_packet import (
@@ -80,7 +81,9 @@ class MemoryWriteCapability(StrEnum):
 
 
 class WakeContextTemporalSemantics(StrEnum):
-    AT_COMPLETED_LOCAL_HANDOFF_CUT = "at_completed_local_handoff_cut"
+    ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF = (
+        "issuance_cut_confirmed_through_local_handoff"
+    )
 
 
 @dataclass(frozen=True)
@@ -213,9 +216,13 @@ class ModelInputSourceHandoff:
                 "source handoff generation must be non-negative integer"
             )
         _aware("as_of", self.as_of)
+        if self.accepted_status != WAKE_LOCAL_ACCEPTANCE_STATUS:
+            raise WakeModelInputIntegrityError(
+                "source handoff status must be accepted_local"
+            )
         if (
             self.temporal_semantics
-            is not WakeContextTemporalSemantics.AT_COMPLETED_LOCAL_HANDOFF_CUT
+            is not WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF
         ):
             raise WakeModelInputIntegrityError(
                 "Wake context must remain bound to completed local handoff cut"
@@ -261,7 +268,7 @@ class ModelInputWakeContext:
             _text(field_name, getattr(self, field_name))
         if (
             self.temporal_semantics
-            is not WakeContextTemporalSemantics.AT_COMPLETED_LOCAL_HANDOFF_CUT
+            is not WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF
         ):
             raise WakeModelInputIntegrityError(
                 "Wake context temporal semantics are invalid"
@@ -372,6 +379,7 @@ class RequestConstructionReceipt:
     source_handoff_id: str
     home_process_instance_id: str
     local_transport_boundary_id: str
+    model_input_boundary_id: str
     source_handoff_generation: int
     source_handoff_receipt_digest: str
     source_envelope_digest: str
@@ -401,6 +409,7 @@ class RequestConstructionReceipt:
             "source_handoff_id",
             "home_process_instance_id",
             "local_transport_boundary_id",
+            "model_input_boundary_id",
             "serializer_version",
             "media_type",
         ):
@@ -567,7 +576,7 @@ class WakeModelInputBoundary:
             accepted_status=handoff_receipt.acceptance_status,
             as_of=rendered_receipt.as_of,
             temporal_semantics=(
-                WakeContextTemporalSemantics.AT_COMPLETED_LOCAL_HANDOFF_CUT
+                WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF
             ),
             use_boundary=use_boundary,
             _marker=_SOURCE_HANDOFF_MARKER,
@@ -582,7 +591,7 @@ class WakeModelInputBoundary:
             renderer_version=rendered.renderer_version,
             payload_json=rendered.payload_json,
             temporal_semantics=(
-                WakeContextTemporalSemantics.AT_COMPLETED_LOCAL_HANDOFF_CUT
+                WakeContextTemporalSemantics.ISSUANCE_CUT_CONFIRMED_THROUGH_LOCAL_HANDOFF
             ),
             use_boundary=use_boundary,
             _marker=_WAKE_CONTEXT_MARKER,
@@ -606,7 +615,7 @@ class WakeModelInputBoundary:
         )
 
         request_digest = _semantic_digest(request)
-        serialized_text = serialize_home_model_input_request(
+        serialized_text = _serialize_home_model_input_request(
             request=request
         )
         serialized_digest = _sha256_text(serialized_text)
@@ -624,6 +633,7 @@ class WakeModelInputBoundary:
             local_transport_boundary_id=(
                 handoff_receipt.local_transport_boundary_id
             ),
+            model_input_boundary_id=self._boundary_id,
             source_handoff_generation=handoff_receipt.generation,
             source_handoff_receipt_digest=source_receipt_digest,
             source_envelope_digest=handoff_receipt.envelope_digest,
@@ -681,6 +691,10 @@ class WakeModelInputBoundary:
             raise WakeModelInputAuthorizationError(
                 "construction receipt belongs to another HOME process incarnation"
             )
+        if receipt.model_input_boundary_id != self._boundary_id:
+            raise WakeModelInputAuthorizationError(
+                "construction receipt belongs to another model-input boundary"
+            )
         if (
             _semantic_digest(receipt)
             != state.construction_receipt_digest
@@ -731,7 +745,7 @@ class WakeModelInputBoundary:
                 "constructed request HOME policy is no longer canonical"
             )
 
-        expected_serialized = serialize_home_model_input_request(
+        expected_serialized = _serialize_home_model_input_request(
             request=constructed.request
         )
         if expected_serialized != constructed.serialized_text:
@@ -778,7 +792,7 @@ def open_wake_model_input_boundary(
     )
 
 
-def serialize_home_model_input_request(
+def _serialize_home_model_input_request(
     *,
     request: HomeModelInputRequest,
 ) -> str:
