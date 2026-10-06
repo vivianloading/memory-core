@@ -261,3 +261,41 @@ the frozen artifact's media type with
 
 #79 remains historical on its own exact SHA. Any repaired head requires a fresh
 exact-SHA independent review.
+
+
+## 13. Independent review #80 — same-text wrong-type representation NO-GO
+
+Independent review #80 returned **FAIL / NO-GO** on exact head
+`e8ab5910d95f535c1c7266e34b8707b354f642c1`.
+
+The #79 different-text media-type blocker was independently confirmed fixed.
+The new blocker was a same-text wrong-runtime-type representation substitution.
+
+The failed head compared live artifact `media_type` by value. A standard-library
+`collections.UserString` carrying the exact fixed media-type text therefore
+compared equal to the attested string and was accepted even though the public
+field contract is `str`.
+
+This was a local representation/type-integrity failure. It did not establish
+changed request bytes, authority escalation, prompt-injection success, network
+delivery, or model execution.
+
+### Remediation
+
+Live construction verification now requires exact runtime string representation
+for both public representation fields that sit outside the typed request
+semantic digest:
+
+- `type(constructed.media_type) is str`;
+- `type(constructed.serialized_text) is str`.
+
+Those type checks precede the existing fixed-value / receipt / deterministic
+serialization / digest checks.
+
+Author regressions now cover:
+- #79 different-text artifact media-type mutation;
+- #80 same-text `UserString` media-type substitution;
+- same-text `UserString` serialized-text substitution.
+
+#80 remains historical on its own exact SHA. Any repaired head requires a fresh
+exact-SHA independent review.
