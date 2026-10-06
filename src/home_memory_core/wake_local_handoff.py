@@ -177,9 +177,11 @@ class WakeHandoffReceipt:
 
 @dataclass(frozen=True)
 class _AcceptedEnvelopeState:
+    boundary: "LocalWakeTransportBoundary"
     envelope: WakeHandoffEnvelope
     envelope_digest: str
     receipt: WakeHandoffReceipt
+    receipt_digest: str
 
 
 class LocalWakeTransportBoundary:
@@ -201,6 +203,7 @@ class LocalWakeTransportBoundary:
                 "coordinator must be HomeStateOrderingCoordinator"
             )
         self._coordinator = coordinator
+        self._origin = self
         self._home_process_instance_id = (
             current_home_process_instance_id()
         )
@@ -223,7 +226,11 @@ class LocalWakeTransportBoundary:
             raise TypeError("receipt must be WakeHandoffReceipt")
         with self._acceptance_guard:
             state = self._accepted.get(receipt.handoff_id)
-        if state is None or state.receipt is not receipt:
+        if (
+            state is None
+            or state.boundary is not self
+            or state.receipt is not receipt
+        ):
             raise WakeLocalHandoffAuthorizationError(
                 "Wake handoff receipt is not the exact live local acceptance receipt"
             )
@@ -238,6 +245,12 @@ class LocalWakeTransportBoundary:
             raise WakeLocalHandoffAuthorizationError(
                 "Wake handoff receipt belongs to another local transport boundary"
             )
+        receipt_digest = _semantic_digest(receipt)
+        if receipt_digest != state.receipt_digest:
+            raise WakeLocalHandoffIntegrityError(
+                "accepted Wake handoff receipt changed after local acceptance"
+            )
+
         digest = _semantic_digest(state.envelope)
         if (
             digest != state.envelope_digest
@@ -258,6 +271,10 @@ class LocalWakeTransportBoundary:
         return state.envelope
 
     def _assert_live_process(self) -> None:
+        if getattr(self, "_origin", None) is not self:
+            raise WakeLocalHandoffAuthorizationError(
+                "local Wake transport boundary is not the originating boundary object"
+            )
         if (
             current_home_process_instance_id()
             != self._home_process_instance_id
@@ -316,9 +333,11 @@ class LocalWakeTransportBoundary:
             )
             self._used_nonces.add(envelope.handoff_nonce)
             self._accepted[receipt.handoff_id] = _AcceptedEnvelopeState(
+                boundary=self,
                 envelope=envelope,
                 envelope_digest=envelope_digest,
                 receipt=receipt,
+                receipt_digest=_semantic_digest(receipt),
             )
 
         self._coordinator.require_active_cut(cut=cut)
