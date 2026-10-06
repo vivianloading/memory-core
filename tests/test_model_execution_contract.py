@@ -297,7 +297,14 @@ class ModelExecutionContractTests(unittest.TestCase):
             ),
         )
         parsed = json.loads(prepared.audit_serialized_text)
-        self.assertIn(malicious, self._all_strings(parsed))
+        self.assertIn(
+            prepared.request.wake_data.value.payload_json,
+            self._all_strings(parsed),
+        )
+        self.assertIn(
+            malicious,
+            prepared.request.wake_data.value.payload_json,
+        )
 
         keys = self._all_keys(parsed)
         for forbidden_key in (
