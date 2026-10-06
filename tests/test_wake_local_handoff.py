@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import home_memory_core.wake_local_handoff as handoff_module
+
 from _suppression_test_support import (
     create_test_suppression_record as create_suppression_record,
 )
@@ -826,6 +828,78 @@ class WakeLocalHandoffTests(unittest.TestCase):
         )
         permit = self.coordinator.acquire_writer()
         permit.release()
+
+    def test_store_connection_open_failure_releases_writer_permit(self) -> None:
+        source = create_source_record(
+            source_id="source-connect-fail",
+            content="synthetic",
+            authored_by="test",
+            scope="room-r",
+        )
+
+        with patch.object(
+            self.memory,
+            "_connect_raw",
+            side_effect=RuntimeError("memory-connect-fail"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.memory.add_source(source)
+
+        with patch.object(
+            self.living,
+            "_connect",
+            side_effect=RuntimeError("living-connect-fail"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.living.add_room(
+                    RoomRecord(room_id="room-connect-fail")
+                )
+
+        ref = "ref-current-connect-fail"
+        binding, _source = self._new_binding(ref)
+        record = self._state_record(
+            state_id="state-connect-fail",
+            key="project.connect.fail",
+            value="never-written",
+            ref=ref,
+        )
+        with patch.object(
+            self.current,
+            "_connect",
+            side_effect=RuntimeError("current-connect-fail"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.current.add_state_record(
+                    record=record,
+                    source_bindings=(binding,),
+                )
+
+        cut = self.coordinator.acquire_cut()
+        self.coordinator.release_cut(cut=cut)
+        permit = self.coordinator.acquire_writer()
+        permit.release()
+
+    def test_local_acceptance_query_is_process_bound(self) -> None:
+        receipt = self.handoff.handoff(
+            request_id="request-process",
+            episode_id="episode-c",
+            user_input="process-local",
+        )
+        self.boundary.require_live_acceptance(
+            receipt=receipt
+        )
+
+        with patch.object(
+            handoff_module,
+            "current_home_process_instance_id",
+            return_value="process-other",
+        ):
+            with self.assertRaises(
+                WakeLocalHandoffAuthorizationError
+            ):
+                self.boundary.require_live_acceptance(
+                    receipt=receipt
+                )
 
     def test_handoff_artifacts_grant_no_model_or_speech_authority(self) -> None:
         receipt = self.handoff.handoff(
