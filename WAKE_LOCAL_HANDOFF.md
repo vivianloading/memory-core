@@ -62,8 +62,12 @@ v0.1 supported writer families:
 Enforcement belongs at canonical write-transaction entry, not only at individual
 public method names.
 
-Schema/bootstrap installation, raw SQLite access, direct private-method bypass,
-and another process are outside this contract.
+Schema/bootstrap installation, raw SQLite access, and direct private-method
+bypass are outside this supported-writer contract.
+
+The coordinator is bound to the live HOME process incarnation. Reuse from a
+fork/inherited process fails closed. This is still not cross-process
+coordination: a separately started process has its own coordinator/generation.
 
 ## 4. Writer/cut ordering
 
@@ -84,6 +88,15 @@ Same-thread unsafe re-entry fails closed:
 This rule intentionally does not use re-entrant locking semantics to turn these
 cases into accidental permission.
 
+MemoryStore retains its older Memory-only request-delivery RLock for the legacy
+`RequestBoundDeliveryBoundary`. That legacy boundary still invokes an
+arbitrary callback, so it must **not** become a whole-HOME cut.
+
+Memory semantic writes acquire the legacy Memory lock before the HOME writer
+permit. Therefore a slow legacy Memory callback cannot indirectly hold a HOME
+writer permit while waiting. Living/Current writers remain free to proceed
+while only the legacy Memory callback boundary is active.
+
 ## 5. Generation
 
 The coordinator holds a monotonically increasing process-local
@@ -93,6 +106,10 @@ Each successful supported semantic write transaction increments generation
 exactly once.
 
 Rollback/failure does not increment it.
+
+Writer permits are released even if opening the SQLite write connection fails;
+connection-open failure cannot strand the path in a permanently active writer
+state.
 
 A delivery cut captures the current generation. No supported writer may commit
 until that cut releases, so generation must remain stable through local
@@ -237,6 +254,9 @@ Synthetic/local defensive validation must include:
 - writer waiting behind cut commits only after local acceptance/release;
 - generation is stable from cut acquisition through local acceptance;
 - no arbitrary callback is invoked inside cut;
+- the legacy Memory-only callback guard does not freeze Living/Current writers;
+- connection-open failure releases the HOME writer permit;
+- process-incarnation drift/fork reuse fails closed;
 - public handoff accepts no prebuilt issuance/presentation/render;
 - repeated handoff attempts produce fresh wake/issuance/envelope nonce;
 - accepted nonce cannot be accepted again;
