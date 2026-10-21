@@ -516,11 +516,8 @@ def _parse_provider_json(
 
     response_id = parsed.get("id")
     if (
-        response_id is not None
-        and (
-            type(response_id) is not str
-            or not response_id
-        )
+        type(response_id) is not str
+        or not response_id
     ):
         return _rejected(
             reason="provider response id is not non-empty exact str",
@@ -531,11 +528,8 @@ def _parse_provider_json(
 
     reported_model = parsed.get("model")
     if (
-        reported_model is not None
-        and (
-            type(reported_model) is not str
-            or not reported_model
-        )
+        type(reported_model) is not str
+        or not reported_model
     ):
         return _rejected(
             reason="provider model id is not non-empty exact str",
@@ -708,6 +702,41 @@ def _parse_provider_json(
                 content_item.get("type")
             )
             if content_type == "output_text":
+                annotations = content_item.get("annotations")
+                if type(annotations) is not list:
+                    return _rejected(
+                        reason=(
+                            "provider output_text annotations "
+                            "is not an array"
+                        ),
+                        raw_body=raw_body,
+                        http_status=http_status,
+                        run_receipt=run_receipt,
+                    )
+                if annotations:
+                    return _rejected(
+                        reason=(
+                            "provider output_text annotations "
+                            "are outside v0.1 allowlist"
+                        ),
+                        raw_body=raw_body,
+                        http_status=http_status,
+                        run_receipt=run_receipt,
+                    )
+                logprobs = content_item.get("logprobs")
+                if (
+                    logprobs is not None
+                    and type(logprobs) is not list
+                ):
+                    return _rejected(
+                        reason=(
+                            "provider output_text logprobs "
+                            "is not an array or None"
+                        ),
+                        raw_body=raw_body,
+                        http_status=http_status,
+                        run_receipt=run_receipt,
+                    )
                 value = content_item.get("text")
                 if type(value) is not str:
                     return _rejected(
