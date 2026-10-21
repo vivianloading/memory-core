@@ -659,6 +659,72 @@ class ModelRunBoundaryTests(unittest.TestCase):
                     artifact.provider_error,
                 )
 
+    def test_deep_json_decoder_recursion_fails_closed_and_spends(
+        self,
+    ) -> None:
+        prepared = self._prepared(
+            request_id="run-deep-json"
+        )
+        boundary = self._boundary()
+        raw = (
+            '{"id":"resp_synthetic",'
+            '"model":"test-model",'
+            '"status":"completed","output":'
+            + "[" * 16000
+            + "0"
+            + "]" * 16000
+            + "}"
+        )
+
+        with patch.object(
+            boundary._adapter,
+            "_post_once",
+            return_value=(200, raw),
+        ) as post:
+            artifact = boundary.run(
+                preparation_receipt=(
+                    prepared.receipt
+                )
+            )
+
+        self.assertEqual(
+            post.call_count,
+            1,
+        )
+        self.assertIs(
+            artifact.status,
+            ModelOutputStatus.REJECTED_RESPONSE,
+        )
+        self.assertIsNone(
+            artifact.output_text
+        )
+        self.assertIn(
+            "RecursionError",
+            artifact.provider_error,
+        )
+        self.assertEqual(
+            artifact.raw_response_json,
+            raw,
+        )
+        self.assertIsNotNone(
+            artifact.raw_response_digest
+        )
+
+        second = self._boundary()
+        with patch.object(
+            second._adapter,
+            "_post_once",
+        ) as second_post:
+            with self.assertRaises(
+                ModelRunAuthorizationError
+            ):
+                second.run(
+                    preparation_receipt=(
+                        prepared.receipt
+                    )
+                )
+        second_post.assert_not_called()
+
     def test_mapping_has_exact_three_channel_topology(
         self,
     ) -> None:
