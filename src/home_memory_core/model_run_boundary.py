@@ -469,7 +469,10 @@ def _parse_provider_json(
     run_receipt: ModelRunReceipt,
 ) -> ModelOutputArtifact:
     try:
-        parsed = json.loads(raw_body)
+        parsed = json.loads(
+            raw_body,
+            object_pairs_hook=_reject_duplicate_json_members,
+        )
     except (json.JSONDecodeError, ValueError) as exc:
         return _rejected(
             reason=(
@@ -954,6 +957,19 @@ def _parse_provider_json(
         raw_response_json=raw_body,
     )
 
+
+
+def _reject_duplicate_json_members(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(
+                f"duplicate JSON member: {key}"
+            )
+        result[key] = value
+    return result
 
 
 def _validate_reasoning_item(
