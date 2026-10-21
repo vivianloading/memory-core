@@ -54,9 +54,7 @@ class ModelRunBoundaryTests(unittest.TestCase):
     ):
         handoff = self.fixture._handoff(
             request_id=request_id,
-            episode_id=(
-                f"episode-{request_id}"
-            ),
+            episode_id="episode-b",
             user_input=user_input,
         )
         constructed = (
