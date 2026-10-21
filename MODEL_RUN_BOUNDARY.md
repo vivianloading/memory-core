@@ -130,10 +130,23 @@ Audit vocabulary describes item 1 as HOME carried data transported through a
 provider user role. It never says the current user authored that content.
 
 API credentials are transport secrets and are not included in model-run evidence.
+Credential strings are admitted only if they are non-empty visible ASCII without
+whitespace/control characters. Transport exception text is never copied into
+execution evidence; the artifact records only a controlled transport error code.
 
 ## 8. Response validation
 
 The run layer validates the response before treating text as normal output.
+
+Root response status must be an exact allowlisted string. Response id and
+provider-reported model id must be non-empty exact strings.
+
+Allowed message/reasoning items must carry their required id/status/structure.
+A completed root cannot contain incomplete/in-progress message or reasoning
+items. A terminal incomplete root cannot contain in-progress items. Reasoning
+summary/content structure is validated before the reasoning item is retained as
+evidence. `output_text` must include an annotations array; v0.1 accepts only an
+empty annotations array because no citation-producing tool path exists.
 
 Initial output allowlist:
 
