@@ -1,11 +1,14 @@
 import inspect
 import json
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import test_wake_model_input as wake_model_input_test
 
 from home_memory_core.model_execution_contract import (
+    ModelExecutionContractBoundary,
+    ModelExecutionContractAuthorizationError,
     open_model_execution_contract_boundary,
 )
 from home_memory_core.model_run_boundary import (
@@ -18,6 +21,7 @@ from home_memory_core.openai_responses_adapter import (
     OPENAI_RESPONSES_CONFIG_VERSION,
     OPENAI_RESPONSES_MAPPING_VERSION,
     OpenAIResponsesAdapter,
+    OpenAIResponsesAdapterIntegrityError,
     OpenAIResponsesProviderConfig,
 )
 from home_memory_core.wake_packet import WakeAuthority
@@ -91,15 +95,20 @@ class ModelRunBoundaryTests(unittest.TestCase):
                     {
                         "type": "reasoning",
                         "id": "rs_test",
+                        "status": "completed",
+                        "summary": [],
                     },
                     {
                         "type": "message",
+                        "id": "msg_test",
+                        "status": "completed",
                         "role": "assistant",
                         "content": [
                             {
                                 "type":
                                     "output_text",
                                 "text": text,
+                                "annotations": [],
                             }
                         ],
                     },
@@ -147,6 +156,272 @@ class ModelRunBoundaryTests(unittest.TestCase):
                 ),
                 model="attacker-model",
             )
+
+    def test_exact_contract_type_and_receipt_identity_block_reconstruction(
+        self,
+    ) -> None:
+        prepared = self._prepared(
+            request_id="run-exact-source"
+        )
+
+        class ForgedContract(ModelExecutionContractBoundary):
+            def require_live_preparation(
+                self,
+                *,
+                receipt,
+            ):
+                return prepared
+
+        forged = ForgedContract(
+            model_input_boundary=(
+                self.fixture.model_boundary
+            )
+        )
+        with self.assertRaises(TypeError):
+            open_openai_model_run_boundary(
+                execution_contract_boundary=forged,
+                api_key="test-key",
+                model_id="test-model",
+            )
+
+        copied = replace(
+            prepared.receipt,
+            preparation_id=(
+                prepared.receipt.preparation_id
+                + "-copied"
+            ),
+        )
+        boundary = self._boundary()
+        with patch.object(
+            boundary._adapter,
+            "_post_once",
+        ) as post:
+            with self.assertRaises(
+                ModelExecutionContractAuthorizationError
+            ):
+                boundary.run(
+                    preparation_receipt=copied
+                )
+        post.assert_not_called()
+
+    def test_transport_error_never_copies_exception_text_or_api_key(
+        self,
+    ) -> None:
+        with self.assertRaises(
+            OpenAIResponsesAdapterIntegrityError
+        ):
+            open_openai_model_run_boundary(
+                execution_contract_boundary=(
+                    self.contract
+                ),
+                api_key=(
+                    "SYNTHETIC-SECRET-"
+                    "NOT-A-REAL-KEY\n"
+                ),
+                model_id="test-model",
+            )
+
+        prepared = self._prepared(
+            request_id="run-secret-redaction"
+        )
+        boundary = self._boundary()
+        with patch.object(
+            boundary._adapter,
+            "_post_once",
+            side_effect=ValueError(
+                "Bearer test-key"
+            ),
+        ):
+            artifact = boundary.run(
+                preparation_receipt=(
+                    prepared.receipt
+                )
+            )
+
+        self.assertIs(
+            artifact.status,
+            ModelOutputStatus.PROVIDER_FAILURE,
+        )
+        self.assertEqual(
+            artifact.provider_error,
+            "transport_exception",
+        )
+        self.assertNotIn(
+            "test-key",
+            artifact.provider_error,
+        )
+        self.assertNotIn(
+            "Bearer",
+            artifact.provider_error,
+        )
+
+    def test_malformed_response_shapes_fail_closed(
+        self,
+    ) -> None:
+        cases = [
+            (
+                "status-list",
+                {
+                    "id": "resp_bad_status",
+                    "model": "test-model",
+                    "status": [],
+                    "output": [],
+                },
+            ),
+            (
+                "message-status-list",
+                {
+                    "id": "resp_bad_message_status",
+                    "model": "test-model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_bad",
+                            "status": [],
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type":
+                                        "output_text",
+                                    "text": "bad",
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+            (
+                "message-incomplete-under-completed-root",
+                {
+                    "id": "resp_bad_completion",
+                    "model": "test-model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_bad",
+                            "status": "incomplete",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type":
+                                        "output_text",
+                                    "text": "bad",
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+            (
+                "reasoning-summary-string",
+                {
+                    "id": "resp_bad_reasoning",
+                    "model": "test-model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_bad",
+                            "status": "completed",
+                            "summary": "not-an-array",
+                        },
+                        {
+                            "type": "message",
+                            "id": "msg_ok",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type":
+                                        "output_text",
+                                    "text": "bad",
+                                    "annotations": [],
+                                }
+                            ],
+                        },
+                    ],
+                },
+            ),
+            (
+                "missing-message-id",
+                {
+                    "id": "resp_missing_msg_id",
+                    "model": "test-model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type":
+                                        "output_text",
+                                    "text": "bad",
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+            (
+                "missing-annotations",
+                {
+                    "id": "resp_missing_annotations",
+                    "model": "test-model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_bad",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type":
+                                        "output_text",
+                                    "text": "bad",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+        ]
+
+        for index, (name, response) in enumerate(cases):
+            with self.subTest(name=name):
+                prepared = self._prepared(
+                    request_id=(
+                        f"run-malformed-{index}"
+                    )
+                )
+                boundary = self._boundary()
+                with patch.object(
+                    boundary._adapter,
+                    "_post_once",
+                    return_value=(
+                        200,
+                        json.dumps(response),
+                    ),
+                ):
+                    artifact = boundary.run(
+                        preparation_receipt=(
+                            prepared.receipt
+                        )
+                    )
+                self.assertIs(
+                    artifact.status,
+                    ModelOutputStatus.REJECTED_RESPONSE,
+                )
+                self.assertIsNone(
+                    artifact.output_text
+                )
 
     def test_mapping_has_exact_three_channel_topology(
         self,
@@ -435,9 +710,9 @@ class ModelRunBoundaryTests(unittest.TestCase):
             artifact.status,
             ModelOutputStatus.PROVIDER_FAILURE,
         )
-        self.assertIn(
-            "TimeoutError",
+        self.assertEqual(
             artifact.provider_error,
+            "transport_timeout",
         )
 
         second = self._boundary()
@@ -565,6 +840,8 @@ class ModelRunBoundaryTests(unittest.TestCase):
                 "output": [
                     {
                         "type": "message",
+                        "id": "msg_refusal",
+                        "status": "completed",
                         "role": "assistant",
                         "content": [
                             {
