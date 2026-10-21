@@ -473,7 +473,11 @@ def _parse_provider_json(
             raw_body,
             object_pairs_hook=_reject_duplicate_json_members,
         )
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (
+        json.JSONDecodeError,
+        ValueError,
+        RecursionError,
+    ) as exc:
         return _rejected(
             reason=(
                 f"invalid provider JSON: {type(exc).__name__}"
