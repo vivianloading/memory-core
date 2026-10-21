@@ -423,6 +423,152 @@ class ModelRunBoundaryTests(unittest.TestCase):
                     artifact.output_text
                 )
 
+    def test_terminal_root_conflicts_and_parse_limits_fail_closed(
+        self,
+    ) -> None:
+        conflict_cases = [
+            (
+                "completed-with-error",
+                {
+                    "id": "resp_completed_error",
+                    "model": "test-model",
+                    "status": "completed",
+                    "error": {
+                        "code": "server_error",
+                        "message": "synthetic",
+                    },
+                    "incomplete_details": None,
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_completed_error",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "must reject",
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+            (
+                "completed-with-incomplete-details",
+                {
+                    "id": "resp_completed_incomplete",
+                    "model": "test-model",
+                    "status": "completed",
+                    "error": None,
+                    "incomplete_details": {
+                        "reason": "max_output_tokens"
+                    },
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_completed_incomplete",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "must reject",
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+            (
+                "completed-with-nonempty-logprobs",
+                {
+                    "id": "resp_logprobs",
+                    "model": "test-model",
+                    "status": "completed",
+                    "error": None,
+                    "incomplete_details": None,
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_logprobs",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "must reject",
+                                    "annotations": [],
+                                    "logprobs": [False],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ),
+        ]
+
+        for index, (name, response) in enumerate(
+            conflict_cases
+        ):
+            with self.subTest(name=name):
+                prepared = self._prepared(
+                    request_id=(
+                        f"run-root-conflict-{index}"
+                    )
+                )
+                boundary = self._boundary()
+                with patch.object(
+                    boundary._adapter,
+                    "_post_once",
+                    return_value=(
+                        200,
+                        json.dumps(response),
+                    ),
+                ):
+                    artifact = boundary.run(
+                        preparation_receipt=(
+                            prepared.receipt
+                        )
+                    )
+                self.assertIs(
+                    artifact.status,
+                    ModelOutputStatus.REJECTED_RESPONSE,
+                )
+                self.assertIsNone(
+                    artifact.output_text
+                )
+
+        prepared = self._prepared(
+            request_id="run-huge-numeric-id"
+        )
+        boundary = self._boundary()
+        raw = (
+            '{"id":'
+            + "1" * 5000
+            + ',"model":"test-model",'
+              '"status":"completed","output":[]}'
+        )
+        with patch.object(
+            boundary._adapter,
+            "_post_once",
+            return_value=(200, raw),
+        ):
+            artifact = boundary.run(
+                preparation_receipt=(
+                    prepared.receipt
+                )
+            )
+        self.assertIs(
+            artifact.status,
+            ModelOutputStatus.REJECTED_RESPONSE,
+        )
+        self.assertIsNone(
+            artifact.output_text
+        )
+
     def test_mapping_has_exact_three_channel_topology(
         self,
     ) -> None:
