@@ -177,9 +177,9 @@ class OpenAIResponsesAdapter:
         config: OpenAIResponsesProviderConfig,
     ) -> None:
         _exact_nonempty_text("api_key", api_key)
-        if not isinstance(config, OpenAIResponsesProviderConfig):
+        if type(config) is not OpenAIResponsesProviderConfig:
             raise TypeError(
-                "config must be OpenAIResponsesProviderConfig"
+                "config must be exact OpenAIResponsesProviderConfig"
             )
         self._api_key = api_key
         self._config = config
