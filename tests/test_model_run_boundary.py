@@ -341,11 +341,15 @@ class ModelRunBoundaryTests(unittest.TestCase):
             malicious,
             developer_text,
         )
+        carried_payload = json.loads(
+            carried_text
+        )["payload_json"]
         self.assertIn(
             malicious,
-            json.loads(
-                carried_text
-            )["payload_json"],
+            self.fixture
+            ._presentation_candidate_values(
+                carried_payload
+            ),
         )
         self.assertNotIn(
             malicious,
