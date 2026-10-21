@@ -176,7 +176,7 @@ class OpenAIResponsesAdapter:
         api_key: str,
         config: OpenAIResponsesProviderConfig,
     ) -> None:
-        _exact_nonempty_text("api_key", api_key)
+        _validate_api_key(api_key)
         if type(config) is not OpenAIResponsesProviderConfig:
             raise TypeError(
                 "config must be exact OpenAIResponsesProviderConfig"
@@ -270,7 +270,7 @@ class OpenAIResponsesAdapter:
             return ProviderRawResponse(
                 http_status=None,
                 body=None,
-                transport_error=f"{type(exc).__name__}: {exc}",
+                transport_error=_transport_error_code(exc),
             )
         return ProviderRawResponse(
             http_status=status,
@@ -301,6 +301,25 @@ class OpenAIResponsesAdapter:
             return response.status, body
         finally:
             connection.close()
+
+
+
+def _validate_api_key(api_key: str) -> None:
+    _exact_nonempty_text("api_key", api_key)
+    if any(
+        ord(character) < 0x21
+        or ord(character) > 0x7E
+        for character in api_key
+    ):
+        raise OpenAIResponsesAdapterIntegrityError(
+            "api_key must contain only visible ASCII without whitespace"
+        )
+
+
+def _transport_error_code(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "transport_timeout"
+    return "transport_exception"
 
 
 def _developer_mapping_instruction(
