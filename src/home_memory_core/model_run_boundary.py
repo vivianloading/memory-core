@@ -470,10 +470,10 @@ def _parse_provider_json(
 ) -> ModelOutputArtifact:
     try:
         parsed = json.loads(raw_body)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         return _rejected(
             reason=(
-                f"invalid provider JSON: {exc}"
+                f"invalid provider JSON: {type(exc).__name__}"
             ),
             raw_body=raw_body,
             http_status=http_status,
@@ -514,6 +514,110 @@ def _parse_provider_json(
             run_receipt=run_receipt,
         )
 
+    error_value = parsed.get("error")
+    incomplete_value = parsed.get(
+        "incomplete_details"
+    )
+
+    if response_status == "completed":
+        if error_value is not None:
+            return _rejected(
+                reason=(
+                    "completed provider response "
+                    "contains non-null error"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        if incomplete_value is not None:
+            return _rejected(
+                reason=(
+                    "completed provider response "
+                    "contains incomplete_details"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+    elif response_status == "incomplete":
+        if error_value is not None:
+            return _rejected(
+                reason=(
+                    "incomplete provider response "
+                    "contains non-null error"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        if type(incomplete_value) is not dict:
+            return _rejected(
+                reason=(
+                    "incomplete provider response "
+                    "requires incomplete_details object"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        incomplete_reason = incomplete_value.get(
+            "reason"
+        )
+        if (
+            type(incomplete_reason) is not str
+            or not incomplete_reason
+        ):
+            return _rejected(
+                reason=(
+                    "incomplete_details reason "
+                    "must be non-empty exact str"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+    else:
+        if incomplete_value is not None:
+            return _rejected(
+                reason=(
+                    "failed provider response "
+                    "contains incomplete_details"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        if type(error_value) is not dict:
+            return _rejected(
+                reason=(
+                    "failed provider response "
+                    "requires error object"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        error_code = error_value.get("code")
+        error_message = error_value.get(
+            "message"
+        )
+        if (
+            type(error_code) is not str
+            or not error_code
+            or type(error_message) is not str
+            or not error_message
+        ):
+            return _rejected(
+                reason=(
+                    "provider error code/message "
+                    "must be non-empty exact str"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+
     response_id = parsed.get("id")
     if (
         type(response_id) is not str
@@ -550,7 +654,7 @@ def _parse_provider_json(
                 reported_model
             ),
             provider_error=_safe_json_summary(
-                parsed.get("error")
+                error_value
             ),
             raw_response_json=raw_body,
         )
@@ -724,19 +828,27 @@ def _parse_provider_json(
                         run_receipt=run_receipt,
                     )
                 logprobs = content_item.get("logprobs")
-                if (
-                    logprobs is not None
-                    and type(logprobs) is not list
-                ):
-                    return _rejected(
-                        reason=(
-                            "provider output_text logprobs "
-                            "is not an array or None"
-                        ),
-                        raw_body=raw_body,
-                        http_status=http_status,
-                        run_receipt=run_receipt,
-                    )
+                if logprobs is not None:
+                    if type(logprobs) is not list:
+                        return _rejected(
+                            reason=(
+                                "provider output_text logprobs "
+                                "is not an array or None"
+                            ),
+                            raw_body=raw_body,
+                            http_status=http_status,
+                            run_receipt=run_receipt,
+                        )
+                    if logprobs:
+                        return _rejected(
+                            reason=(
+                                "provider output_text logprobs "
+                                "are outside v0.1 allowlist"
+                            ),
+                            raw_body=raw_body,
+                            http_status=http_status,
+                            run_receipt=run_receipt,
+                        )
                 value = content_item.get("text")
                 if type(value) is not str:
                     return _rejected(
@@ -797,9 +909,7 @@ def _parse_provider_json(
                 reported_model
             ),
             incomplete_reason=_safe_json_summary(
-                parsed.get(
-                    "incomplete_details"
-                )
+                incomplete_value
             ),
             raw_response_json=raw_body,
         )
