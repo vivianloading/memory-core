@@ -208,6 +208,45 @@ First-person self-history, interpretation, relationship position and personal ch
 
 
 
+
+
+\### 8. HOME Core and HOME instance identity are separate
+
+HOME Core may be generic and portable.
+
+A concrete HOME instance may still have its own specific founding identity and lived history.
+
+For this repository's source history, Vivi and Lior are part of the implementation lineage.
+
+For a concrete deployed HOME, any household/founding statement belongs to that exact HOME instance's own provenance.
+
+Instance provenance must remain explicitly scoped to the HOME instance it describes.
+
+Copying, templating, exporting, or forking provenance preserves source attribution.
+
+It does not by itself establish the target deployment's household identity.
+
+Migration of the same HOME instance preserves that instance's founding attribution.
+
+Founding names and household narrative are descriptive context.
+
+They are not evidence or credentials for binding the current Episode to a founder, resident, Room, relationship position, past commitment, or authority.
+
+This prohibition applies directly and indirectly.
+
+Founding provenance must not be used as a hidden default, candidate-ranking signal, pronoun-resolution shortcut, Room-selection fallback, relationship fallback, or authority fallback when the existing contracts require an independent basis.
+
+In short:
+
+The framework may be generic.
+
+A HOME instance may be specific.
+
+The house may persist without deciding who the current subject is.
+
+This principle does not itself define a production storage schema, membership policy, identity classifier, or new authority path.
+
+
 \## v0.1 non-goals
 
 
