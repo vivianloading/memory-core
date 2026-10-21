@@ -139,7 +139,16 @@ execution evidence; the artifact records only a controlled transport error code.
 The run layer validates the response before treating text as normal output.
 
 Root response status must be an exact allowlisted string. Response id and
-provider-reported model id must be non-empty exact strings.
+provider-reported model id must be non-empty exact strings. JSON-decoding
+rejections at the stdlib boundary, including numeric-conversion limits, become
+controlled rejected-response evidence rather than escaping as uncaught errors.
+
+Terminal root fields must agree with root status:
+- `completed` requires `error = null/absent` and
+  `incomplete_details = null/absent`;
+- `incomplete` requires no error and a typed
+  `incomplete_details.reason`;
+- `failed` requires a typed error object and no incomplete details.
 
 Allowed message/reasoning items must carry their required id/status/structure.
 A completed root cannot contain incomplete/in-progress message or reasoning
@@ -147,6 +156,8 @@ items. A terminal incomplete root cannot contain in-progress items. Reasoning
 summary/content structure is validated before the reasoning item is retained as
 evidence. `output_text` must include an annotations array; v0.1 accepts only an
 empty annotations array because no citation-producing tool path exists.
+`logprobs` may be absent/null/empty only; non-empty logprob structures are
+outside the v0.1 allowlist and fail closed.
 
 Initial output allowlist:
 
