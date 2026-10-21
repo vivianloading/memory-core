@@ -569,6 +569,96 @@ class ModelRunBoundaryTests(unittest.TestCase):
             artifact.output_text
         )
 
+    def test_duplicate_json_members_fail_closed(
+        self,
+    ) -> None:
+        duplicate_cases = [
+            (
+                "root-error-error-then-null",
+                '{"id":"resp_dup_error","model":"test-model",'
+                '"status":"completed",'
+                '"error":{"code":"server_error","message":"synthetic"},'
+                '"error":null,'
+                '"incomplete_details":null,'
+                '"output":[{"type":"message","id":"msg_dup_error",'
+                '"status":"completed","role":"assistant","content":[{'
+                '"type":"output_text","text":"must reject","annotations":[]}]}]}'
+            ),
+            (
+                "root-error-null-then-error",
+                '{"id":"resp_dup_error_rev","model":"test-model",'
+                '"status":"completed","error":null,'
+                '"error":{"code":"server_error","message":"synthetic"},'
+                '"incomplete_details":null,'
+                '"output":[{"type":"message","id":"msg_dup_error_rev",'
+                '"status":"completed","role":"assistant","content":[{'
+                '"type":"output_text","text":"must reject","annotations":[]}]}]}'
+            ),
+            (
+                "root-incomplete-details-duplicate",
+                '{"id":"resp_dup_incomplete","model":"test-model",'
+                '"status":"completed",'
+                '"incomplete_details":{"reason":"max_output_tokens"},'
+                '"incomplete_details":null,"error":null,'
+                '"output":[{"type":"message","id":"msg_dup_incomplete",'
+                '"status":"completed","role":"assistant","content":[{'
+                '"type":"output_text","text":"must reject","annotations":[]}]}]}'
+            ),
+            (
+                "nested-message-status-duplicate",
+                '{"id":"resp_dup_msg_status","model":"test-model",'
+                '"status":"completed","error":null,'
+                '"incomplete_details":null,'
+                '"output":[{"type":"message","id":"msg_dup_status",'
+                '"status":"incomplete","status":"completed",'
+                '"role":"assistant","content":[{'
+                '"type":"output_text","text":"must reject","annotations":[]}]}]}'
+            ),
+            (
+                "escaped-equivalent-root-error",
+                '{"id":"resp_dup_escape","model":"test-model",'
+                '"status":"completed",'
+                '"error":{"code":"server_error","message":"synthetic"},'
+                '"err\\u006fr":null,'
+                '"incomplete_details":null,'
+                '"output":[{"type":"message","id":"msg_dup_escape",'
+                '"status":"completed","role":"assistant","content":[{'
+                '"type":"output_text","text":"must reject","annotations":[]}]}]}'
+            ),
+        ]
+
+        for index, (name, raw) in enumerate(
+            duplicate_cases
+        ):
+            with self.subTest(name=name):
+                prepared = self._prepared(
+                    request_id=(
+                        f"run-duplicate-json-{index}"
+                    )
+                )
+                boundary = self._boundary()
+                with patch.object(
+                    boundary._adapter,
+                    "_post_once",
+                    return_value=(200, raw),
+                ):
+                    artifact = boundary.run(
+                        preparation_receipt=(
+                            prepared.receipt
+                        )
+                    )
+                self.assertIs(
+                    artifact.status,
+                    ModelOutputStatus.REJECTED_RESPONSE,
+                )
+                self.assertIsNone(
+                    artifact.output_text
+                )
+                self.assertIn(
+                    "ValueError",
+                    artifact.provider_error,
+                )
+
     def test_mapping_has_exact_three_channel_topology(
         self,
     ) -> None:
