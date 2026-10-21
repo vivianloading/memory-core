@@ -142,6 +142,9 @@ Root response status must be an exact allowlisted string. Response id and
 provider-reported model id must be non-empty exact strings. JSON-decoding
 rejections at the stdlib boundary, including numeric-conversion limits, become
 controlled rejected-response evidence rather than escaping as uncaught errors.
+Duplicate decoded member names are rejected in every response object before
+terminal or item validation, including escaped-equivalent spellings that decode
+to the same key.
 
 Terminal root fields must agree with root status:
 - `completed` requires `error = null/absent` and
