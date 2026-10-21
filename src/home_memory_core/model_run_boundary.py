@@ -196,10 +196,10 @@ class ModelOutputArtifact:
                     "raw response digest exists without raw response"
                 )
         else:
-            _exact_nonempty_text(
-                "raw_response_json",
-                self.raw_response_json,
-            )
+            if type(self.raw_response_json) is not str:
+                raise ModelRunIntegrityError(
+                    "raw_response_json must remain exact str"
+                )
             if self.raw_response_digest is None:
                 raise ModelRunIntegrityError(
                     "raw response digest is required"
@@ -236,12 +236,9 @@ class ModelRunBoundary:
                 "execution_contract_boundary must be "
                 "ModelExecutionContractBoundary"
             )
-        if not isinstance(
-            adapter,
-            OpenAIResponsesAdapter,
-        ):
+        if type(adapter) is not OpenAIResponsesAdapter:
             raise TypeError(
-                "adapter must be OpenAIResponsesAdapter"
+                "adapter must be exact OpenAIResponsesAdapter"
             )
         self._execution_contract_boundary = (
             execution_contract_boundary
@@ -510,14 +507,35 @@ def _parse_provider_json(
             run_receipt=run_receipt,
         )
 
-    response_id = _optional_exact_text(
-        "provider response id",
-        parsed.get("id"),
-    )
-    reported_model = _optional_exact_text(
-        "provider model id",
-        parsed.get("model"),
-    )
+    response_id = parsed.get("id")
+    if (
+        response_id is not None
+        and (
+            type(response_id) is not str
+            or not response_id
+        )
+    ):
+        return _rejected(
+            reason="provider response id is not non-empty exact str",
+            raw_body=raw_body,
+            http_status=http_status,
+            run_receipt=run_receipt,
+        )
+
+    reported_model = parsed.get("model")
+    if (
+        reported_model is not None
+        and (
+            type(reported_model) is not str
+            or not reported_model
+        )
+    ):
+        return _rejected(
+            reason="provider model id is not non-empty exact str",
+            raw_body=raw_body,
+            http_status=http_status,
+            run_receipt=run_receipt,
+        )
 
     if response_status == "failed":
         return _artifact(
@@ -854,18 +872,6 @@ def _validate_status_shape(
                 "shape is invalid"
             )
 
-
-def _optional_exact_text(
-    name: str,
-    value: Any,
-) -> str | None:
-    if value is None:
-        return None
-    if type(value) is not str:
-        raise ModelRunIntegrityError(
-            f"{name} must remain exact str"
-        )
-    return value
 
 
 def _safe_json_summary(
