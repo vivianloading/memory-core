@@ -228,12 +228,9 @@ class ModelRunBoundary:
             ModelExecutionContractBoundary,
         adapter: OpenAIResponsesAdapter,
     ) -> None:
-        if not isinstance(
-            execution_contract_boundary,
-            ModelExecutionContractBoundary,
-        ):
+        if type(execution_contract_boundary) is not ModelExecutionContractBoundary:
             raise TypeError(
-                "execution_contract_boundary must be "
+                "execution_contract_boundary must be exact "
                 "ModelExecutionContractBoundary"
             )
         if type(adapter) is not OpenAIResponsesAdapter:
@@ -263,21 +260,24 @@ class ModelRunBoundary:
             DryRunExecutionPreparationReceipt,
     ) -> ModelOutputArtifact:
         self._assert_live_origin()
-        if not isinstance(
-            preparation_receipt,
-            DryRunExecutionPreparationReceipt,
-        ):
+        if type(preparation_receipt) is not DryRunExecutionPreparationReceipt:
             raise TypeError(
-                "preparation_receipt must be "
+                "preparation_receipt must be exact "
                 "DryRunExecutionPreparationReceipt"
             )
 
-        preparation = (
-            self._execution_contract_boundary
-            .require_live_preparation(
-                receipt=preparation_receipt
-            )
+        preparation = ModelExecutionContractBoundary.require_live_preparation(
+            self._execution_contract_boundary,
+            receipt=preparation_receipt,
         )
+        if type(preparation) is not DryRunExecutionPreparation:
+            raise ModelRunAuthorizationError(
+                "live preparation must be exact DryRunExecutionPreparation"
+            )
+        if preparation.receipt is not preparation_receipt:
+            raise ModelRunAuthorizationError(
+                "live preparation receipt is not the exact run receipt"
+            )
         _require_none_boundary(
             preparation.receipt.use_boundary
         )
@@ -492,6 +492,13 @@ def _parse_provider_json(
         )
 
     response_status = parsed.get("status")
+    if type(response_status) is not str:
+        return _rejected(
+            reason="provider response status is not exact str",
+            raw_body=raw_body,
+            http_status=http_status,
+            run_receipt=run_receipt,
+        )
     if response_status not in {
         "completed",
         "incomplete",
@@ -582,6 +589,17 @@ def _parse_provider_json(
 
         item_type = item.get("type")
         if item_type == "reasoning":
+            reason = _validate_reasoning_item(
+                item=item,
+                root_status=response_status,
+            )
+            if reason is not None:
+                return _rejected(
+                    reason=reason,
+                    raw_body=raw_body,
+                    http_status=http_status,
+                    run_receipt=run_receipt,
+                )
             continue
 
         if item_type != "message":
@@ -596,11 +614,63 @@ def _parse_provider_json(
                 run_receipt=run_receipt,
             )
 
+        message_id = item.get("id")
+        if (
+            type(message_id) is not str
+            or not message_id
+        ):
+            return _rejected(
+                reason="provider message id is not non-empty exact str",
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+
         if item.get("role") != "assistant":
             return _rejected(
                 reason=(
                     "provider message output "
                     "role is not assistant"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+
+        message_status = item.get("status")
+        if type(message_status) is not str:
+            return _rejected(
+                reason="provider message status is not exact str",
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        if message_status not in {
+            "completed",
+            "incomplete",
+            "in_progress",
+        }:
+            return _rejected(
+                reason="provider message status is not allowlisted",
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        if response_status == "completed" and message_status != "completed":
+            return _rejected(
+                reason=(
+                    "completed provider response contains "
+                    "non-completed message item"
+                ),
+                raw_body=raw_body,
+                http_status=http_status,
+                run_receipt=run_receipt,
+            )
+        if response_status == "incomplete" and message_status == "in_progress":
+            return _rejected(
+                reason=(
+                    "terminal incomplete response contains "
+                    "in-progress message item"
                 ),
                 raw_body=raw_body,
                 http_status=http_status,
@@ -744,6 +814,86 @@ def _parse_provider_json(
         output_text="".join(text_parts),
         raw_response_json=raw_body,
     )
+
+
+
+def _validate_reasoning_item(
+    *,
+    item: dict[str, Any],
+    root_status: str,
+) -> str | None:
+    reasoning_id = item.get("id")
+    if (
+        type(reasoning_id) is not str
+        or not reasoning_id
+    ):
+        return "provider reasoning id is not non-empty exact str"
+
+    reasoning_status = item.get("status")
+    if type(reasoning_status) is not str:
+        return "provider reasoning status is not exact str"
+    if reasoning_status not in {
+        "completed",
+        "incomplete",
+        "in_progress",
+    }:
+        return "provider reasoning status is not allowlisted"
+    if root_status == "completed" and reasoning_status != "completed":
+        return (
+            "completed provider response contains "
+            "non-completed reasoning item"
+        )
+    if root_status == "incomplete" and reasoning_status == "in_progress":
+        return (
+            "terminal incomplete response contains "
+            "in-progress reasoning item"
+        )
+
+    summary = item.get("summary")
+    if type(summary) is not list:
+        return "provider reasoning summary is not an array"
+    for summary_item in summary:
+        if type(summary_item) is not dict:
+            return "provider reasoning summary item is not an object"
+        if summary_item.get("type") != "summary_text":
+            return (
+                "provider reasoning summary type "
+                "is not summary_text"
+            )
+        summary_text = summary_item.get("text")
+        if type(summary_text) is not str:
+            return (
+                "provider reasoning summary text "
+                "is not exact str"
+            )
+
+    content = item.get("content")
+    if content is not None:
+        if type(content) is not list:
+            return "provider reasoning content is not an array"
+        for content_item in content:
+            if type(content_item) is not dict:
+                return "provider reasoning content item is not an object"
+            if content_item.get("type") != "reasoning_text":
+                return (
+                    "provider reasoning content type "
+                    "is not reasoning_text"
+                )
+            reasoning_text = content_item.get("text")
+            if type(reasoning_text) is not str:
+                return (
+                    "provider reasoning content text "
+                    "is not exact str"
+                )
+
+    encrypted_content = item.get("encrypted_content")
+    if (
+        encrypted_content is not None
+        and type(encrypted_content) is not str
+    ):
+        return "provider reasoning encrypted_content is not exact str or None"
+
+    return None
 
 
 def _artifact(
