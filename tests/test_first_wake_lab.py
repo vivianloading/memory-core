@@ -310,6 +310,194 @@ class SyntheticFirstWakeLabTests(unittest.TestCase):
             serialized,
         )
 
+    def test_cli_missing_db_after_response_preserves_one_shot_evidence(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {
+                "id": "resp_first_wake_missing_db",
+                "model": "test-model-reported",
+                "status": "completed",
+                "error": None,
+                "incomplete_details": None,
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg_first_wake_missing_db",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    "Synthetic response before "
+                                    "the post-run DB audit failed."
+                                ),
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+        captured_fixture = {}
+        original_initialize = (
+            first_wake_lab
+            .SyntheticFirstWakeFixture
+            ._initialize
+        )
+
+        def capture_initialize(fixture):
+            original_initialize(fixture)
+            captured_fixture["fixture"] = fixture
+
+        def remove_db_and_return_response(*args, **kwargs):
+            fixture = captured_fixture["fixture"]
+            fixture.db.unlink()
+            return (200, raw)
+
+        synthetic_secret = (
+            "SYNTHETIC-MISSING-DB-KEY"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = (
+                Path(tmp)
+                / "missing-db-first-wake-evidence.json"
+            )
+            argv = [
+                "first_wake_lab.py",
+                "--execute",
+                "--model-id",
+                "test-model",
+                "--api-key-env",
+                "REVIEW_SYNTHETIC_KEY",
+                "--output",
+                str(output_path),
+            ]
+            with (
+                patch.object(
+                    first_wake_lab
+                    .SyntheticFirstWakeFixture,
+                    "_initialize",
+                    new=capture_initialize,
+                ),
+                patch.object(
+                    first_wake_lab
+                    .OpenAIResponsesAdapter,
+                    "_post_once",
+                    side_effect=remove_db_and_return_response,
+                ) as post,
+                patch.dict(
+                    os.environ,
+                    {
+                        "REVIEW_SYNTHETIC_KEY": (
+                            synthetic_secret
+                        )
+                    },
+                    clear=False,
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    argv,
+                ),
+            ):
+                result = first_wake_lab.main()
+
+            self.assertEqual(
+                result,
+                1,
+            )
+            self.assertEqual(
+                post.call_count,
+                1,
+            )
+            self.assertTrue(
+                output_path.exists()
+            )
+
+            evidence = json.loads(
+                output_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(
+                evidence["execution_performed"]
+            )
+            self.assertIsNotNone(
+                evidence[
+                    "db_digest_before_model_run"
+                ]
+            )
+            self.assertIsNone(
+                evidence[
+                    "db_digest_after_model_run"
+                ]
+            )
+            self.assertIsNone(
+                evidence[
+                    "db_unchanged_during_model_run"
+                ]
+            )
+            self.assertIsNone(
+                evidence[
+                    "no_home_state_write_observed"
+                ]
+            )
+            self.assertEqual(
+                evidence[
+                    "post_run_db_audit"
+                ],
+                {
+                    "status": "unavailable",
+                    "error_type": "FileNotFoundError",
+                },
+            )
+            self.assertEqual(
+                evidence[
+                    "lab_failure"
+                ]["reason"],
+                (
+                    "post-run HOME database audit "
+                    "unavailable"
+                ),
+            )
+            self.assertEqual(
+                evidence[
+                    "model_output"
+                ]["raw_response_json"],
+                raw,
+            )
+            self.assertEqual(
+                evidence[
+                    "model_output"
+                ]["output_text"],
+                (
+                    "Synthetic response before "
+                    "the post-run DB audit failed."
+                ),
+            )
+            self.assertEqual(
+                evidence[
+                    "model_output"
+                ]["run_receipt"][
+                    "provider_request_digest"
+                ],
+                evidence[
+                    "provider_mapping"
+                ]["request_digest"],
+            )
+            self.assertNotIn(
+                synthetic_secret,
+                json.dumps(
+                    evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+
     def test_cli_db_change_failure_preserves_one_shot_response_evidence(
         self,
     ) -> None:
