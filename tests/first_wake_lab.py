@@ -702,15 +702,6 @@ def run_first_wake_lab(
                 prepared.preparation.receipt
             )
         )
-        db_after = fixture.db_digest()
-
-        if (
-            artifact.run_receipt.provider_request_digest
-            != mapped.request_digest
-        ):
-            raise FirstWakeLabError(
-                "run receipt provider-request digest differs from pre-run mapping"
-            )
 
         evidence["execution_performed"] = True
         evidence["provider_mapping"] = {
@@ -738,6 +729,53 @@ def run_first_wake_lab(
             artifact
         )
         evidence["db_digest_before_model_run"] = db_before
+
+        if (
+            artifact.run_receipt.provider_request_digest
+            != mapped.request_digest
+        ):
+            failure_message = (
+                "run receipt provider-request digest differs "
+                "from pre-run mapping"
+            )
+            evidence["post_run_db_audit"] = {
+                "status": "not_attempted",
+            }
+            evidence["db_digest_after_model_run"] = None
+            evidence["db_unchanged_during_model_run"] = None
+            evidence["no_home_state_write_observed"] = None
+            evidence["lab_failure"] = {
+                "reason": failure_message,
+            }
+            raise FirstWakeLabError(
+                failure_message,
+                evidence=evidence,
+            )
+
+        try:
+            db_after = fixture.db_digest()
+        except OSError as exc:
+            failure_message = (
+                "post-run HOME database audit unavailable"
+            )
+            evidence["post_run_db_audit"] = {
+                "status": "unavailable",
+                "error_type": type(exc).__name__,
+            }
+            evidence["db_digest_after_model_run"] = None
+            evidence["db_unchanged_during_model_run"] = None
+            evidence["no_home_state_write_observed"] = None
+            evidence["lab_failure"] = {
+                "reason": failure_message,
+            }
+            raise FirstWakeLabError(
+                failure_message,
+                evidence=evidence,
+            ) from exc
+
+        evidence["post_run_db_audit"] = {
+            "status": "completed",
+        }
         evidence["db_digest_after_model_run"] = db_after
         evidence["db_unchanged_during_model_run"] = (
             db_before == db_after
