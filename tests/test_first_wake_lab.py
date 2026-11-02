@@ -1,4 +1,8 @@
 import json
+import os
+from pathlib import Path
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -305,6 +309,190 @@ class SyntheticFirstWakeLabTests(unittest.TestCase):
             synthetic_secret,
             serialized,
         )
+
+    def test_cli_db_change_failure_preserves_one_shot_response_evidence(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {
+                "id": "resp_first_wake_changed_db",
+                "model": "test-model-reported",
+                "status": "completed",
+                "error": None,
+                "incomplete_details": None,
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg_first_wake_changed_db",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    "Synthetic response before "
+                                    "the stop-line failure."
+                                ),
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+        captured_fixture = {}
+        original_initialize = (
+            first_wake_lab
+            .SyntheticFirstWakeFixture
+            ._initialize
+        )
+
+        def capture_initialize(fixture):
+            original_initialize(fixture)
+            captured_fixture["fixture"] = fixture
+
+        def mutate_db_and_return_response(*args, **kwargs):
+            fixture = captured_fixture["fixture"]
+            fixture._admit_room_state(
+                state_id="state-mutated-during-model-run",
+                key="project.synthetic_model_run_mutation",
+                kind=(
+                    first_wake_lab
+                    .CurrentStateKind
+                    .PROJECT_STATUS
+                ),
+                value=(
+                    "Synthetic mutation injected during "
+                    "the one-shot provider run."
+                ),
+                validity=(
+                    first_wake_lab
+                    .ValidityRule
+                    .DURABLE_UNTIL_CHANGED
+                ),
+            )
+            return (200, raw)
+
+        synthetic_secret = (
+            "SYNTHETIC-DB-CHANGE-KEY"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = (
+                Path(tmp)
+                / "failed-first-wake-evidence.json"
+            )
+            argv = [
+                "first_wake_lab.py",
+                "--execute",
+                "--model-id",
+                "test-model",
+                "--api-key-env",
+                "REVIEW_SYNTHETIC_KEY",
+                "--output",
+                str(output_path),
+            ]
+            with (
+                patch.object(
+                    first_wake_lab
+                    .SyntheticFirstWakeFixture,
+                    "_initialize",
+                    new=capture_initialize,
+                ),
+                patch.object(
+                    first_wake_lab
+                    .OpenAIResponsesAdapter,
+                    "_post_once",
+                    side_effect=mutate_db_and_return_response,
+                ) as post,
+                patch.dict(
+                    os.environ,
+                    {
+                        "REVIEW_SYNTHETIC_KEY": (
+                            synthetic_secret
+                        )
+                    },
+                    clear=False,
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    argv,
+                ),
+            ):
+                result = first_wake_lab.main()
+
+            self.assertEqual(
+                result,
+                1,
+            )
+            self.assertEqual(
+                post.call_count,
+                1,
+            )
+            self.assertTrue(
+                output_path.exists()
+            )
+
+            evidence = json.loads(
+                output_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(
+                evidence["execution_performed"]
+            )
+            self.assertFalse(
+                evidence[
+                    "db_unchanged_during_model_run"
+                ]
+            )
+            self.assertFalse(
+                evidence[
+                    "no_home_state_write_observed"
+                ]
+            )
+            self.assertNotEqual(
+                evidence[
+                    "db_digest_before_model_run"
+                ],
+                evidence[
+                    "db_digest_after_model_run"
+                ],
+            )
+            self.assertEqual(
+                evidence[
+                    "lab_failure"
+                ]["reason"],
+                (
+                    "HOME database changed during "
+                    "model run"
+                ),
+            )
+            self.assertEqual(
+                evidence[
+                    "model_output"
+                ]["raw_response_json"],
+                raw,
+            )
+            self.assertEqual(
+                evidence[
+                    "model_output"
+                ]["output_text"],
+                (
+                    "Synthetic response before "
+                    "the stop-line failure."
+                ),
+            )
+            self.assertNotIn(
+                synthetic_secret,
+                json.dumps(
+                    evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
 
 
 if __name__ == "__main__":
