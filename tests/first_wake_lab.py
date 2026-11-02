@@ -115,6 +115,15 @@ FIXED_AS_OF = datetime(2026, 10, 22, 0, 0, 0, tzinfo=UTC)
 class FirstWakeLabError(RuntimeError):
     """Synthetic First Wake harness violated its stop line."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.evidence = evidence
+
 
 class FixedClock:
     def __init__(self, value: datetime) -> None:
@@ -738,8 +747,15 @@ def run_first_wake_lab(
         )
 
         if db_before != db_after:
-            raise FirstWakeLabError(
+            failure_message = (
                 "HOME database changed during model run"
+            )
+            evidence["lab_failure"] = {
+                "reason": failure_message,
+            }
+            raise FirstWakeLabError(
+                failure_message,
+                evidence=evidence,
             )
 
         return evidence
@@ -821,11 +837,43 @@ def main() -> int:
                 f"{args.api_key_env} is required with --execute"
             )
 
-    evidence = run_first_wake_lab(
-        execute=args.execute,
-        model_id=args.model_id,
-        api_key=api_key,
-    )
+    try:
+        evidence = run_first_wake_lab(
+            execute=args.execute,
+            model_id=args.model_id,
+            api_key=api_key,
+        )
+    except FirstWakeLabError as exc:
+        if exc.evidence is None:
+            raise
+        write_evidence(
+            output_path=args.output,
+            evidence=exc.evidence,
+        )
+        print(
+            json.dumps(
+                {
+                    "lab_version": (
+                        FIRST_WAKE_LAB_VERSION
+                    ),
+                    "execution_performed": (
+                        exc.evidence[
+                            "execution_performed"
+                        ]
+                    ),
+                    "status": "lab_failure",
+                    "error": str(exc),
+                    "evidence_path": str(
+                        args.output
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
     write_evidence(
         output_path=args.output,
         evidence=evidence,
