@@ -1,0 +1,65 @@
+name: Synthetic First Wake
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: OpenAI Responses API model id for this one synthetic run
+        required: true
+        type: string
+      confirm_one_real_provider_call:
+        description: I understand this performs one real synthetic provider call
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synthetic-first-wake-v0.1
+  cancel-in-progress: false
+
+jobs:
+  first-wake:
+    if: ${{ inputs.confirm_one_real_provider_call == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      FIRST_WAKE_MODEL_ID: ${{ inputs.model_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Require transport secret
+        shell: bash
+        run: |
+          set -eu
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY repository secret is not configured."
+            exit 1
+          fi
+
+      - name: Execute exactly one synthetic First Wake
+        shell: bash
+        run: |
+          set -eu
+          python tests/first_wake_lab.py \
+            --execute \
+            --model-id "${FIRST_WAKE_MODEL_ID}" \
+            --api-key-env OPENAI_API_KEY \
+            --output first_wake_lab_evidence.json
+
+      - name: Preserve First Wake evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-first-wake-evidence-${{ github.run_id }}
+          path: first_wake_lab_evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
