@@ -13,6 +13,12 @@ from home_memory_core.model_execution_contract import (
     DryRunExecutionPreparationReceipt,
     ModelExecutionContractBoundary,
 )
+from home_memory_core.deepseek_responses_adapter import (
+    DEEPSEEK_RESPONSES_CONFIG_VERSION,
+    DeepSeekResponsesAdapter,
+    DeepSeekResponsesMappedRequest,
+    DeepSeekResponsesProviderConfig,
+)
 from home_memory_core.openai_responses_adapter import (
     OPENAI_RESPONSES_CONFIG_VERSION,
     OPENAI_RESPONSES_MAPPING_VERSION,
@@ -226,16 +232,19 @@ class ModelRunBoundary:
         *,
         execution_contract_boundary:
             ModelExecutionContractBoundary,
-        adapter: OpenAIResponsesAdapter,
+        adapter: OpenAIResponsesAdapter | DeepSeekResponsesAdapter,
     ) -> None:
         if type(execution_contract_boundary) is not ModelExecutionContractBoundary:
             raise TypeError(
                 "execution_contract_boundary must be exact "
                 "ModelExecutionContractBoundary"
             )
-        if type(adapter) is not OpenAIResponsesAdapter:
+        if type(adapter) not in {
+            OpenAIResponsesAdapter,
+            DeepSeekResponsesAdapter,
+        }:
             raise TypeError(
-                "adapter must be exact OpenAIResponsesAdapter"
+                "adapter must be an exact allowlisted provider adapter"
             )
         self._execution_contract_boundary = (
             execution_contract_boundary
@@ -309,7 +318,7 @@ class ModelRunBoundary:
                 preparation.receipt
                 .prepared_request_semantic_digest
             ),
-            provider=OPENAI_RESPONSES_PROVIDER,
+            provider=mapped.provider,
             mapping_version=mapped.mapping_version,
             config_version=mapped.config_version,
             configured_model_id=mapped.model_id,
@@ -380,6 +389,33 @@ def open_openai_model_run_boundary(
     )
 
 
+def open_deepseek_model_run_boundary(
+    *,
+    execution_contract_boundary:
+        ModelExecutionContractBoundary,
+    api_key: str,
+    model_id: str,
+    timeout_seconds: int = 60,
+) -> ModelRunBoundary:
+    config = DeepSeekResponsesProviderConfig(
+        config_version=(
+            DEEPSEEK_RESPONSES_CONFIG_VERSION
+        ),
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+    )
+    adapter = DeepSeekResponsesAdapter(
+        api_key=api_key,
+        config=config,
+    )
+    return ModelRunBoundary(
+        execution_contract_boundary=(
+            execution_contract_boundary
+        ),
+        adapter=adapter,
+    )
+
+
 def _claim_preparation_once(
     receipt: DryRunExecutionPreparationReceipt,
 ) -> None:
@@ -399,7 +435,7 @@ def _claim_preparation_once(
 
 def _require_exact_mapping_source(
     *,
-    mapped: OpenAIResponsesMappedRequest,
+    mapped: OpenAIResponsesMappedRequest | DeepSeekResponsesMappedRequest,
     preparation: DryRunExecutionPreparation,
 ) -> None:
     if (

@@ -70,11 +70,18 @@ from home_memory_core.living_store import LivingStore  # noqa: E402
 from home_memory_core.model_execution_contract import (  # noqa: E402
     open_model_execution_contract_boundary,
 )
+from home_memory_core.deepseek_responses_adapter import (  # noqa: E402
+    DEEPSEEK_RESPONSES_CONFIG_VERSION,
+    DEEPSEEK_RESPONSES_PROVIDER,
+    DeepSeekResponsesAdapter,
+    DeepSeekResponsesProviderConfig,
+)
 from home_memory_core.model_run_boundary import (  # noqa: E402
     ModelRunBoundary,
 )
 from home_memory_core.openai_responses_adapter import (  # noqa: E402
     OPENAI_RESPONSES_CONFIG_VERSION,
+    OPENAI_RESPONSES_PROVIDER,
     OpenAIResponsesAdapter,
     OpenAIResponsesProviderConfig,
 )
@@ -656,6 +663,7 @@ def run_first_wake_lab(
     execute: bool,
     model_id: str | None = None,
     api_key: str | None = None,
+    provider: str = OPENAI_RESPONSES_PROVIDER,
 ) -> dict[str, Any]:
     with SyntheticFirstWakeFixture() as fixture:
         prepared = fixture.prepare()
@@ -676,16 +684,32 @@ def run_first_wake_lab(
                 "execution requires API key transport secret"
             )
 
-        config = OpenAIResponsesProviderConfig(
-            config_version=(
-                OPENAI_RESPONSES_CONFIG_VERSION
-            ),
-            model_id=model_id,
-        )
-        adapter = OpenAIResponsesAdapter(
-            api_key=api_key,
-            config=config,
-        )
+        if provider == OPENAI_RESPONSES_PROVIDER:
+            config = OpenAIResponsesProviderConfig(
+                config_version=(
+                    OPENAI_RESPONSES_CONFIG_VERSION
+                ),
+                model_id=model_id,
+            )
+            adapter = OpenAIResponsesAdapter(
+                api_key=api_key,
+                config=config,
+            )
+        elif provider == DEEPSEEK_RESPONSES_PROVIDER:
+            config = DeepSeekResponsesProviderConfig(
+                config_version=(
+                    DEEPSEEK_RESPONSES_CONFIG_VERSION
+                ),
+                model_id=model_id,
+            )
+            adapter = DeepSeekResponsesAdapter(
+                api_key=api_key,
+                config=config,
+            )
+        else:
+            raise FirstWakeLabError(
+                f"unsupported provider: {provider}"
+            )
         run_boundary = ModelRunBoundary(
             execution_contract_boundary=(
                 prepared.contract
@@ -714,6 +738,11 @@ def run_first_wake_lab(
             "channel_evidence": [
                 {
                     "home_channel": item.home_channel,
+                    "provider_location": getattr(
+                        item,
+                        "provider_location",
+                        "input",
+                    ),
                     "provider_role": item.provider_role,
                     "provider_input_index": (
                         item.provider_input_index
@@ -835,6 +864,18 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--provider",
+        choices=(
+            OPENAI_RESPONSES_PROVIDER,
+            DEEPSEEK_RESPONSES_PROVIDER,
+        ),
+        default=os.environ.get(
+            "HOME_FIRST_WAKE_PROVIDER",
+            OPENAI_RESPONSES_PROVIDER,
+        ),
+        help="Provider adapter to use for this one execution.",
+    )
+    parser.add_argument(
         "--model-id",
         default=os.environ.get(
             "HOME_FIRST_WAKE_MODEL_ID"
@@ -880,6 +921,7 @@ def main() -> int:
             execute=args.execute,
             model_id=args.model_id,
             api_key=api_key,
+            provider=args.provider,
         )
     except FirstWakeLabError as exc:
         if exc.evidence is None:
