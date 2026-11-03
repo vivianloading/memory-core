@@ -349,6 +349,7 @@ class WakeRecentLifePresentationBlock:
     room_id: str
     episode_id: str
     perspective_instance_id: str
+    room_attachment_event_id: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
@@ -392,6 +393,7 @@ class WakeRecentLifePresentationBlock:
             "room_id",
             "episode_id",
             "perspective_instance_id",
+            "room_attachment_event_id",
             "summary",
         ):
             _text(field_name, getattr(self, field_name))
@@ -965,6 +967,9 @@ def _recent_life_block_from_item(
         perspective_instance_id=(
             item.perspective_instance_id
         ),
+        room_attachment_event_id=(
+            item.room_attachment_event_id
+        ),
         summary=item.summary,
         occurred_at=item.occurred_at,
         recorded_at=item.recorded_at,
@@ -1148,6 +1153,9 @@ def _block_payload(
                 "episode_id": block.episode_id,
                 "perspective_instance_id": (
                     block.perspective_instance_id
+                ),
+                "room_attachment_event_id": (
+                    block.room_attachment_event_id
                 ),
                 "summary": block.summary,
                 "occurred_at": _datetime_text(
