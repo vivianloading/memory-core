@@ -76,6 +76,16 @@ from home_memory_core.deepseek_responses_adapter import (  # noqa: E402
     DeepSeekResponsesAdapter,
     DeepSeekResponsesProviderConfig,
 )
+from home_memory_core.chatgpt_plan_auth import (  # noqa: E402
+    DEFAULT_PROFILE_PATH,
+    load_profile,
+)
+from home_memory_core.openai_chatgpt_plan_adapter import (  # noqa: E402
+    OPENAI_CHATGPT_PLAN_CONFIG_VERSION,
+    OPENAI_CHATGPT_PLAN_PROVIDER,
+    OpenAIChatGPTPlanProviderConfig,
+    OpenAIChatGPTPlanResponsesAdapter,
+)
 from home_memory_core.model_run_boundary import (  # noqa: E402
     ModelRunBoundary,
 )
@@ -663,6 +673,7 @@ def run_first_wake_lab(
     execute: bool,
     model_id: str | None = None,
     api_key: str | None = None,
+    access_token: str | None = None,
     provider: str = OPENAI_RESPONSES_PROVIDER,
 ) -> dict[str, Any]:
     with SyntheticFirstWakeFixture() as fixture:
@@ -679,7 +690,12 @@ def run_first_wake_lab(
             raise FirstWakeLabError(
                 "execution requires one explicit configured model id"
             )
-        if not api_key:
+        if provider == OPENAI_CHATGPT_PLAN_PROVIDER:
+            if not access_token:
+                raise FirstWakeLabError(
+                    "execution requires ChatGPT plan access token"
+                )
+        elif not api_key:
             raise FirstWakeLabError(
                 "execution requires API key transport secret"
             )
@@ -704,6 +720,17 @@ def run_first_wake_lab(
             )
             adapter = DeepSeekResponsesAdapter(
                 api_key=api_key,
+                config=config,
+            )
+        elif provider == OPENAI_CHATGPT_PLAN_PROVIDER:
+            config = OpenAIChatGPTPlanProviderConfig(
+                config_version=(
+                    OPENAI_CHATGPT_PLAN_CONFIG_VERSION
+                ),
+                model_id=model_id,
+            )
+            adapter = OpenAIChatGPTPlanResponsesAdapter(
+                access_token=access_token,
                 config=config,
             )
         else:
@@ -868,6 +895,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=(
             OPENAI_RESPONSES_PROVIDER,
             DEEPSEEK_RESPONSES_PROVIDER,
+            OPENAI_CHATGPT_PLAN_PROVIDER,
         ),
         default=os.environ.get(
             "HOME_FIRST_WAKE_PROVIDER",
@@ -894,6 +922,15 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--chatgpt-plan-profile",
+        type=Path,
+        default=DEFAULT_PROFILE_PATH,
+        help=(
+            "Local Sign in with ChatGPT profile. "
+            "Used only with openai-chatgpt-plan-responses."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(
@@ -907,20 +944,28 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     api_key = None
+    access_token = None
     if args.execute:
-        api_key = os.environ.get(
-            args.api_key_env
-        )
-        if not api_key:
-            raise SystemExit(
-                f"{args.api_key_env} is required with --execute"
+        if args.provider == OPENAI_CHATGPT_PLAN_PROVIDER:
+            profile = load_profile(
+                path=args.chatgpt_plan_profile,
             )
+            access_token = profile.access_token
+        else:
+            api_key = os.environ.get(
+                args.api_key_env
+            )
+            if not api_key:
+                raise SystemExit(
+                    f"{args.api_key_env} is required with --execute"
+                )
 
     try:
         evidence = run_first_wake_lab(
             execute=args.execute,
             model_id=args.model_id,
             api_key=api_key,
+            access_token=access_token,
             provider=args.provider,
         )
     except FirstWakeLabError as exc:
