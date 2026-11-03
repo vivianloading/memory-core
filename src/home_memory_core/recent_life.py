@@ -126,9 +126,11 @@ class RecentLifeStore:
                         "partial Recent Life schema exists"
                     )
                 assert_recent_life_schema(connection)
+                assert_recent_life_data_integrity(connection)
                 return
             connection.executescript(_schema_script())
             assert_recent_life_schema(connection)
+            assert_recent_life_data_integrity(connection)
             connection.commit()
         except Exception:
             if connection.in_transaction:
@@ -267,6 +269,7 @@ class RecentLifeStore:
                 raise RecentLifeError(
                     "Recent Life event conflicts with canonical persistence"
                 ) from exc
+            assert_recent_life_data_integrity(connection)
 
     @staticmethod
     def schema_available(
@@ -280,6 +283,7 @@ class RecentLifeStore:
                 "partial Recent Life schema exists"
             )
         assert_recent_life_schema(connection)
+        assert_recent_life_data_integrity(connection)
         return True
 
     @staticmethod
@@ -393,7 +397,9 @@ class RecentLifeStore:
             assert_living_data_integrity(connection)
             assert_source_suppression_ledger(connection)
             assert_recent_life_schema(connection)
+            assert_recent_life_data_integrity(connection)
             yield connection
+            assert_recent_life_data_integrity(connection)
             connection.commit()
             permit.record_successful_commit()
         except BaseException:
@@ -449,6 +455,141 @@ def assert_recent_life_schema(
         raise RecentLifeIntegrityError(
             "Recent Life schema definitions drifted"
         )
+
+
+def assert_recent_life_data_integrity(
+    connection: sqlite3.Connection,
+) -> None:
+    """Fail closed if persisted Recent Life contradicts canonical provenance."""
+
+    assert_recent_life_schema(connection)
+    assert_living_data_integrity(connection)
+    assert_source_suppression_ledger(connection)
+
+    rows = connection.execute(
+        f"""
+        SELECT
+            recent.event_id,
+            recent.room_id,
+            recent.episode_id,
+            recent.perspective_instance_id,
+            recent.room_attachment_event_id,
+            recent.summary,
+            recent.occurred_instant_us,
+            recent.occurred_at_iso,
+            recent.recorded_instant_us,
+            recent.recorded_at_iso,
+            episodes.perspective_instance_id AS canonical_perspective,
+            attachments.episode_id AS attachment_episode_id,
+            attachments.route_kind AS attachment_route_kind,
+            attachments.room_id AS attachment_room_id
+        FROM {RECENT_LIFE_EVENT_TABLE} AS recent
+        LEFT JOIN living_episodes AS episodes
+          ON episodes.episode_id = recent.episode_id
+        LEFT JOIN living_room_attachment_events AS attachments
+          ON attachments.attachment_event_id =
+             recent.room_attachment_event_id
+        ORDER BY recent.event_id
+        """
+    ).fetchall()
+
+    memory = MemoryStore(":memory:")
+    for row in rows:
+        if (
+            row["canonical_perspective"] is None
+            or row["perspective_instance_id"]
+            != row["canonical_perspective"]
+            or row["perspective_instance_id"]
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise RecentLifeIntegrityError(
+                "Recent Life Episode/Perspective attribution drifted"
+            )
+        if (
+            row["attachment_episode_id"] is None
+            or row["attachment_episode_id"]
+            != row["episode_id"]
+            or row["attachment_route_kind"] != "attached"
+            or row["attachment_room_id"]
+            != row["room_id"]
+        ):
+            raise RecentLifeIntegrityError(
+                "Recent Life Room attachment provenance drifted"
+            )
+
+        try:
+            occurred = _from_iso(
+                row["occurred_at_iso"]
+            )
+            recorded = _from_iso(
+                row["recorded_at_iso"]
+            )
+        except RecentLifeIntegrityError:
+            raise
+        if (
+            _instant(occurred)
+            != row["occurred_instant_us"]
+            or _instant(recorded)
+            != row["recorded_instant_us"]
+            or _instant(occurred)
+            > _instant(recorded)
+        ):
+            raise RecentLifeIntegrityError(
+                "Recent Life timestamp witness drifted"
+            )
+        if (
+            type(row["summary"]) is not str
+            or not row["summary"].strip()
+        ):
+            raise RecentLifeIntegrityError(
+                "Recent Life summary is invalid"
+            )
+
+        source_rows = connection.execute(
+            f"""
+            SELECT
+                bindings.position,
+                bindings.source_id
+            FROM {RECENT_LIFE_SOURCE_TABLE} AS bindings
+            WHERE bindings.event_id = ?
+            ORDER BY bindings.position
+            """,
+            (row["event_id"],),
+        ).fetchall()
+        if not source_rows:
+            raise RecentLifeIntegrityError(
+                "Recent Life event lacks source provenance"
+            )
+        if tuple(
+            item["position"]
+            for item in source_rows
+        ) != tuple(range(len(source_rows))):
+            raise RecentLifeIntegrityError(
+                "Recent Life source positions are not contiguous"
+            )
+        seen: set[str] = set()
+        for source_row in source_rows:
+            source_id = source_row["source_id"]
+            if source_id in seen:
+                raise RecentLifeIntegrityError(
+                    "Recent Life repeats source provenance"
+                )
+            seen.add(source_id)
+            try:
+                source = (
+                    memory._get_source_from_connection(
+                        connection=connection,
+                        source_id=source_id,
+                    )
+                )
+            except (KeyError, ValueError) as exc:
+                raise RecentLifeIntegrityError(
+                    "Recent Life source provenance is unavailable or damaged"
+                ) from exc
+            if source.scope != row["room_id"]:
+                raise RecentLifeIntegrityError(
+                    "Recent Life source scope differs from Room"
+                )
 
 
 def _schema_script() -> str:
