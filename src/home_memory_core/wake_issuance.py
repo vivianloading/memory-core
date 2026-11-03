@@ -27,11 +27,13 @@ from home_memory_core.living_store import (
 from home_memory_core.process_boundary import (
     current_home_process_instance_id,
 )
+from home_memory_core.recent_life import RecentLifeStore
 from home_memory_core.wake_packet import (
     WakeAssemblyReceipt,
     WakePacket,
     _instant as _wake_instant,
     assemble_wake_packet_v0_1,
+    assemble_wake_packet_v0_2,
 )
 
 
@@ -343,15 +345,56 @@ class WakeIssuanceAuthority:
                     )
                 )
 
-            wake_id = f"wake-{secrets.token_hex(16)}"
-            packet, assembly_receipt = assemble_wake_packet_v0_1(
-                wake_id=wake_id,
-                as_of=as_of,
-                episode=episode,
-                route=route,
-                continuity_edges=continuity_edges,
-                room_current=room_current,
+            recent_schema_available = (
+                RecentLifeStore.schema_available(
+                    connection
+                )
             )
+            recent_life_events = None
+            if (
+                recent_schema_available
+                and route.decision == "attached"
+            ):
+                assert route.room_id is not None
+                recent_life_events = (
+                    RecentLifeStore
+                    .read_recent_for_room_in_connection(
+                        connection,
+                        room_id=route.room_id,
+                        as_of=as_of,
+                    )
+                )
+
+            wake_id = f"wake-{secrets.token_hex(16)}"
+            if recent_schema_available:
+                packet, assembly_receipt = (
+                    assemble_wake_packet_v0_2(
+                        wake_id=wake_id,
+                        as_of=as_of,
+                        episode=episode,
+                        route=route,
+                        continuity_edges=(
+                            continuity_edges
+                        ),
+                        room_current=room_current,
+                        recent_life_events=(
+                            recent_life_events
+                        ),
+                    )
+                )
+            else:
+                packet, assembly_receipt = (
+                    assemble_wake_packet_v0_1(
+                        wake_id=wake_id,
+                        as_of=as_of,
+                        episode=episode,
+                        route=route,
+                        continuity_edges=(
+                            continuity_edges
+                        ),
+                        room_current=room_current,
+                    )
+                )
         finally:
             connection.close()
 
