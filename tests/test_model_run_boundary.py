@@ -117,6 +117,68 @@ class ModelRunBoundaryTests(unittest.TestCase):
             ensure_ascii=False,
         )
 
+    def test_completed_response_accepts_reasoning_without_status(
+        self,
+    ) -> None:
+        prepared = self._prepared(
+            request_id="run-reasoning-status-optional"
+        )
+        boundary = self._boundary()
+        response = json.dumps(
+            {
+                "id": "resp_optional_reasoning_status",
+                "model": "gpt-5.6-sol",
+                "status": "completed",
+                "error": None,
+                "incomplete_details": None,
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_optional_status",
+                        "summary": [],
+                        "content": [],
+                        "encrypted_content": "opaque-test-value",
+                    },
+                    {
+                        "type": "message",
+                        "id": "msg_optional_status",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "first wake text",
+                                "annotations": [],
+                                "logprobs": [],
+                            }
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+        with patch.object(
+            boundary._adapter,
+            "_post_once",
+            return_value=(200, response),
+        ):
+            artifact = boundary.run(
+                preparation_receipt=prepared.receipt
+            )
+
+        self.assertIs(
+            artifact.status,
+            ModelOutputStatus.COMPLETED_TEXT,
+        )
+        self.assertEqual(
+            artifact.output_text,
+            "first wake text",
+        )
+        self.assertEqual(
+            artifact.provider_reported_model_id,
+            "gpt-5.6-sol",
+        )
+
     def _assert_none_boundary(
         self,
         boundary,
