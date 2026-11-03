@@ -30,15 +30,22 @@ Each event binds:
 - one Room;
 - one historical Episode;
 - one historical PerspectiveInstance;
+- the exact historical Room attachment event that placed that Episode in the Room;
 - summary text;
 - occurred-at time;
 - recorded-at time;
 - one or more source refs.
 
 The source refs must already exist in the HOME source store and must be scoped to
-the same Room. Suppressed sources cannot be used to create new Recent Life
-events. Events whose source refs are currently suppressed are omitted from Wake
-delivery.
+the same Room. The historical Room attachment must canonically belong to the
+same Episode and attach that Episode to that same Room. Suppressed sources
+cannot be used to create new Recent Life events. Events whose source refs are
+currently suppressed are omitted from Wake delivery.
+
+Before canonical use, persisted Recent Life data is revalidated against Living,
+source hashes/scopes, timestamps, source-binding order, and historical
+attachment provenance. Contradictory raw persistence fails closed rather than
+becoming Wake evidence.
 
 Wake issuance reads Recent Life on the **same SQLite read transaction and
 issuance cut** used for Living topology and Room Current.
@@ -69,8 +76,11 @@ First Wake evidence.
 
 Wake Packet v0.2 carries Recent Life as typed Room-scoped items.
 
-Every item preserves the historical Episode/Perspective attribution that
-recorded the event. It is never rewritten as the waking Episode/Perspective.
+Every item preserves the historical Episode/Perspective attribution and the
+exact historical Room attachment event that grounded the event's Room scope.
+That attachment is provenance only: it does not grant present Room residence,
+identity, Entry/Adoption, or route authority. Historical attribution is never
+rewritten as the waking Episode/Perspective.
 
 Every item carries the ordinary Wake use boundary, where all six authority axes
 remain NONE.
@@ -78,6 +88,7 @@ remain NONE.
 Wake Presentation v0.2 renders each event with:
 
 - explicit historical Episode/Perspective attribution;
+- exact historical Room-attachment provenance;
 - Room privacy scope;
 - `at_issuance_cut` temporal policy;
 - `no_current_first_person` pronoun policy;
