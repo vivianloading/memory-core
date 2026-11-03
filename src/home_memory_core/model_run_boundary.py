@@ -19,6 +19,12 @@ from home_memory_core.deepseek_responses_adapter import (
     DeepSeekResponsesMappedRequest,
     DeepSeekResponsesProviderConfig,
 )
+from home_memory_core.openai_chatgpt_plan_adapter import (
+    OPENAI_CHATGPT_PLAN_CONFIG_VERSION,
+    OpenAIChatGPTPlanMappedRequest,
+    OpenAIChatGPTPlanProviderConfig,
+    OpenAIChatGPTPlanResponsesAdapter,
+)
 from home_memory_core.openai_responses_adapter import (
     OPENAI_RESPONSES_CONFIG_VERSION,
     OPENAI_RESPONSES_MAPPING_VERSION,
@@ -232,7 +238,11 @@ class ModelRunBoundary:
         *,
         execution_contract_boundary:
             ModelExecutionContractBoundary,
-        adapter: OpenAIResponsesAdapter | DeepSeekResponsesAdapter,
+        adapter: (
+            OpenAIResponsesAdapter
+            | DeepSeekResponsesAdapter
+            | OpenAIChatGPTPlanResponsesAdapter
+        ),
     ) -> None:
         if type(execution_contract_boundary) is not ModelExecutionContractBoundary:
             raise TypeError(
@@ -242,6 +252,7 @@ class ModelRunBoundary:
         if type(adapter) not in {
             OpenAIResponsesAdapter,
             DeepSeekResponsesAdapter,
+            OpenAIChatGPTPlanResponsesAdapter,
         }:
             raise TypeError(
                 "adapter must be an exact allowlisted provider adapter"
@@ -389,6 +400,33 @@ def open_openai_model_run_boundary(
     )
 
 
+def open_chatgpt_plan_model_run_boundary(
+    *,
+    execution_contract_boundary:
+        ModelExecutionContractBoundary,
+    access_token: str,
+    model_id: str,
+    timeout_seconds: int = 60,
+) -> ModelRunBoundary:
+    config = OpenAIChatGPTPlanProviderConfig(
+        config_version=(
+            OPENAI_CHATGPT_PLAN_CONFIG_VERSION
+        ),
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+    )
+    adapter = OpenAIChatGPTPlanResponsesAdapter(
+        access_token=access_token,
+        config=config,
+    )
+    return ModelRunBoundary(
+        execution_contract_boundary=(
+            execution_contract_boundary
+        ),
+        adapter=adapter,
+    )
+
+
 def open_deepseek_model_run_boundary(
     *,
     execution_contract_boundary:
@@ -435,7 +473,11 @@ def _claim_preparation_once(
 
 def _require_exact_mapping_source(
     *,
-    mapped: OpenAIResponsesMappedRequest | DeepSeekResponsesMappedRequest,
+    mapped: (
+        OpenAIResponsesMappedRequest
+        | DeepSeekResponsesMappedRequest
+        | OpenAIChatGPTPlanMappedRequest
+    ),
     preparation: DryRunExecutionPreparation,
 ) -> None:
     if (
