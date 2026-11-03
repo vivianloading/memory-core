@@ -55,6 +55,7 @@ class RecentLifeEvent:
     room_id: str
     episode_id: str
     perspective_instance_id: str
+    room_attachment_event_id: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
@@ -66,6 +67,7 @@ class RecentLifeEvent:
             "room_id",
             "episode_id",
             "perspective_instance_id",
+            "room_attachment_event_id",
             "summary",
         ):
             value = getattr(self, name)
@@ -169,6 +171,31 @@ class RecentLifeStore:
                 raise RecentLifeError(
                     "Recent Life Room does not exist"
                 )
+            attachment = connection.execute(
+                """
+                SELECT
+                    episode_id,
+                    route_kind,
+                    room_id
+                FROM living_room_attachment_events
+                WHERE attachment_event_id = ?
+                """,
+                (
+                    event.room_attachment_event_id,
+                ),
+            ).fetchone()
+            if (
+                attachment is None
+                or attachment["episode_id"]
+                != event.episode_id
+                or attachment["route_kind"]
+                != "attached"
+                or attachment["room_id"]
+                != event.room_id
+            ):
+                raise RecentLifeError(
+                    "Recent Life Room attribution lacks matching attachment evidence"
+                )
 
             memory = MemoryStore(self.db_path)
             suppressed = (
@@ -198,18 +225,20 @@ class RecentLifeStore:
                         room_id,
                         episode_id,
                         perspective_instance_id,
+                        room_attachment_event_id,
                         summary,
                         occurred_instant_us,
                         occurred_at_iso,
                         recorded_instant_us,
                         recorded_at_iso
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.event_id,
                         event.room_id,
                         event.episode_id,
                         event.perspective_instance_id,
+                        event.room_attachment_event_id,
                         event.summary,
                         _instant(event.occurred_at),
                         _iso(event.occurred_at),
@@ -281,6 +310,7 @@ class RecentLifeStore:
                 room_id,
                 episode_id,
                 perspective_instance_id,
+                room_attachment_event_id,
                 summary,
                 occurred_instant_us,
                 occurred_at_iso,
@@ -330,6 +360,9 @@ class RecentLifeStore:
                     episode_id=row["episode_id"],
                     perspective_instance_id=(
                         row["perspective_instance_id"]
+                    ),
+                    room_attachment_event_id=(
+                        row["room_attachment_event_id"]
                     ),
                     summary=row["summary"],
                     occurred_at=_from_iso(
@@ -444,6 +477,8 @@ def _schema_script() -> str:
             episode_id TEXT NOT NULL,
             perspective_instance_id TEXT NOT NULL
                 CHECK(length(trim(perspective_instance_id)) > 0),
+            room_attachment_event_id TEXT NOT NULL
+                CHECK(length(trim(room_attachment_event_id)) > 0),
             summary TEXT NOT NULL
                 CHECK(length(trim(summary)) > 0),
             occurred_instant_us INTEGER NOT NULL,
@@ -458,6 +493,9 @@ def _schema_script() -> str:
                 ON UPDATE RESTRICT ON DELETE RESTRICT,
             FOREIGN KEY(episode_id)
                 REFERENCES living_episodes(episode_id)
+                ON UPDATE RESTRICT ON DELETE RESTRICT,
+            FOREIGN KEY(room_attachment_event_id)
+                REFERENCES living_room_attachment_events(attachment_event_id)
                 ON UPDATE RESTRICT ON DELETE RESTRICT
         );
 
@@ -550,6 +588,12 @@ def _reference_schema_objects() -> tuple[sqlite3.Row, ...]:
             CREATE TABLE living_episodes(
                 episode_id TEXT PRIMARY KEY,
                 perspective_instance_id TEXT
+            );
+            CREATE TABLE living_room_attachment_events(
+                attachment_event_id TEXT PRIMARY KEY,
+                episode_id TEXT,
+                route_kind TEXT,
+                room_id TEXT
             );
             CREATE TABLE sources(source_id TEXT PRIMARY KEY);
             """
