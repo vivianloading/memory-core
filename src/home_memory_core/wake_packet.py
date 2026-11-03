@@ -654,6 +654,7 @@ class WakeRecentLifeItem:
     room_id: str
     episode_id: str
     perspective_instance_id: str
+    room_attachment_event_id: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
@@ -670,6 +671,7 @@ class WakeRecentLifeItem:
             "room_id",
             "episode_id",
             "perspective_instance_id",
+            "room_attachment_event_id",
             "summary",
         ):
             _text(
@@ -1356,6 +1358,9 @@ def assemble_wake_packet_v0_2(
                     episode_id=event.episode_id,
                     perspective_instance_id=(
                         event.perspective_instance_id
+                    ),
+                    room_attachment_event_id=(
+                        event.room_attachment_event_id
                     ),
                     summary=event.summary,
                     occurred_at=event.occurred_at,
