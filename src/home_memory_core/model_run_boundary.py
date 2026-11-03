@@ -1067,24 +1067,33 @@ def _validate_reasoning_item(
         return "provider reasoning id is not non-empty exact str"
 
     reasoning_status = item.get("status")
-    if type(reasoning_status) is not str:
-        return "provider reasoning status is not exact str"
-    if reasoning_status not in {
-        "completed",
-        "incomplete",
-        "in_progress",
-    }:
-        return "provider reasoning status is not allowlisted"
-    if root_status == "completed" and reasoning_status != "completed":
-        return (
-            "completed provider response contains "
-            "non-completed reasoning item"
-        )
-    if root_status == "incomplete" and reasoning_status == "in_progress":
-        return (
-            "terminal incomplete response contains "
-            "in-progress reasoning item"
-        )
+    if reasoning_status is not None:
+        if type(reasoning_status) is not str:
+            return (
+                "provider reasoning status is not exact str or None"
+            )
+        if reasoning_status not in {
+            "completed",
+            "incomplete",
+            "in_progress",
+        }:
+            return "provider reasoning status is not allowlisted"
+        if (
+            root_status == "completed"
+            and reasoning_status != "completed"
+        ):
+            return (
+                "completed provider response contains "
+                "non-completed reasoning item"
+            )
+        if (
+            root_status == "incomplete"
+            and reasoning_status == "in_progress"
+        ):
+            return (
+                "terminal incomplete response contains "
+                "in-progress reasoning item"
+            )
 
     summary = item.get("summary")
     if type(summary) is not list:
