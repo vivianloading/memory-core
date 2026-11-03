@@ -122,6 +122,7 @@ def load_profile(
     *,
     path: Path = DEFAULT_PROFILE_PATH,
     require_fresh_access_token: bool = True,
+    require_plan_scope: bool = True,
 ) -> ChatGPTPlanProfile:
     data = _read_private_json(path)
     profile = _profile_from_json(data)
@@ -133,7 +134,10 @@ def load_profile(
             "ChatGPT plan access token is expired "
             "or near expiry; run sign-in again"
         )
-    if not profile.plan_usage_enabled:
+    if (
+        require_plan_scope
+        and not profile.plan_usage_enabled
+    ):
         raise ChatGPTPlanAuthError(
             "ChatGPT plan usage scope is not granted"
         )
@@ -180,6 +184,7 @@ def sign_in(
             existing = load_profile(
                 path=profile_path,
                 require_fresh_access_token=False,
+                require_plan_scope=False,
             )
         except ChatGPTPlanAuthError:
             existing = None
