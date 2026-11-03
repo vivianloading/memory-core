@@ -592,6 +592,17 @@ class WakePresentationPlan:
                 "presentation plan must preserve exact five-layer order"
             )
 
+        recent_layer = self.layers[3]
+        if self.presentation_version == WAKE_PRESENTATION_VERSION:
+            if (
+                recent_layer.availability
+                is not WakeLayerAvailability.UNAVAILABLE
+                or recent_layer.blocks
+            ):
+                raise WakePresentationError(
+                    "Wake Presentation v0.1 Recent Life must remain UNAVAILABLE"
+                )
+
         map_block = self.layers[0].blocks[0]
         assert isinstance(map_block, WakeMapPresentationBlock)
         if (
@@ -616,9 +627,21 @@ class WakePresentationPlan:
                     raise WakePresentationError(
                         "Room presentation crosses attached Map Room"
                     )
-        elif self.layers[2].blocks:
+            for block in recent_layer.blocks:
+                assert isinstance(
+                    block,
+                    WakeRecentLifePresentationBlock,
+                )
+                if block.room_id != map_block.room_id:
+                    raise WakePresentationError(
+                        "Recent Life presentation crosses attached Map Room"
+                    )
+        elif (
+            self.layers[2].blocks
+            or recent_layer.blocks
+        ):
             raise WakePresentationError(
-                "unattached/unresolved Map cannot carry Room presentation blocks"
+                "unattached/unresolved Map cannot carry Room-scoped presentation blocks"
             )
 
 
