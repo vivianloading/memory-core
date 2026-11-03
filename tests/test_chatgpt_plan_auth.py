@@ -72,6 +72,15 @@ class ChatGPTPlanAuthTests(unittest.TestCase):
                     require_fresh_access_token=False,
                 )
 
+            profile_without_plan = auth.load_profile(
+                path=path,
+                require_fresh_access_token=False,
+                require_plan_scope=False,
+            )
+            self.assertFalse(
+                profile_without_plan.plan_usage_enabled
+            )
+
             data["scopes"] = [
                 "openid",
                 "chatgpt.tokens.use.direct",
