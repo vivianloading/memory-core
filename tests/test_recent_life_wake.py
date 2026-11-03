@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 import sys
 import unittest
 
@@ -49,6 +50,7 @@ class RecentLifeWakeTests(unittest.TestCase):
             perspective_instance_id=(
                 first_wake_lab.PREVIOUS_PERSPECTIVE_ID
             ),
+            room_attachment_event_id="route-before-wake",
             summary=(
                 "During the previous work session, "
                 "Aster and Niko completed the Lantern Atlas "
@@ -152,6 +154,10 @@ class RecentLifeWakeTests(unittest.TestCase):
                 first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
             )
             self.assertEqual(
+                item.room_attachment_event_id,
+                "route-before-wake",
+            )
+            self.assertEqual(
                 item.source_refs,
                 event.source_refs,
             )
@@ -204,6 +210,10 @@ class RecentLifeWakeTests(unittest.TestCase):
                 first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
             )
             self.assertEqual(
+                block.room_attachment_event_id,
+                "route-before-wake",
+            )
+            self.assertEqual(
                 block.policy.authority_ceiling.value,
                 "describe_only",
             )
@@ -239,10 +249,120 @@ class RecentLifeWakeTests(unittest.TestCase):
             )
             self.assertEqual(
                 recent_payload["blocks"][0][
+                    "room_attachment_event_id"
+                ],
+                "route-before-wake",
+            )
+            self.assertEqual(
+                recent_payload["blocks"][0][
                     "source_refs"
                 ],
                 list(event.source_refs),
             )
+
+    def test_mismatched_attachment_provenance_is_rejected(
+        self,
+    ) -> None:
+        with (
+            first_wake_lab.SyntheticFirstWakeFixture()
+            as fixture
+        ):
+            recent = RecentLifeStore(
+                fixture.db
+            )
+            recent.initialize()
+            event = self._event()
+            invalid = RecentLifeEvent(
+                event_id="recent-bad-attachment",
+                room_id=event.room_id,
+                episode_id=event.episode_id,
+                perspective_instance_id=(
+                    event.perspective_instance_id
+                ),
+                room_attachment_event_id="route-origin",
+                summary=event.summary,
+                occurred_at=event.occurred_at,
+                recorded_at=event.recorded_at,
+                source_refs=event.source_refs,
+            )
+            with self.assertRaises(
+                RecentLifeError
+            ):
+                recent.add_event(invalid)
+
+    def test_raw_sql_perspective_pollution_fails_closed_at_wake(
+        self,
+    ) -> None:
+        with (
+            first_wake_lab.SyntheticFirstWakeFixture()
+            as fixture
+        ):
+            recent = RecentLifeStore(
+                fixture.db
+            )
+            recent.initialize()
+
+            connection = sqlite3.connect(
+                fixture.db
+            )
+            try:
+                connection.execute(
+                    "PRAGMA foreign_keys = ON"
+                )
+                connection.execute(
+                    """
+                    INSERT INTO recent_life_events (
+                        event_id,
+                        room_id,
+                        episode_id,
+                        perspective_instance_id,
+                        room_attachment_event_id,
+                        summary,
+                        occurred_instant_us,
+                        occurred_at_iso,
+                        recorded_instant_us,
+                        recorded_at_iso
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "recent-raw-pollution",
+                        first_wake_lab.ROOM_ID,
+                        first_wake_lab.PREVIOUS_EPISODE_ID,
+                        first_wake_lab.FIRST_WAKE_PERSPECTIVE_ID,
+                        "route-before-wake",
+                        "synthetic contradictory recent event",
+                        1792616400000000,
+                        "2026-10-21T21:00:00.000000+00:00",
+                        1792616460000000,
+                        "2026-10-21T21:01:00.000000+00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO recent_life_event_sources (
+                        event_id,
+                        position,
+                        source_id
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (
+                        "recent-raw-pollution",
+                        0,
+                        "src-ref-state-lantern-project",
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(
+                RecentLifeError
+            ):
+                fixture.issuer.issue(
+                    episode_id=(
+                        first_wake_lab.FIRST_WAKE_EPISODE_ID
+                    )
+                )
 
     def test_suppressed_source_removes_recent_event_from_wake(
         self,
