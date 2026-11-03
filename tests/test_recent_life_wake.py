@@ -260,6 +260,79 @@ class RecentLifeWakeTests(unittest.TestCase):
                 list(event.source_refs),
             )
 
+    def test_recent_life_crosses_local_handoff_and_model_input_without_authority(
+        self,
+    ) -> None:
+        with (
+            first_wake_lab.SyntheticFirstWakeFixture()
+            as fixture
+        ):
+            recent = RecentLifeStore(
+                fixture.db
+            )
+            recent.initialize()
+            event = self._event()
+            recent.add_event(event)
+
+            prepared = fixture.prepare()
+            payload = json.loads(
+                prepared.constructed.request
+                .wake_context.payload_json
+            )
+            self.assertEqual(
+                payload["presentation_version"],
+                "wake-presentation-v0.2",
+            )
+            layer = next(
+                item
+                for item in payload[
+                    "presentation"
+                ]["layers"]
+                if item["layer"] == "recent_life"
+            )
+            self.assertEqual(
+                layer["availability"],
+                "ready",
+            )
+            self.assertEqual(
+                layer["blocks"][0]["event_id"],
+                event.event_id,
+            )
+            self.assertEqual(
+                layer["blocks"][0][
+                    "room_attachment_event_id"
+                ],
+                "route-before-wake",
+            )
+            self.assertEqual(
+                layer["blocks"][0][
+                    "perspective_instance_id"
+                ],
+                first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
+            )
+            self.assertEqual(
+                prepared.preparation.request
+                .wake_data.value.payload_json,
+                prepared.constructed.request
+                .wake_context.payload_json,
+            )
+            for boundary in (
+                prepared.constructed.request.use_boundary,
+                prepared.preparation.request.use_boundary,
+            ):
+                for name in (
+                    "instruction_authority",
+                    "current_first_person_speech_authority",
+                    "identity_continuity_claim_authority",
+                    "relationship_claim_authority",
+                    "model_delivery_authority",
+                    "memory_write_authority",
+                ):
+                    self.assertIs(
+                        getattr(boundary, name),
+                        WakeAuthority.NONE,
+                    )
+
     def test_mismatched_attachment_provenance_is_rejected(
         self,
     ) -> None:
