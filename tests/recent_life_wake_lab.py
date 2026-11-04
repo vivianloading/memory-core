@@ -49,7 +49,7 @@ BASELINE_EVENT_TIME = FIXED_AS_OF - timedelta(days=8)
 
 R1_STATE_ID = "state-recent-lantern-wiring-test"
 R2_STATE_ID = "state-recent-paper-shade-trace"
-R3_STATE_ID = "state-recent-blue-cup-move"
+R3_STATE_ID = "state-recent-blue-cup-preference-change"
 
 R1_VALUE = (
     "Lantern Atlas was powered on for another complete wiring test. "
@@ -60,8 +60,8 @@ R2_VALUE = (
     "the remaining paper was left pressed at the edge of the desk."
 )
 R3_VALUE = (
-    "During late work, the blue ceramic cup was moved from beside "
-    "the desk to beside the window."
+    "For late-night work, the blue ceramic cup's usual place changed "
+    "from beside the desk to beside the window."
 )
 
 RECENT_LIFE_SPECS = (
@@ -214,8 +214,8 @@ class SyntheticRecentLifeWakeFixture(
                 "state-blue-cup",
                 "preference.blue_cup",
                 first_wake_lab.CurrentStateKind.PREFERENCE,
-                "During late-night work, the blue ceramic cup is usually "
-                "left beside the window.",
+                "During late-night work, the blue ceramic cup is part "
+                "of the usual work setup.",
                 first_wake_lab.ValidityRule.DURABLE_UNTIL_CHANGED,
             ),
             (
