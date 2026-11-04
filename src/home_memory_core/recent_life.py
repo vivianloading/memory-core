@@ -105,6 +105,8 @@ class RecentLifeEvent:
     event_id: str
     state_id: str
     admission_id: str
+    projection_kind: str
+    supersedes_state_id: str | None
     room_id: str
     episode_id: str
     perspective_instance_id: str
@@ -126,6 +128,7 @@ class RecentLifeEvent:
             "event_id",
             "state_id",
             "admission_id",
+            "projection_kind",
             "room_id",
             "episode_id",
             "perspective_instance_id",
@@ -138,6 +141,19 @@ class RecentLifeEvent:
             if type(value) is not str or not value.strip():
                 raise RecentLifeError(
                     f"{name} must be non-empty exact str"
+                )
+        if self.projection_kind != "room_current_state_assertion":
+            raise RecentLifeError(
+                "Recent Life projection kind is invalid"
+            )
+        if self.supersedes_state_id is not None:
+            if (
+                type(self.supersedes_state_id) is not str
+                or not self.supersedes_state_id.strip()
+                or self.supersedes_state_id == self.state_id
+            ):
+                raise RecentLifeError(
+                    "Recent Life supersession witness is invalid"
                 )
         _aware("occurred_at", self.occurred_at)
         _aware("recorded_at", self.recorded_at)
@@ -332,6 +348,12 @@ def select_recent_life_from_current_in_connection(
             ),
             state_id=record.state_id,
             admission_id=receipt.admission_id,
+            projection_kind=(
+                "room_current_state_assertion"
+            ),
+            supersedes_state_id=(
+                record.supersedes_state_id
+            ),
             room_id=room_id,
             episode_id=record.episode_id,
             perspective_instance_id=(
