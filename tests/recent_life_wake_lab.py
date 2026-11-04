@@ -214,8 +214,8 @@ class SyntheticRecentLifeWakeFixture(
                 "state-blue-cup",
                 "preference.blue_cup",
                 first_wake_lab.CurrentStateKind.PREFERENCE,
-                "During late-night work, the blue ceramic cup is the "
-                "usual cup kept in use.",
+                "During late-night work, the blue ceramic cup is usually "
+                "left beside the window.",
                 first_wake_lab.ValidityRule.DURABLE_UNTIL_CHANGED,
             ),
             (
