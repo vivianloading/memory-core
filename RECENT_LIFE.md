@@ -80,7 +80,7 @@ merely because it was recorded today.
 
 A Room with no eligible item produces a READY empty Recent Life layer with:
 
-`NO_RECENT_LIFE_IN_WINDOW`
+`NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW`
 
 ## Provenance
 
@@ -136,6 +136,10 @@ Without that policy, Wake behavior remains exactly v0.1:
 - Nearby Doors UNAVAILABLE.
 
 With the policy, Wake Packet/Presentation become v0.2 and may carry Recent Life.
+
+Each Recent Life item also carries the exact selector policy version
+`recent-life-current-history-v0.1`, so the reason for inclusion is auditable
+without inferring policy from prose.
 
 Each Recent Life item still has all six Wake authority axes fixed to NONE.
 
