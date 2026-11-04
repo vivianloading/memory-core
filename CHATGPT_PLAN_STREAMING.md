@@ -37,7 +37,12 @@ provider variants rather than silently accepting them.
 
 For every decoded successful-HTTP stream, the serialized response passed to HOME
 contains `_home_stream_evidence` with a version, the exact decoded `raw_sse`, its
-SHA-256 over UTF-8, and validation outcome. The original terminal object (including
+SHA-256 over UTF-8, and validation outcome. All JSON-decoded strings, including
+nested values and keys, must be strictly UTF-8 encodable before reconstruction.
+Lone surrogates introduced by JSON escapes cause an integrity rejection with
+the original SSE and digests preserved. Valid Chinese and supplementary-plane
+characters, including escaped surrogate pairs decoded to Unicode scalars, retain
+their exact text. The original terminal object (including
 its empty output) remains verbatim inside that SSE. The top-level output is a
 **derived validated view**, not a claim that the provider repeated those items in
 the terminal event. HOME's `raw_response_json` and its digest cover this entire

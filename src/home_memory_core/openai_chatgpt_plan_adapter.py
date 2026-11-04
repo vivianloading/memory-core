@@ -377,6 +377,27 @@ def _stream_require(condition: bool, message: str) -> None:
         raise OpenAIChatGPTPlanAdapterIntegrityError(message)
 
 
+def _require_utf8_json_strings(value: Any) -> None:
+    # JSON escapes can introduce lone surrogates despite valid UTF-8 on the
+    # wire. Check keys and nested values before any can enter the HOME envelope.
+    # Valid escaped surrogate pairs are decoded by json.loads into scalar text.
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if type(current) is str:
+            try:
+                current.encode("utf-8", errors="strict")
+            except UnicodeEncodeError as exc:
+                raise OpenAIChatGPTPlanAdapterIntegrityError(
+                    "SSE JSON string contains lone Unicode surrogate"
+                ) from exc
+        elif type(current) is dict:
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif type(current) is list:
+            pending.extend(current)
+
+
 def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
     """Validate a bounded text/refusal Responses stream without guessing output.
 
@@ -404,6 +425,7 @@ def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
         except (ValueError, RecursionError) as exc:
             raise OpenAIChatGPTPlanAdapterIntegrityError("invalid SSE JSON event") from exc
         _stream_require(type(event) is dict, "SSE event root is not object")
+        _require_utf8_json_strings(event)
         kind = event.get("type")
         _stream_require(type(kind) is str and bool(kind), "invalid SSE type")
         _stream_require(event_name is None or event_name == kind, "SSE event name mismatch")

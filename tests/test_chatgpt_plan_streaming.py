@@ -12,12 +12,12 @@ from home_memory_core import openai_chatgpt_plan_adapter as adapter
 TEXT = "Synthetic output: 雨\n  exact spacing\u2028preserved."
 
 
-def events(refusal=False):
+def events(refusal=False, *, text=TEXT):
     ptype, field = ("refusal", "refusal") if refusal else ("output_text", "text")
     empty = {"type": ptype, field: ""}
     if not refusal:
         empty["annotations"] = []
-    final = {**empty, field: TEXT}
+    final = {**empty, field: text}
     initial = {"id": "msg_synthetic", "type": "message", "role": "assistant",
                "status": "in_progress", "content": []}
     item = {**initial, "status": "completed", "content": [final]}
@@ -30,18 +30,33 @@ def events(refusal=False):
         {"type": "response.created", "response": {**response, "status": "in_progress"}},
         {"type": "response.output_item.added", "output_index": 0, "item": initial},
         {"type": "response.content_part.added", **loc, "part": empty},
-        {"type": f"response.{ptype}.delta", **loc, "delta": TEXT[:10]},
-        {"type": f"response.{ptype}.delta", **loc, "delta": TEXT[10:]},
-        {"type": f"response.{ptype}.done", **loc, field: TEXT},
+        {"type": f"response.{ptype}.delta", **loc, "delta": text[:10]},
+        {"type": f"response.{ptype}.delta", **loc, "delta": text[10:]},
+        {"type": f"response.{ptype}.done", **loc, field: text},
         {"type": "response.content_part.done", **loc, "part": final},
         {"type": "response.output_item.done", "output_index": 0, "item": item},
         {"type": "response.completed", "response": response},
     ]
 
 
-def stream(values):
+def stream(values, *, ensure_ascii=False):
     return "".join("event: " + e["type"] + "\ndata: " + json.dumps(
-        {"sequence_number": i, **e}, ensure_ascii=False) + "\n\n" for i, e in enumerate(values))
+        {"sequence_number": i, **e}, ensure_ascii=ensure_ascii) + "\n\n" for i, e in enumerate(values))
+
+
+def surrogate_streams():
+    # The wire is valid ASCII/UTF-8; only JSON decoding creates the surrogate.
+    for malformed in ("\ud800", "prefix\udfff suffix"):
+        for location in ("text", "refusal", "terminal_only", "metadata", "key"):
+            values = events(refusal=location == "refusal", text=malformed)
+            if location == "terminal_only":
+                values[-1]["response"]["output"] = [values[-2]["item"]]
+                values = values[-1:]
+            elif location in {"metadata", "key"}:
+                values = events()
+                values[-1]["response"]["metadata"] = (
+                    {"nested": [malformed]} if location == "metadata" else {malformed: "value"})
+            yield location, repr(malformed), stream(values, ensure_ascii=True)
 
 
 def run_mocked(raw):
@@ -198,6 +213,56 @@ class StreamingTests(unittest.TestCase):
                 output = run_mocked(stream(values))["model_output"]
                 self.assertNotEqual(output["status"], "completed_text")
                 self.assertIsNone(output["output_text"])
+
+    def test_lone_surrogates_raise_controlled_parser_integrity_error(self):
+        for location, malformed, raw in surrogate_streams():
+            with self.subTest(location=location, malformed=malformed):
+                self.assertEqual(raw.encode("ascii").decode("utf-8", errors="strict"), raw)
+                with self.assertRaisesRegex(adapter.OpenAIChatGPTPlanAdapterIntegrityError,
+                                            "SSE JSON string contains lone Unicode surrogate"):
+                    adapter._terminal_response_from_sse(raw)
+
+    def test_lone_surrogates_preserve_rejected_home_evidence(self):
+        for location, malformed, raw in surrogate_streams():
+            with self.subTest(location=location, malformed=malformed):
+                evidence = run_mocked(raw)
+                output = evidence["model_output"]
+                self.assertEqual(output["status"], "rejected_response")
+                self.assertEqual(output["provider_http_status"], 200)
+                self.assertIsNone(output["output_text"])
+                self.assertIsNone(output["refusal_text"])
+                self.assertNotEqual(output["provider_error"], "transport_exception")
+                captured = json.loads(output["raw_response_json"])["_home_stream_evidence"]
+                self.assertEqual(captured["validation"], "rejected")
+                self.assertEqual(captured["reason"], "SSE JSON string contains lone Unicode surrogate")
+                self.assertEqual(captured["raw_sse"], raw)
+                self.assertEqual(captured["raw_sse_sha256"], sha256(raw.encode()).hexdigest())
+                self.assertEqual(output["raw_response_digest"],
+                                 sha256(output["raw_response_json"].encode()).hexdigest())
+                self.assertTrue(evidence["db_unchanged_during_model_run"])
+                self.assertTrue(evidence["no_home_state_write_observed"])
+
+    def test_valid_chinese_and_supplementary_unicode_remain_exact(self):
+        for text in ("合成中文：雨", "合成中文与补充平面：🌧😀𠮷"):
+            for ensure_ascii in (False, True):
+                for refusal in (False, True):
+                    with self.subTest(text=text, ensure_ascii=ensure_ascii, refusal=refusal):
+                        raw = stream(events(refusal=refusal, text=text), ensure_ascii=ensure_ascii)
+                        field = "refusal" if refusal else "text"
+                        parsed = adapter._terminal_response_from_sse(raw)
+                        self.assertEqual(parsed["output"][0]["content"][0][field], text)
+                        evidence = run_mocked(raw)
+                        output = evidence["model_output"]
+                        self.assertEqual(output["refusal_text" if refusal else "output_text"], text)
+                        self.assertEqual(output["provider_http_status"], 200)
+                        captured = json.loads(output["raw_response_json"])["_home_stream_evidence"]
+                        self.assertEqual(captured["validation"], "validated")
+                        self.assertEqual(captured["raw_sse"], raw)
+                        self.assertEqual(captured["raw_sse_sha256"], sha256(raw.encode()).hexdigest())
+                        self.assertEqual(output["raw_response_digest"],
+                                         sha256(output["raw_response_json"].encode()).hexdigest())
+                        self.assertTrue(evidence["db_unchanged_during_model_run"])
+                        self.assertTrue(evidence["no_home_state_write_observed"])
 
     def test_unhashable_type_tags_raise_integrity_error(self):
         for index, location in ((1, "item"), (2, "part")):
