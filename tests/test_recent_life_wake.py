@@ -1,7 +1,6 @@
-from datetime import datetime, timezone
+from datetime import timedelta
 import json
 from pathlib import Path
-import sqlite3
 import sys
 import unittest
 
@@ -14,13 +13,40 @@ for _path in (str(SRC_ROOT), str(TESTS_ROOT)):
         sys.path.insert(0, _path)
 
 import first_wake_lab
+from home_memory_core.current_view import (
+    CurrentNamespace,
+    CurrentStateKind,
+    CurrentStateRecord,
+    DowngradeRule,
+    SemanticChangeAuthority,
+    ValidityRule,
+)
+from home_memory_core.evidence import EvidenceRef
+from home_memory_core.living_continuity import (
+    RoomAttachmentEvent,
+    RoomRecord,
+    RoomRouteKind,
+)
+from home_memory_core.model_execution_contract import (
+    open_model_execution_contract_boundary,
+)
 from home_memory_core.recent_life import (
+    RECENT_LIFE_HORIZON,
+    RECENT_LIFE_POLICY_V0_1,
     RecentLifeError,
     RecentLifeEvent,
-    RecentLifeStore,
 )
 from home_memory_core.suppression import (
     create_timed_suppression_record,
+)
+from home_memory_core.wake_issuance import (
+    open_wake_issuance_authority,
+)
+from home_memory_core.wake_local_handoff import (
+    open_wake_local_handoff_authority,
+)
+from home_memory_core.wake_model_input import (
+    open_wake_model_input_boundary,
 )
 from home_memory_core.wake_packet import (
     WAKE_PACKET_VERSION,
@@ -36,59 +62,54 @@ from home_memory_core.wake_presentation import (
 )
 
 
-UTC = timezone.utc
-
-
 class RecentLifeWakeTests(unittest.TestCase):
-    def _event(self) -> RecentLifeEvent:
-        return RecentLifeEvent(
-            event_id="recent-last-lantern-session",
-            room_id=first_wake_lab.ROOM_ID,
-            episode_id=(
-                first_wake_lab.PREVIOUS_EPISODE_ID
+    def _recent_issuer(self, fixture):
+        return open_wake_issuance_authority(
+            living_store=fixture.living,
+            current_resolver=fixture.resolver,
+            clock=first_wake_lab.FixedClock(
+                first_wake_lab.FIXED_AS_OF
             ),
-            perspective_instance_id=(
-                first_wake_lab.PREVIOUS_PERSPECTIVE_ID
-            ),
-            room_attachment_event_id="route-before-wake",
-            summary=(
-                "During the previous work session, "
-                "Aster and Niko completed the Lantern Atlas "
-                "wiring test and stopped with the paper shade "
-                "still unfinished."
-            ),
-            occurred_at=datetime(
-                2026,
-                10,
-                21,
-                22,
-                0,
-                tzinfo=UTC,
-            ),
-            recorded_at=datetime(
-                2026,
-                10,
-                21,
-                22,
-                5,
-                tzinfo=UTC,
-            ),
-            source_refs=(
-                "src-ref-state-lantern-project",
+            recent_life_policy=(
+                RECENT_LIFE_POLICY_V0_1
             ),
         )
 
-    def test_existing_first_wake_without_recent_store_remains_v01(
+    def _suppress_fixture_recent_sources(
+        self,
+        fixture,
+    ) -> None:
+        for index, source_id in enumerate(
+            (
+                "src-ref-state-home-founding",
+                "src-ref-state-lantern-project",
+                "src-ref-state-blue-cup",
+                "src-ref-state-lantern-placement",
+            )
+        ):
+            effective = (
+                first_wake_lab.FIXED_AS_OF
+                - timedelta(minutes=30)
+            )
+            fixture.memory.suppress_source(
+                create_timed_suppression_record(
+                    suppression_id=(
+                        f"suppress-fixture-{index}"
+                    ),
+                    source_id=source_id,
+                    requested_by="synthetic-test",
+                    reason="recent-life test holdback",
+                    effective_at=effective,
+                    recorded_at=effective,
+                )
+            )
+
+    def test_existing_first_wake_without_policy_remains_v01(
         self,
     ) -> None:
-        with (
-            first_wake_lab.SyntheticFirstWakeFixture()
-            as fixture
-        ):
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
             issued = fixture.issuer.issue(
-                episode_id=(
-                    first_wake_lab.FIRST_WAKE_EPISODE_ID
-                )
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
             )
             self.assertEqual(
                 issued.packet.packet_version,
@@ -103,29 +124,13 @@ class RecentLifeWakeTests(unittest.TestCase):
                 ("NO_TYPED_RECENT_LIFE_PRODUCER",),
             )
 
-    def test_canonical_recent_store_upgrades_wake_and_presentation(
+    def test_live_admitted_current_projects_exact_recent_life(
         self,
     ) -> None:
-        with (
-            first_wake_lab.SyntheticFirstWakeFixture()
-            as fixture
-        ):
-            recent = RecentLifeStore(
-                fixture.db
-            )
-            recent.initialize()
-            event = self._event()
-            recent.add_event(event)
-
-            with self.assertRaises(
-                RecentLifeError
-            ):
-                recent.add_event(event)
-
-            issued = fixture.issuer.issue(
-                episode_id=(
-                    first_wake_lab.FIRST_WAKE_EPISODE_ID
-                )
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            issuer = self._recent_issuer(fixture)
+            issued = issuer.issue(
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
             )
             packet = issued.packet
             self.assertEqual(
@@ -138,44 +143,68 @@ class RecentLifeWakeTests(unittest.TestCase):
             )
             self.assertEqual(
                 len(packet.recent_life.items),
-                1,
+                4,
             )
-            item = packet.recent_life.items[0]
-            self.assertEqual(
-                item.event_id,
-                event.event_id,
-            )
-            self.assertEqual(
-                item.episode_id,
-                first_wake_lab.PREVIOUS_EPISODE_ID,
-            )
-            self.assertEqual(
-                item.perspective_instance_id,
-                first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
-            )
-            self.assertEqual(
-                item.room_attachment_event_id,
-                "route-before-wake",
-            )
-            self.assertEqual(
-                item.source_refs,
-                event.source_refs,
-            )
-            for name in (
-                "instruction_authority",
-                "current_first_person_speech_authority",
-                "identity_continuity_claim_authority",
-                "relationship_claim_authority",
-                "model_delivery_authority",
-                "memory_write_authority",
-            ):
-                self.assertIs(
-                    getattr(item.use_boundary, name),
-                    WakeAuthority.NONE,
+
+            for item in packet.recent_life.items:
+                self.assertTrue(
+                    item.state_id.startswith("state-")
                 )
+                self.assertTrue(
+                    item.admission_id
+                )
+                self.assertEqual(
+                    item.room_id,
+                    first_wake_lab.ROOM_ID,
+                )
+                self.assertEqual(
+                    item.episode_id,
+                    first_wake_lab.PREVIOUS_EPISODE_ID,
+                )
+                self.assertEqual(
+                    item.perspective_instance_id,
+                    first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
+                )
+                self.assertEqual(
+                    item.room_attachment_event_id,
+                    "route-before-wake",
+                )
+                self.assertEqual(
+                    len(item.evidence),
+                    1,
+                )
+                evidence = item.evidence[0]
+                self.assertEqual(
+                    len(evidence.source_sha256),
+                    64,
+                )
+                self.assertEqual(
+                    evidence.start_char,
+                    0,
+                )
+                self.assertGreater(
+                    evidence.end_char,
+                    evidence.start_char,
+                )
+                self.assertEqual(
+                    item.source_refs,
+                    (evidence.source_id,),
+                )
+                for name in (
+                    "instruction_authority",
+                    "current_first_person_speech_authority",
+                    "identity_continuity_claim_authority",
+                    "relationship_claim_authority",
+                    "model_delivery_authority",
+                    "memory_write_authority",
+                ):
+                    self.assertIs(
+                        getattr(item.use_boundary, name),
+                        WakeAuthority.NONE,
+                    )
 
             plan = build_wake_presentation_plan(
-                authority=fixture.issuer,
+                authority=issuer,
                 issued=issued,
             )
             self.assertEqual(
@@ -185,139 +214,103 @@ class RecentLifeWakeTests(unittest.TestCase):
             recent_layer = next(
                 layer
                 for layer in plan.layers
-                if layer.layer
-                is WakeLayer.RECENT_LIFE
-            )
-            self.assertEqual(
-                recent_layer.availability,
-                WakeLayerAvailability.READY,
+                if layer.layer is WakeLayer.RECENT_LIFE
             )
             self.assertEqual(
                 len(recent_layer.blocks),
-                1,
+                4,
             )
-            block = recent_layer.blocks[0]
-            self.assertEqual(
-                block.summary,
-                event.summary,
-            )
-            self.assertEqual(
-                block.episode_id,
-                first_wake_lab.PREVIOUS_EPISODE_ID,
-            )
-            self.assertEqual(
-                block.perspective_instance_id,
-                first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
-            )
-            self.assertEqual(
-                block.room_attachment_event_id,
-                "route-before-wake",
-            )
-            self.assertEqual(
-                block.policy.authority_ceiling.value,
-                "describe_only",
-            )
-            self.assertEqual(
-                block.policy.pronoun_policy.value,
-                "no_current_first_person",
-            )
+            for block in recent_layer.blocks:
+                self.assertEqual(
+                    block.policy.authority_ceiling.value,
+                    "describe_only",
+                )
+                self.assertEqual(
+                    block.policy.pronoun_policy.value,
+                    "no_current_first_person",
+                )
+                self.assertEqual(
+                    len(block.evidence),
+                    1,
+                )
 
             rendered = render_wake_presentation(
-                authority=fixture.issuer,
+                authority=issuer,
                 issued=issued,
                 plan=plan,
             )
-            payload = json.loads(
-                rendered.payload_json
-            )
+            payload = json.loads(rendered.payload_json)
             recent_payload = next(
                 layer
-                for layer in payload[
-                    "presentation"
-                ]["layers"]
+                for layer in payload["presentation"]["layers"]
+                if layer["layer"] == "recent_life"
+            )
+            first = recent_payload["blocks"][0]
+            self.assertIn(
+                "state_id",
+                first,
+            )
+            self.assertIn(
+                "admission_id",
+                first,
+            )
+            self.assertEqual(
+                len(first["evidence"]),
+                1,
+            )
+            self.assertEqual(
+                len(first["evidence"][0]["source_sha256"]),
+                64,
+            )
+
+    def test_recent_life_crosses_model_input_without_authority(
+        self,
+    ) -> None:
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            issuer = self._recent_issuer(fixture)
+            handoff = open_wake_local_handoff_authority(
+                wake_issuance_authority=issuer,
+            )
+            model_input = open_wake_model_input_boundary(
+                local_transport_boundary=handoff.local_transport_boundary,
+            )
+            handoff_receipt = handoff.handoff(
+                request_id="recent-life-model-input-test",
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID,
+                user_input=first_wake_lab.FIRST_WAKE_USER_TURN,
+            )
+            constructed = model_input.construct(
+                handoff_receipt=handoff_receipt,
+            )
+            contract = open_model_execution_contract_boundary(
+                model_input_boundary=model_input,
+            )
+            prepared = contract.prepare(
+                construction_receipt=constructed.receipt,
+            )
+            payload = json.loads(
+                constructed.request.wake_context.payload_json
+            )
+            recent = next(
+                layer
+                for layer in payload["presentation"]["layers"]
                 if layer["layer"] == "recent_life"
             )
             self.assertEqual(
-                recent_payload["availability"],
+                recent["availability"],
                 "ready",
             )
             self.assertEqual(
-                recent_payload["blocks"][0][
-                    "summary"
-                ],
-                event.summary,
-            )
-            self.assertEqual(
-                recent_payload["blocks"][0][
-                    "room_attachment_event_id"
-                ],
-                "route-before-wake",
-            )
-            self.assertEqual(
-                recent_payload["blocks"][0][
-                    "source_refs"
-                ],
-                list(event.source_refs),
-            )
-
-    def test_recent_life_crosses_local_handoff_and_model_input_without_authority(
-        self,
-    ) -> None:
-        with (
-            first_wake_lab.SyntheticFirstWakeFixture()
-            as fixture
-        ):
-            recent = RecentLifeStore(
-                fixture.db
-            )
-            recent.initialize()
-            event = self._event()
-            recent.add_event(event)
-
-            prepared = fixture.prepare()
-            payload = json.loads(
-                prepared.constructed.request
-                .wake_context.payload_json
-            )
-            self.assertEqual(
-                payload["presentation_version"],
-                "wake-presentation-v0.2",
-            )
-            layer = next(
-                item
-                for item in payload[
-                    "presentation"
-                ]["layers"]
-                if item["layer"] == "recent_life"
-            )
-            self.assertEqual(
-                layer["availability"],
-                "ready",
-            )
-            self.assertEqual(
-                layer["blocks"][0]["event_id"],
-                event.event_id,
-            )
-            self.assertEqual(
-                layer["blocks"][0][
-                    "room_attachment_event_id"
-                ],
-                "route-before-wake",
-            )
-            self.assertEqual(
-                layer["blocks"][0][
-                    "perspective_instance_id"
-                ],
-                first_wake_lab.PREVIOUS_PERSPECTIVE_ID,
+                len(recent["blocks"]),
+                4,
             )
             self.assertEqual(
                 prepared.preparation.request
                 .wake_data.value.payload_json,
-                prepared.constructed.request
-                .wake_context.payload_json,
+                constructed.request.wake_context.payload_json,
             )
             for boundary in (
-                prepared.constructed.request.use_boundary,
+                constructed.request.use_boundary,
                 prepared.preparation.request.use_boundary,
             ):
                 for name in (
@@ -333,165 +326,59 @@ class RecentLifeWakeTests(unittest.TestCase):
                         WakeAuthority.NONE,
                     )
 
-    def test_mismatched_attachment_provenance_is_rejected(
+    def test_source_suppression_removes_only_affected_recent_state(
         self,
     ) -> None:
-        with (
-            first_wake_lab.SyntheticFirstWakeFixture()
-            as fixture
-        ):
-            recent = RecentLifeStore(
-                fixture.db
-            )
-            recent.initialize()
-            event = self._event()
-            invalid = RecentLifeEvent(
-                event_id="recent-bad-attachment",
-                room_id=event.room_id,
-                episode_id=event.episode_id,
-                perspective_instance_id=(
-                    event.perspective_instance_id
-                ),
-                room_attachment_event_id="route-origin",
-                summary=event.summary,
-                occurred_at=event.occurred_at,
-                recorded_at=event.recorded_at,
-                source_refs=event.source_refs,
-            )
-            with self.assertRaises(
-                RecentLifeError
-            ):
-                recent.add_event(invalid)
-
-    def test_raw_sql_perspective_pollution_fails_closed_at_wake(
-        self,
-    ) -> None:
-        with (
-            first_wake_lab.SyntheticFirstWakeFixture()
-            as fixture
-        ):
-            recent = RecentLifeStore(
-                fixture.db
-            )
-            recent.initialize()
-
-            connection = sqlite3.connect(
-                fixture.db
-            )
-            try:
-                connection.execute(
-                    "PRAGMA foreign_keys = ON"
-                )
-                connection.execute(
-                    """
-                    INSERT INTO recent_life_events (
-                        event_id,
-                        room_id,
-                        episode_id,
-                        perspective_instance_id,
-                        room_attachment_event_id,
-                        summary,
-                        occurred_instant_us,
-                        occurred_at_iso,
-                        recorded_instant_us,
-                        recorded_at_iso
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "recent-raw-pollution",
-                        first_wake_lab.ROOM_ID,
-                        first_wake_lab.PREVIOUS_EPISODE_ID,
-                        first_wake_lab.FIRST_WAKE_PERSPECTIVE_ID,
-                        "route-before-wake",
-                        "synthetic contradictory recent event",
-                        1792616400000000,
-                        "2026-10-21T21:00:00.000000+00:00",
-                        1792616460000000,
-                        "2026-10-21T21:01:00.000000+00:00",
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO recent_life_event_sources (
-                        event_id,
-                        position,
-                        source_id
-                    ) VALUES (?, ?, ?)
-                    """,
-                    (
-                        "recent-raw-pollution",
-                        0,
-                        "src-ref-state-lantern-project",
-                    ),
-                )
-                connection.commit()
-            finally:
-                connection.close()
-
-            with self.assertRaises(
-                RecentLifeError
-            ):
-                fixture.issuer.issue(
-                    episode_id=(
-                        first_wake_lab.FIRST_WAKE_EPISODE_ID
-                    )
-                )
-
-    def test_suppressed_source_removes_recent_event_from_wake(
-        self,
-    ) -> None:
-        with (
-            first_wake_lab.SyntheticFirstWakeFixture()
-            as fixture
-        ):
-            recent = RecentLifeStore(
-                fixture.db
-            )
-            recent.initialize()
-            recent.add_event(
-                self._event()
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            effective = (
+                first_wake_lab.FIXED_AS_OF
+                - timedelta(minutes=30)
             )
             fixture.memory.suppress_source(
                 create_timed_suppression_record(
-                    suppression_id=(
-                        "suppress-recent-source"
-                    ),
-                    source_id=(
-                        "src-ref-state-lantern-project"
-                    ),
-                    requested_by=(
-                        "synthetic-test"
-                    ),
-                    reason=(
-                        "synthetic stop-use check"
-                    ),
-                    effective_at=datetime(
-                        2026,
-                        10,
-                        21,
-                        23,
-                        0,
-                        tzinfo=UTC,
-                    ),
-                    recorded_at=datetime(
-                        2026,
-                        10,
-                        21,
-                        23,
-                        1,
-                        tzinfo=UTC,
-                    ),
+                    suppression_id="suppress-lantern-project-recent",
+                    source_id="src-ref-state-lantern-project",
+                    requested_by="synthetic-test",
+                    reason="recent-life suppression check",
+                    effective_at=effective,
+                    recorded_at=effective,
                 )
             )
-
-            issued = fixture.issuer.issue(
-                episode_id=(
-                    first_wake_lab.FIRST_WAKE_EPISODE_ID
-                )
+            issued = self._recent_issuer(fixture).issue(
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
+            )
+            ids = {
+                item.state_id
+                for item in issued.packet.recent_life.items
+            }
+            self.assertNotIn(
+                "state-lantern-project",
+                ids,
             )
             self.assertEqual(
-                issued.packet.packet_version,
-                WAKE_PACKET_VERSION_V0_2,
+                len(ids),
+                3,
+            )
+
+    def test_superseded_previous_episode_route_does_not_leak_old_room_recent_life(
+        self,
+    ) -> None:
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            fixture.living.add_room(
+                RoomRecord(room_id="room-corrected")
+            )
+            fixture.living.add_room_attachment(
+                RoomAttachmentEvent(
+                    attachment_event_id="route-before-wake-corrected",
+                    episode_id=first_wake_lab.PREVIOUS_EPISODE_ID,
+                    route_kind=RoomRouteKind.ATTACHED,
+                    room_id="room-corrected",
+                    basis="synthetic late route correction",
+                    supersedes_attachment_event_id="route-before-wake",
+                )
+            )
+            issued = self._recent_issuer(fixture).issue(
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
             )
             self.assertEqual(
                 issued.packet.recent_life.availability,
@@ -504,6 +391,90 @@ class RecentLifeWakeTests(unittest.TestCase):
             self.assertEqual(
                 issued.packet.recent_life.reason_codes,
                 ("NO_RECENT_LIFE_IN_WINDOW",),
+            )
+
+    def test_old_but_still_standing_current_state_is_not_recent(
+        self,
+    ) -> None:
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            self._suppress_fixture_recent_sources(
+                fixture
+            )
+            binding = fixture._source_binding(
+                ref="old-recent-candidate",
+                content=(
+                    "synthetic old Current evidence that remains standing"
+                ),
+            )
+            old_time = (
+                first_wake_lab.FIXED_AS_OF
+                - RECENT_LIFE_HORIZON
+                - timedelta(seconds=1)
+            )
+            record = CurrentStateRecord(
+                state_id="state-old-still-standing",
+                namespace=CurrentNamespace.ROOM,
+                owner_id=first_wake_lab.ROOM_ID,
+                key="project.old_standing",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                value="Old standing state must not become Recent Life.",
+                event_time=old_time,
+                recorded_at=old_time,
+                valid_from=old_time,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id=first_wake_lab.PREVIOUS_EPISODE_ID,
+                perspective_instance_id=(
+                    first_wake_lab.PREVIOUS_PERSPECTIVE_ID
+                ),
+                source_refs=("old-recent-candidate",),
+            )
+            fixture.admission.admit_room_state(
+                record=record,
+                source_bindings=(binding,),
+                grant=fixture.previous_grant,
+            )
+            issued = self._recent_issuer(fixture).issue(
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
+            )
+            self.assertEqual(
+                issued.packet.recent_life.items,
+                (),
+            )
+            self.assertEqual(
+                issued.packet.recent_life.reason_codes,
+                ("NO_RECENT_LIFE_IN_WINDOW",),
+            )
+
+    def test_recent_life_event_cannot_be_caller_minted(
+        self,
+    ) -> None:
+        with self.assertRaises(RecentLifeError):
+            RecentLifeEvent(
+                event_id="caller-event",
+                state_id="caller-state",
+                admission_id="caller-admission",
+                room_id="room-x",
+                episode_id="episode-x",
+                perspective_instance_id="perspective-x",
+                room_attachment_event_id="route-x",
+                key="project.x",
+                state_kind="project_status",
+                summary="caller text",
+                occurred_at=first_wake_lab.FIXED_AS_OF,
+                recorded_at=first_wake_lab.FIXED_AS_OF,
+                evidence=(
+                    EvidenceRef(
+                        source_id="source-x",
+                        source_sha256="0" * 64,
+                        start_char=0,
+                        end_char=1,
+                    ),
+                ),
+                _marker=object(),
             )
 
 
