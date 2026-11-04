@@ -118,8 +118,8 @@ class SyntheticRecentLifeWakeLabTests(
         )
         self.assertEqual(
             lab.R3_VALUE,
-            "During late work, the blue ceramic cup was moved from beside "
-            "the desk to beside the window.",
+            "For late-night work, the blue ceramic cup's usual place "
+            "changed from beside the desk to beside the window.",
         )
 
     def test_recent_life_is_ready_with_exact_r3_r2_r1_order(
@@ -196,7 +196,7 @@ class SyntheticRecentLifeWakeLabTests(
             }.issubset(room_keys)
         )
 
-    def test_baseline_room_now_preserves_first_wake_blue_cup_detail(
+    def test_baseline_room_now_keeps_blue_cup_detail_location_neutral(
         self,
     ) -> None:
         _, prepared = self._prepare()
@@ -211,8 +211,43 @@ class SyntheticRecentLifeWakeLabTests(
         blue = by_key["preference.blue_cup"]
         self.assertEqual(
             blue["candidates"][0]["value"],
-            "During late-night work, the blue ceramic cup is usually "
-            "left beside the window.",
+            "During late-night work, the blue ceramic cup is part "
+            "of the usual work setup.",
+        )
+
+    def test_r3_room_now_is_a_preference_change_not_a_physical_move(
+        self,
+    ) -> None:
+        _, prepared = self._prepare()
+        room_now = self._layer(
+            self._payload(prepared),
+            "room_now",
+        )
+        by_key = {
+            block["key"]: block
+            for block in room_now["blocks"]
+        }
+        r3 = by_key["preference.blue_cup_place"]
+
+        self.assertEqual(
+            r3["state_kind"],
+            "preference",
+        )
+        self.assertEqual(
+            r3["candidates"][0]["state_id"],
+            lab.R3_STATE_ID,
+        )
+        self.assertEqual(
+            r3["candidates"][0]["value"],
+            lab.R3_VALUE,
+        )
+        self.assertIn(
+            "usual place changed",
+            lab.R3_VALUE,
+        )
+        self.assertNotIn(
+            "was moved",
+            lab.R3_VALUE,
         )
 
     def test_recent_life_exact_content_time_and_provenance(
