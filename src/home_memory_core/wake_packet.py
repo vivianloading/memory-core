@@ -22,6 +22,7 @@ from home_memory_core.current_view import (
 from home_memory_core.evidence import EvidenceRef
 from home_memory_core.recent_life import (
     RECENT_LIFE_HORIZON,
+    RECENT_LIFE_POLICY_VERSION,
     RecentLifeEvent,
 )
 from home_memory_core.living_continuity import (
@@ -163,6 +164,13 @@ class WakeMapItem:
             _text(field_name, getattr(self, field_name))
         if not isinstance(self.route_decision, WakeRouteDecision):
             raise WakePacketError("Map route decision is invalid")
+        if (
+            self.selection_policy_version
+            != RECENT_LIFE_POLICY_VERSION
+        ):
+            raise WakePacketError(
+                "Recent Life selection policy version is invalid"
+            )
         if (
             self.perspective_instance_id
             == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
@@ -663,6 +671,7 @@ class WakeRecentLifeItem:
     room_attachment_event_id: str
     key: str
     state_kind: str
+    selection_policy_version: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
@@ -685,6 +694,7 @@ class WakeRecentLifeItem:
             "room_attachment_event_id",
             "key",
             "state_kind",
+            "selection_policy_version",
             "summary",
         ):
             _text(
@@ -1417,6 +1427,9 @@ def assemble_wake_packet_v0_2(
                     ),
                     key=event.key,
                     state_kind=event.state_kind,
+                    selection_policy_version=(
+                        RECENT_LIFE_POLICY_VERSION
+                    ),
                     summary=event.summary,
                     occurred_at=event.occurred_at,
                     recorded_at=event.recorded_at,
@@ -1434,7 +1447,7 @@ def assemble_wake_packet_v0_2(
             reason_codes=(
                 ()
                 if items
-                else ("NO_RECENT_LIFE_IN_WINDOW",)
+                else ("NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",)
             ),
         )
 
