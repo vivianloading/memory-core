@@ -190,6 +190,10 @@ class RecentLifeWakeTests(unittest.TestCase):
                     item.source_refs,
                     (evidence.source_id,),
                 )
+                self.assertEqual(
+                    item.selection_policy_version,
+                    "recent-life-current-history-v0.1",
+                )
                 for name in (
                     "instruction_authority",
                     "current_first_person_speech_authority",
@@ -253,6 +257,10 @@ class RecentLifeWakeTests(unittest.TestCase):
             self.assertIn(
                 "admission_id",
                 first,
+            )
+            self.assertEqual(
+                first["selection_policy_version"],
+                "recent-life-current-history-v0.1",
             )
             self.assertEqual(
                 len(first["evidence"]),
@@ -390,7 +398,7 @@ class RecentLifeWakeTests(unittest.TestCase):
             )
             self.assertEqual(
                 issued.packet.recent_life.reason_codes,
-                ("NO_RECENT_LIFE_IN_WINDOW",),
+                ("NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",),
             )
 
     def test_old_but_still_standing_current_state_is_not_recent(
@@ -446,7 +454,7 @@ class RecentLifeWakeTests(unittest.TestCase):
             )
             self.assertEqual(
                 issued.packet.recent_life.reason_codes,
-                ("NO_RECENT_LIFE_IN_WINDOW",),
+                ("NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",),
             )
 
     def test_recent_life_event_cannot_be_caller_minted(
