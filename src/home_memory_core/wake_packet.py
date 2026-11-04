@@ -19,6 +19,14 @@ from home_memory_core.current_view import (
     SemanticChangeAuthority,
     ValidityRule,
 )
+from home_memory_core.evidence import EvidenceRef
+from home_memory_core.recent_life import (
+    RECENT_LIFE_HORIZON,
+    RECENT_LIFE_POLICY_VERSION,
+    RecentLifeEvent,
+    RecentLifeSelection,
+    RecentLifeSelectionStatus,
+)
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
@@ -30,6 +38,8 @@ from home_memory_core.living_continuity import (
 
 WAKE_PACKET_VERSION = "wake-packet-v0.1"
 WAKE_SELECTION_POLICY_VERSION = "wake-selection-v0.1"
+WAKE_PACKET_VERSION_V0_2 = "wake-packet-v0.2"
+WAKE_SELECTION_POLICY_VERSION_V0_2 = "wake-selection-v0.2"
 
 
 class WakePacketError(ValueError):
@@ -645,6 +655,189 @@ class WakeRoomNowSection:
 
 
 @dataclass(frozen=True)
+class WakeRecentLifeItem:
+    item_id: str
+    event_id: str
+    state_id: str
+    admission_id: str
+    projection_kind: str
+    supersedes_state_id: str | None
+    room_id: str
+    episode_id: str
+    perspective_instance_id: str
+    room_attachment_event_id: str
+    key: str
+    state_kind: str
+    selection_policy_version: str
+    summary: str
+    occurred_at: datetime
+    recorded_at: datetime
+    evidence: tuple[EvidenceRef, ...]
+    source_refs: tuple[str, ...]
+    privacy_scope: WakePrivacyScope
+    use_boundary: WakeUseBoundary = field(
+        default_factory=WakeUseBoundary
+    )
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "item_id",
+            "event_id",
+            "state_id",
+            "admission_id",
+            "projection_kind",
+            "room_id",
+            "episode_id",
+            "perspective_instance_id",
+            "room_attachment_event_id",
+            "key",
+            "state_kind",
+            "selection_policy_version",
+            "summary",
+        ):
+            _text(
+                field_name,
+                getattr(self, field_name),
+            )
+        if self.projection_kind != "room_current_state_assertion":
+            raise WakePacketError(
+                "Recent Life projection kind is invalid"
+            )
+        if self.supersedes_state_id is not None:
+            if (
+                type(self.supersedes_state_id) is not str
+                or not self.supersedes_state_id.strip()
+                or self.supersedes_state_id
+                == self.state_id
+            ):
+                raise WakePacketError(
+                    "Recent Life supersession witness is invalid"
+                )
+        if (
+            self.selection_policy_version
+            != RECENT_LIFE_POLICY_VERSION
+        ):
+            raise WakePacketError(
+                "Recent Life selection policy version is invalid"
+            )
+        if (
+            self.perspective_instance_id
+            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
+        ):
+            raise WakePacketError(
+                "Recent Life requires concrete Perspective attribution"
+            )
+        _aware("occurred_at", self.occurred_at)
+        _aware("recorded_at", self.recorded_at)
+        if (
+            _instant(self.occurred_at)
+            > _instant(self.recorded_at)
+        ):
+            raise WakePacketError(
+                "Recent Life cannot be recorded before it occurred"
+            )
+        if (
+            not isinstance(self.evidence, tuple)
+            or not self.evidence
+            or any(
+                not isinstance(item, EvidenceRef)
+                for item in self.evidence
+            )
+        ):
+            raise WakePacketError(
+                "Recent Life requires exact EvidenceRef provenance"
+            )
+        _refs("source_refs", self.source_refs)
+        expected_source_refs = tuple(
+            dict.fromkeys(
+                item.source_id
+                for item in self.evidence
+            )
+        )
+        if self.source_refs != expected_source_refs:
+            raise WakePacketError(
+                "Recent Life source refs differ from exact evidence"
+            )
+        if not isinstance(
+            self.privacy_scope,
+            WakePrivacyScope,
+        ):
+            raise WakePacketError(
+                "Recent Life privacy_scope is invalid"
+            )
+        if (
+            self.privacy_scope.kind
+            is not WakePrivacyScopeKind.ROOM
+            or self.privacy_scope.scope_id
+            != self.room_id
+        ):
+            raise WakePacketError(
+                "Recent Life must remain Room-scoped"
+            )
+        if not isinstance(
+            self.use_boundary,
+            WakeUseBoundary,
+        ):
+            raise WakePacketError(
+                "Recent Life use boundary is invalid"
+            )
+
+
+@dataclass(frozen=True)
+class WakeRecentLifeSection:
+    availability: WakeLayerAvailability
+    items: tuple[WakeRecentLifeItem, ...]
+    reason_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.availability,
+            WakeLayerAvailability,
+        ):
+            raise WakePacketError(
+                "Recent Life availability is invalid"
+            )
+        if self.availability not in {
+            WakeLayerAvailability.READY,
+            WakeLayerAvailability.PARTIAL,
+            WakeLayerAvailability.UNAVAILABLE,
+        }:
+            raise WakePacketError(
+                "Recent Life availability is invalid"
+            )
+        if (
+            not isinstance(self.items, tuple)
+            or any(
+                not isinstance(
+                    item,
+                    WakeRecentLifeItem,
+                )
+                for item in self.items
+            )
+        ):
+            raise WakePacketError(
+                "Recent Life items are invalid"
+            )
+        ids = tuple(
+            item.event_id
+            for item in self.items
+        )
+        if len(set(ids)) != len(ids):
+            raise WakePacketError(
+                "Recent Life cannot repeat event_id"
+            )
+        if (
+            self.availability
+            is WakeLayerAvailability.UNAVAILABLE
+            and self.items
+        ):
+            raise WakePacketError(
+                "unavailable Recent Life cannot carry items"
+            )
+        _refs("reason_codes", self.reason_codes)
+
+
+@dataclass(frozen=True)
 class WakeEmptyLayer:
     layer: WakeLayer
     availability: WakeLayerAvailability
@@ -682,14 +875,19 @@ class WakePacket:
     map: WakeMapSection
     shared_now: WakeEmptyLayer
     room_now: WakeRoomNowSection
-    recent_life: WakeEmptyLayer
+    recent_life: WakeEmptyLayer | WakeRecentLifeSection
     nearby_doors: WakeEmptyLayer
     use_boundary: WakeUseBoundary = field(default_factory=WakeUseBoundary)
 
     def __post_init__(self) -> None:
         _text("wake_id", self.wake_id)
-        if self.packet_version != WAKE_PACKET_VERSION:
-            raise WakePacketError("unexpected Wake Packet version")
+        if self.packet_version not in {
+            WAKE_PACKET_VERSION,
+            WAKE_PACKET_VERSION_V0_2,
+        }:
+            raise WakePacketError(
+                "unexpected Wake Packet version"
+            )
         if self.input_trust is not WakeInputTrust.TYPED_CALLER_INPUT:
             raise WakePacketError(
                 "Wake Packet v0.1 has no operational producer proof"
@@ -703,8 +901,16 @@ class WakePacket:
             raise WakePacketError("Wake Shared Now section is invalid")
         if not isinstance(self.room_now, WakeRoomNowSection):
             raise WakePacketError("Wake Room Now section is invalid")
-        if not isinstance(self.recent_life, WakeEmptyLayer):
-            raise WakePacketError("Wake Recent Life section is invalid")
+        if not isinstance(
+            self.recent_life,
+            (
+                WakeEmptyLayer,
+                WakeRecentLifeSection,
+            ),
+        ):
+            raise WakePacketError(
+                "Wake Recent Life section is invalid"
+            )
         if not isinstance(self.nearby_doors, WakeEmptyLayer):
             raise WakePacketError("Wake Nearby Doors section is invalid")
         if self.map.item.episode_id != self.episode_id:
@@ -749,17 +955,81 @@ class WakePacket:
                 )
         if (
             self.shared_now.layer is not WakeLayer.SHARED_NOW
-            or self.shared_now.availability is not WakeLayerAvailability.CLOSED
-            or self.recent_life.layer is not WakeLayer.RECENT_LIFE
-            or self.recent_life.availability
-            is not WakeLayerAvailability.UNAVAILABLE
-            or self.nearby_doors.layer is not WakeLayer.NEARBY_DOORS
+            or self.shared_now.availability
+            is not WakeLayerAvailability.CLOSED
+            or self.nearby_doors.layer
+            is not WakeLayer.NEARBY_DOORS
             or self.nearby_doors.availability
             is not WakeLayerAvailability.UNAVAILABLE
         ):
             raise WakePacketError(
-                "Wake v0.1 fixed layer availability is invalid"
+                "Wake fixed closed/unavailable layers are invalid"
             )
+
+        if self.packet_version == WAKE_PACKET_VERSION:
+            if (
+                not isinstance(
+                    self.recent_life,
+                    WakeEmptyLayer,
+                )
+                or self.recent_life.layer
+                is not WakeLayer.RECENT_LIFE
+                or self.recent_life.availability
+                is not WakeLayerAvailability.UNAVAILABLE
+            ):
+                raise WakePacketError(
+                    "Wake v0.1 Recent Life must remain UNAVAILABLE"
+                )
+        else:
+            if not isinstance(
+                self.recent_life,
+                WakeRecentLifeSection,
+            ):
+                raise WakePacketError(
+                    "Wake v0.2 requires typed Recent Life section"
+                )
+            if (
+                self.map.item.route_decision
+                is WakeRouteDecision.ATTACHED
+            ):
+                assert self.map.item.room_id is not None
+                if any(
+                    item.room_id
+                    != self.map.item.room_id
+                    for item in self.recent_life.items
+                ):
+                    raise WakePacketError(
+                        "Recent Life crosses Map-attached Room boundary"
+                    )
+                if any(
+                    _instant(item.recorded_at)
+                    > _instant(self.as_of)
+                    or _instant(item.occurred_at)
+                    > _instant(self.as_of)
+                    for item in self.recent_life.items
+                ):
+                    raise WakePacketError(
+                        "Recent Life item is future relative to Wake cut"
+                    )
+                if any(
+                    _instant(self.as_of)
+                    - _instant(item.occurred_at)
+                    > _duration_micros(
+                        RECENT_LIFE_HORIZON
+                    )
+                    for item in self.recent_life.items
+                ):
+                    raise WakePacketError(
+                        "Recent Life item is outside the canonical horizon"
+                    )
+            elif (
+                self.recent_life.items
+                or self.recent_life.availability
+                is not WakeLayerAvailability.UNAVAILABLE
+            ):
+                raise WakePacketError(
+                    "unattached/unresolved Map cannot carry Recent Life"
+                )
         if not isinstance(self.use_boundary, WakeUseBoundary):
             raise WakePacketError("Wake packet use boundary is invalid")
 
@@ -796,9 +1066,23 @@ class WakeAssemblyReceipt:
 
     def __post_init__(self) -> None:
         _text("wake_id", self.wake_id)
-        if self.packet_version != WAKE_PACKET_VERSION:
-            raise WakePacketError("receipt packet version is invalid")
-        if self.selection_policy_version != WAKE_SELECTION_POLICY_VERSION:
+        if self.packet_version not in {
+            WAKE_PACKET_VERSION,
+            WAKE_PACKET_VERSION_V0_2,
+        }:
+            raise WakePacketError(
+                "receipt packet version is invalid"
+            )
+        expected_policy = (
+            WAKE_SELECTION_POLICY_VERSION
+            if self.packet_version
+            == WAKE_PACKET_VERSION
+            else WAKE_SELECTION_POLICY_VERSION_V0_2
+        )
+        if (
+            self.selection_policy_version
+            != expected_policy
+        ):
             raise WakePacketError(
                 "receipt selection policy version is invalid"
             )
@@ -1040,6 +1324,206 @@ def assemble_wake_packet_v0_1(
             (WakeLayer.ROOM_NOW, room_section.availability),
             (WakeLayer.RECENT_LIFE, recent.availability),
             (WakeLayer.NEARBY_DOORS, doors.availability),
+        ),
+    )
+    return packet, receipt
+
+
+def assemble_wake_packet_v0_2(
+    *,
+    wake_id: str,
+    as_of: datetime,
+    episode: EpisodeRecord,
+    route: RoomAttachmentResolution,
+    continuity_edges: tuple[ContinuityEdge, ...] = (),
+    room_current: CurrentResolvedView | None = None,
+    recent_life_selection: RecentLifeSelection | None = None,
+) -> tuple[WakePacket, WakeAssemblyReceipt]:
+    """Assemble v0.2 by extending the exact v0.1 Map/Room semantics."""
+
+    base_packet, base_receipt = assemble_wake_packet_v0_1(
+        wake_id=wake_id,
+        as_of=as_of,
+        episode=episode,
+        route=route,
+        continuity_edges=continuity_edges,
+        room_current=room_current,
+    )
+
+    if route.decision != "attached":
+        recent = WakeRecentLifeSection(
+            availability=WakeLayerAvailability.UNAVAILABLE,
+            items=(),
+            reason_codes=(
+                "EPISODE_NOT_ATTACHED_TO_ROOM",
+            ),
+        )
+    elif recent_life_selection is None:
+        recent = WakeRecentLifeSection(
+            availability=WakeLayerAvailability.UNAVAILABLE,
+            items=(),
+            reason_codes=(
+                "NO_TYPED_RECENT_LIFE_PROJECTION",
+            ),
+        )
+    else:
+        if not isinstance(
+            recent_life_selection,
+            RecentLifeSelection,
+        ):
+            raise WakePacketError(
+                "recent_life_selection must be RecentLifeSelection"
+            )
+        if (
+            recent_life_selection.policy_version
+            != RECENT_LIFE_POLICY_VERSION
+        ):
+            raise WakePacketError(
+                "Recent Life selection policy version is invalid"
+            )
+        assert route.room_id is not None
+
+        ordered = recent_life_selection.events
+        items: list[WakeRecentLifeItem] = []
+        seen_ids: set[str] = set()
+        for event in ordered:
+            if event.event_id in seen_ids:
+                raise WakePacketError(
+                    "Recent Life input repeats event_id"
+                )
+            seen_ids.add(event.event_id)
+            if event.room_id != route.room_id:
+                raise WakePacketError(
+                    "Recent Life event belongs to another Room"
+                )
+            if (
+                _instant(event.occurred_at)
+                > _instant(as_of)
+                or _instant(event.recorded_at)
+                > _instant(as_of)
+            ):
+                raise WakePacketError(
+                    "Recent Life event is future relative to Wake cut"
+                )
+            if (
+                _instant(as_of)
+                - _instant(event.occurred_at)
+                > _duration_micros(
+                    RECENT_LIFE_HORIZON
+                )
+            ):
+                raise WakePacketError(
+                    "Recent Life event is outside the canonical horizon"
+                )
+            items.append(
+                WakeRecentLifeItem(
+                    item_id=(
+                        f"recent_life:{event.event_id}"
+                    ),
+                    event_id=event.event_id,
+                    state_id=event.state_id,
+                    admission_id=event.admission_id,
+                    projection_kind=(
+                        event.projection_kind
+                    ),
+                    supersedes_state_id=(
+                        event.supersedes_state_id
+                    ),
+                    room_id=event.room_id,
+                    episode_id=event.episode_id,
+                    perspective_instance_id=(
+                        event.perspective_instance_id
+                    ),
+                    room_attachment_event_id=(
+                        event.room_attachment_event_id
+                    ),
+                    key=event.key,
+                    state_kind=event.state_kind,
+                    selection_policy_version=(
+                        RECENT_LIFE_POLICY_VERSION
+                    ),
+                    summary=event.summary,
+                    occurred_at=event.occurred_at,
+                    recorded_at=event.recorded_at,
+                    evidence=event.evidence,
+                    source_refs=event.source_refs,
+                    privacy_scope=WakePrivacyScope(
+                        kind=WakePrivacyScopeKind.ROOM,
+                        scope_id=event.room_id,
+                    ),
+                )
+            )
+        availability_by_selection = {
+            RecentLifeSelectionStatus.READY:
+                WakeLayerAvailability.READY,
+            RecentLifeSelectionStatus.PARTIAL:
+                WakeLayerAvailability.PARTIAL,
+            RecentLifeSelectionStatus.UNAVAILABLE:
+                WakeLayerAvailability.UNAVAILABLE,
+        }
+        recent = WakeRecentLifeSection(
+            availability=availability_by_selection[
+                recent_life_selection.status
+            ],
+            items=tuple(items),
+            reason_codes=(
+                recent_life_selection.reason_codes
+            ),
+        )
+
+    packet = WakePacket(
+        wake_id=base_packet.wake_id,
+        packet_version=WAKE_PACKET_VERSION_V0_2,
+        input_trust=base_packet.input_trust,
+        as_of=base_packet.as_of,
+        episode_id=base_packet.episode_id,
+        perspective_instance_id=(
+            base_packet.perspective_instance_id
+        ),
+        map=base_packet.map,
+        shared_now=base_packet.shared_now,
+        room_now=base_packet.room_now,
+        recent_life=recent,
+        nearby_doors=base_packet.nearby_doors,
+    )
+    included = list(
+        base_receipt.included_item_ids
+    )
+    included.extend(
+        item.item_id
+        for item in recent.items
+    )
+    receipt = WakeAssemblyReceipt(
+        wake_id=base_receipt.wake_id,
+        packet_version=WAKE_PACKET_VERSION_V0_2,
+        selection_policy_version=(
+            WAKE_SELECTION_POLICY_VERSION_V0_2
+        ),
+        as_of=base_receipt.as_of,
+        episode_id=base_receipt.episode_id,
+        included_item_ids=tuple(included),
+        omissions=base_receipt.omissions,
+        layer_availability=(
+            (
+                WakeLayer.MAP,
+                packet.map.availability,
+            ),
+            (
+                WakeLayer.SHARED_NOW,
+                packet.shared_now.availability,
+            ),
+            (
+                WakeLayer.ROOM_NOW,
+                packet.room_now.availability,
+            ),
+            (
+                WakeLayer.RECENT_LIFE,
+                packet.recent_life.availability,
+            ),
+            (
+                WakeLayer.NEARBY_DOORS,
+                packet.nearby_doors.availability,
+            ),
         ),
     )
     return packet, receipt
@@ -1324,6 +1808,14 @@ def _wake_continuity_evidence(
 
 def _same_instant(left: datetime, right: datetime) -> bool:
     return _instant(left) == _instant(right)
+
+
+def _duration_micros(value: timedelta) -> int:
+    return (
+        (value.days * 86_400 + value.seconds)
+        * 1_000_000
+        + value.microseconds
+    )
 
 
 def _instant(value: datetime) -> int:

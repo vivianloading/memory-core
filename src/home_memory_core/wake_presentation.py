@@ -14,6 +14,7 @@ from home_memory_core.wake_issuance import (
     IssuedWakePacket,
     WakeIssuanceAuthority,
 )
+from home_memory_core.evidence import EvidenceRef
 from home_memory_core.wake_packet import (
     WakeAuthority,
     WakeLayer,
@@ -22,12 +23,17 @@ from home_memory_core.wake_packet import (
     WakePrivacyScopeKind,
     WakeRouteDecision,
     WakeUseBoundary,
+    WAKE_PACKET_VERSION_V0_2,
 )
 
 
 WAKE_PRESENTATION_VERSION = "wake-presentation-v0.1"
 WAKE_PRESENTATION_RENDERER_VERSION = (
     "wake-presentation-json-v0.1"
+)
+WAKE_PRESENTATION_VERSION_V0_2 = "wake-presentation-v0.2"
+WAKE_PRESENTATION_RENDERER_VERSION_V0_2 = (
+    "wake-presentation-json-v0.2"
 )
 WAKE_PRESENTATION_MEDIA_TYPE = (
     "application/vnd.home.wake-presentation+json"
@@ -43,6 +49,7 @@ class WakePresentationError(ValueError):
 class WakePresentationBlockKind(StrEnum):
     MAP_ORIENTATION = "map_orientation"
     ROOM_STANDING = "room_standing"
+    RECENT_LIFE_EVENT = "recent_life_event"
 
 
 class WakePresentationTemporalPolicy(StrEnum):
@@ -333,9 +340,123 @@ class WakeRoomPresentationBlock:
             )
 
 
+@dataclass(frozen=True)
+class WakeRecentLifePresentationBlock:
+    block_id: str
+    layer: WakeLayer
+    block_kind: WakePresentationBlockKind
+    policy: WakePresentationPolicy
+    event_id: str
+    state_id: str
+    admission_id: str
+    projection_kind: str
+    supersedes_state_id: str | None
+    room_id: str
+    episode_id: str
+    perspective_instance_id: str
+    room_attachment_event_id: str
+    key: str
+    state_kind: str
+    selection_policy_version: str
+    summary: str
+    occurred_at: datetime
+    recorded_at: datetime
+    evidence: tuple[EvidenceRef, ...]
+    source_refs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _text("block_id", self.block_id)
+        if self.layer is not WakeLayer.RECENT_LIFE:
+            raise WakePresentationError(
+                "Recent Life presentation block must remain in Recent Life"
+            )
+        if (
+            self.block_kind
+            is not WakePresentationBlockKind.RECENT_LIFE_EVENT
+        ):
+            raise WakePresentationError(
+                "Recent Life presentation block kind is invalid"
+            )
+        if not isinstance(self.policy, WakePresentationPolicy):
+            raise WakePresentationError(
+                "Recent Life presentation policy is invalid"
+            )
+        if (
+            self.policy.privacy_scope.kind
+            is not WakePrivacyScopeKind.ROOM
+            or self.policy.privacy_scope.scope_id
+            != self.room_id
+        ):
+            raise WakePresentationError(
+                "Recent Life presentation must remain Room-scoped"
+            )
+        if (
+            self.policy.attribution_policy
+            is not WakePresentationAttributionPolicy.EXPLICIT_EPISODE_PERSPECTIVE
+        ):
+            raise WakePresentationError(
+                "Recent Life requires explicit historical Episode/Perspective attribution"
+            )
+        for field_name in (
+            "event_id",
+            "state_id",
+            "admission_id",
+            "projection_kind",
+            "room_id",
+            "episode_id",
+            "perspective_instance_id",
+            "room_attachment_event_id",
+            "key",
+            "state_kind",
+            "selection_policy_version",
+            "summary",
+        ):
+            _text(field_name, getattr(self, field_name))
+        if self.projection_kind != "room_current_state_assertion":
+            raise WakePresentationError(
+                "Recent Life presentation projection kind is invalid"
+            )
+        if self.supersedes_state_id is not None:
+            if (
+                type(self.supersedes_state_id)
+                is not str
+                or not self.supersedes_state_id.strip()
+                or self.supersedes_state_id
+                == self.state_id
+            ):
+                raise WakePresentationError(
+                    "Recent Life presentation supersession witness is invalid"
+                )
+        _aware("occurred_at", self.occurred_at)
+        _aware("recorded_at", self.recorded_at)
+        if (
+            not isinstance(self.evidence, tuple)
+            or not self.evidence
+            or any(
+                not isinstance(item, EvidenceRef)
+                for item in self.evidence
+            )
+        ):
+            raise WakePresentationError(
+                "Recent Life presentation requires exact EvidenceRef provenance"
+            )
+        _refs("source_refs", self.source_refs)
+        expected_source_refs = tuple(
+            dict.fromkeys(
+                item.source_id
+                for item in self.evidence
+            )
+        )
+        if self.source_refs != expected_source_refs:
+            raise WakePresentationError(
+                "Recent Life presentation source refs differ from exact evidence"
+            )
+
+
 WakePresentationBlock = (
     WakeMapPresentationBlock
     | WakeRoomPresentationBlock
+    | WakeRecentLifePresentationBlock
 )
 
 
@@ -367,6 +488,7 @@ class WakePresentationLayerPlan:
                     (
                         WakeMapPresentationBlock,
                         WakeRoomPresentationBlock,
+                        WakeRecentLifePresentationBlock,
                     ),
                 )
                 for item in self.blocks
@@ -415,10 +537,37 @@ class WakePresentationLayerPlan:
                 raise WakePresentationError(
                     "Room layer can contain only Room standing blocks"
                 )
+        elif self.layer is WakeLayer.RECENT_LIFE:
+            if self.availability not in {
+                WakeLayerAvailability.READY,
+                WakeLayerAvailability.PARTIAL,
+                WakeLayerAvailability.UNAVAILABLE,
+            }:
+                raise WakePresentationError(
+                    "Recent Life presentation availability is invalid"
+                )
+            if (
+                self.availability
+                is WakeLayerAvailability.UNAVAILABLE
+                and self.blocks
+            ):
+                raise WakePresentationError(
+                    "unavailable Recent Life cannot carry blocks"
+                )
+            if any(
+                not isinstance(
+                    item,
+                    WakeRecentLifePresentationBlock,
+                )
+                for item in self.blocks
+            ):
+                raise WakePresentationError(
+                    "Recent Life layer can contain only Recent Life blocks"
+                )
         else:
             if self.blocks:
                 raise WakePresentationError(
-                    "closed/unavailable non-Map layers cannot carry blocks in v0.1"
+                    "closed/unavailable non-content layers cannot carry blocks"
                 )
             if self.layer is WakeLayer.SHARED_NOW:
                 if (
@@ -428,16 +577,13 @@ class WakePresentationLayerPlan:
                     raise WakePresentationError(
                         "Shared Now must remain CLOSED"
                     )
-            elif self.layer in {
-                WakeLayer.RECENT_LIFE,
-                WakeLayer.NEARBY_DOORS,
-            }:
+            elif self.layer is WakeLayer.NEARBY_DOORS:
                 if (
                     self.availability
                     is not WakeLayerAvailability.UNAVAILABLE
                 ):
                     raise WakePresentationError(
-                        "Recent Life/Nearby Doors must remain UNAVAILABLE"
+                        "Nearby Doors must remain UNAVAILABLE"
                     )
 
 
@@ -458,7 +604,10 @@ class WakePresentationPlan:
             raise WakePresentationError(
                 "operational Wake presentation plan must come from verified builder"
             )
-        if self.presentation_version != WAKE_PRESENTATION_VERSION:
+        if self.presentation_version not in {
+            WAKE_PRESENTATION_VERSION,
+            WAKE_PRESENTATION_VERSION_V0_2,
+        }:
             raise WakePresentationError(
                 "unexpected Wake presentation version"
             )
@@ -490,6 +639,17 @@ class WakePresentationPlan:
                 "presentation plan must preserve exact five-layer order"
             )
 
+        recent_layer = self.layers[3]
+        if self.presentation_version == WAKE_PRESENTATION_VERSION:
+            if (
+                recent_layer.availability
+                is not WakeLayerAvailability.UNAVAILABLE
+                or recent_layer.blocks
+            ):
+                raise WakePresentationError(
+                    "Wake Presentation v0.1 Recent Life must remain UNAVAILABLE"
+                )
+
         map_block = self.layers[0].blocks[0]
         assert isinstance(map_block, WakeMapPresentationBlock)
         if (
@@ -514,9 +674,21 @@ class WakePresentationPlan:
                     raise WakePresentationError(
                         "Room presentation crosses attached Map Room"
                     )
-        elif self.layers[2].blocks:
+            for block in recent_layer.blocks:
+                assert isinstance(
+                    block,
+                    WakeRecentLifePresentationBlock,
+                )
+                if block.room_id != map_block.room_id:
+                    raise WakePresentationError(
+                        "Recent Life presentation crosses attached Map Room"
+                    )
+        elif (
+            self.layers[2].blocks
+            or recent_layer.blocks
+        ):
             raise WakePresentationError(
-                "unattached/unresolved Map cannot carry Room presentation blocks"
+                "unattached/unresolved Map cannot carry Room-scoped presentation blocks"
             )
 
 
@@ -534,14 +706,20 @@ class WakePresentationRenderReceipt:
     )
 
     def __post_init__(self) -> None:
-        if self.presentation_version != WAKE_PRESENTATION_VERSION:
+        if self.presentation_version not in {
+            WAKE_PRESENTATION_VERSION,
+            WAKE_PRESENTATION_VERSION_V0_2,
+        }:
             raise WakePresentationError(
                 "render receipt presentation version is invalid"
             )
-        if (
-            self.renderer_version
-            != WAKE_PRESENTATION_RENDERER_VERSION
-        ):
+        expected_renderer = (
+            WAKE_PRESENTATION_RENDERER_VERSION
+            if self.presentation_version
+            == WAKE_PRESENTATION_VERSION
+            else WAKE_PRESENTATION_RENDERER_VERSION_V0_2
+        )
+        if self.renderer_version != expected_renderer:
             raise WakePresentationError(
                 "render receipt renderer version is invalid"
             )
@@ -577,10 +755,10 @@ class RenderedWakePresentation:
             raise WakePresentationError(
                 "rendered Wake presentation cannot grant instruction authority"
             )
-        if (
-            self.renderer_version
-            != WAKE_PRESENTATION_RENDERER_VERSION
-        ):
+        if self.renderer_version not in {
+            WAKE_PRESENTATION_RENDERER_VERSION,
+            WAKE_PRESENTATION_RENDERER_VERSION_V0_2,
+        }:
             raise WakePresentationError(
                 "rendered Wake renderer version is invalid"
             )
@@ -590,6 +768,13 @@ class RenderedWakePresentation:
         ):
             raise WakePresentationError(
                 "rendered Wake receipt is invalid"
+            )
+        if (
+            self.renderer_version
+            != self.receipt.renderer_version
+        ):
+            raise WakePresentationError(
+                "rendered Wake renderer differs from receipt"
             )
         if not isinstance(self.use_boundary, WakeUseBoundary):
             raise WakePresentationError(
@@ -678,6 +863,14 @@ def build_wake_presentation_plan(
         _room_block_from_item(item)
         for item in packet.room_now.items
     )
+    recent_blocks = tuple(
+        _recent_life_block_from_item(item)
+        for item in getattr(
+            packet.recent_life,
+            "items",
+            (),
+        )
+    )
 
     layers = (
         WakePresentationLayerPlan(
@@ -702,7 +895,7 @@ def build_wake_presentation_plan(
             layer=WakeLayer.RECENT_LIFE,
             availability=packet.recent_life.availability,
             reason_codes=packet.recent_life.reason_codes,
-            blocks=(),
+            blocks=recent_blocks,
         ),
         WakePresentationLayerPlan(
             layer=WakeLayer.NEARBY_DOORS,
@@ -712,8 +905,14 @@ def build_wake_presentation_plan(
         ),
     )
 
+    presentation_version = (
+        WAKE_PRESENTATION_VERSION_V0_2
+        if packet.packet_version
+        == WAKE_PACKET_VERSION_V0_2
+        else WAKE_PRESENTATION_VERSION
+    )
     return WakePresentationPlan(
-        presentation_version=WAKE_PRESENTATION_VERSION,
+        presentation_version=presentation_version,
         wake_id=packet.wake_id,
         issuance_id=issued.issuance_receipt.issuance_id,
         as_of=packet.as_of,
@@ -751,14 +950,18 @@ def render_wake_presentation(
 
     plan_payload = _plan_payload(plan)
     plan_json = _canonical_json(plan_semantics)
+    renderer_version = (
+        WAKE_PRESENTATION_RENDERER_VERSION
+        if plan.presentation_version
+        == WAKE_PRESENTATION_VERSION
+        else WAKE_PRESENTATION_RENDERER_VERSION_V0_2
+    )
     payload = {
         "kind": "home_wake_presentation_data",
         "presentation_version": (
-            WAKE_PRESENTATION_VERSION
+            plan.presentation_version
         ),
-        "renderer_version": (
-            WAKE_PRESENTATION_RENDERER_VERSION
-        ),
+        "renderer_version": renderer_version,
         "instruction_authority": WakeAuthority.NONE.value,
         "current_first_person_speech_authority": (
             WakeAuthority.NONE.value
@@ -780,8 +983,8 @@ def render_wake_presentation(
     payload_json = _canonical_json(payload)
 
     receipt = WakePresentationRenderReceipt(
-        presentation_version=WAKE_PRESENTATION_VERSION,
-        renderer_version=WAKE_PRESENTATION_RENDERER_VERSION,
+        presentation_version=plan.presentation_version,
+        renderer_version=renderer_version,
         wake_id=plan.wake_id,
         issuance_id=plan.issuance_id,
         as_of=plan.as_of,
@@ -794,9 +997,65 @@ def render_wake_presentation(
         media_type=WAKE_PRESENTATION_MEDIA_TYPE,
         payload_json=payload_json,
         instruction_authority=WakeAuthority.NONE,
-        renderer_version=WAKE_PRESENTATION_RENDERER_VERSION,
+        renderer_version=renderer_version,
         receipt=receipt,
         use_boundary=plan.use_boundary,
+    )
+
+
+def _recent_life_block_from_item(
+    item,
+) -> WakeRecentLifePresentationBlock:
+    return WakeRecentLifePresentationBlock(
+        block_id=f"presentation:{item.item_id}",
+        layer=WakeLayer.RECENT_LIFE,
+        block_kind=(
+            WakePresentationBlockKind.RECENT_LIFE_EVENT
+        ),
+        policy=WakePresentationPolicy(
+            privacy_scope=item.privacy_scope,
+            temporal_policy=(
+                WakePresentationTemporalPolicy.AT_ISSUANCE_CUT
+            ),
+            attribution_policy=(
+                WakePresentationAttributionPolicy.EXPLICIT_EPISODE_PERSPECTIVE
+            ),
+            pronoun_policy=(
+                WakePresentationPronounPolicy.NO_CURRENT_FIRST_PERSON
+            ),
+            authority_ceiling=(
+                WakePresentationAuthorityCeiling.DESCRIBE_ONLY
+            ),
+            inclusion_basis=(
+                "verified_recent_life_at_issuance_cut"
+            ),
+            use_boundary=item.use_boundary,
+        ),
+        event_id=item.event_id,
+        state_id=item.state_id,
+        admission_id=item.admission_id,
+        projection_kind=item.projection_kind,
+        supersedes_state_id=(
+            item.supersedes_state_id
+        ),
+        room_id=item.room_id,
+        episode_id=item.episode_id,
+        perspective_instance_id=(
+            item.perspective_instance_id
+        ),
+        room_attachment_event_id=(
+            item.room_attachment_event_id
+        ),
+        key=item.key,
+        state_kind=item.state_kind,
+        selection_policy_version=(
+            item.selection_policy_version
+        ),
+        summary=item.summary,
+        occurred_at=item.occurred_at,
+        recorded_at=item.recorded_at,
+        evidence=item.evidence,
+        source_refs=item.source_refs,
     )
 
 
@@ -962,6 +1221,56 @@ def _block_payload(
                     }
                     for candidate in block.candidates
                 ],
+            }
+        )
+        return common
+    if isinstance(
+        block,
+        WakeRecentLifePresentationBlock,
+    ):
+        common.update(
+            {
+                "event_id": block.event_id,
+                "state_id": block.state_id,
+                "admission_id": block.admission_id,
+                "projection_kind": (
+                    block.projection_kind
+                ),
+                "supersedes_state_id": (
+                    block.supersedes_state_id
+                ),
+                "room_id": block.room_id,
+                "episode_id": block.episode_id,
+                "perspective_instance_id": (
+                    block.perspective_instance_id
+                ),
+                "room_attachment_event_id": (
+                    block.room_attachment_event_id
+                ),
+                "key": block.key,
+                "state_kind": block.state_kind,
+                "selection_policy_version": (
+                    block.selection_policy_version
+                ),
+                "summary": block.summary,
+                "occurred_at": _datetime_text(
+                    block.occurred_at
+                ),
+                "recorded_at": _datetime_text(
+                    block.recorded_at
+                ),
+                "evidence": [
+                    {
+                        "source_id": item.source_id,
+                        "source_sha256": item.source_sha256,
+                        "start_char": item.start_char,
+                        "end_char": item.end_char,
+                    }
+                    for item in block.evidence
+                ],
+                "source_refs": list(
+                    block.source_refs
+                ),
             }
         )
         return common
