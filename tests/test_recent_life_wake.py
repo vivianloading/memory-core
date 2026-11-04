@@ -305,13 +305,13 @@ class RecentLifeWakeTests(unittest.TestCase):
                 4,
             )
             self.assertEqual(
-                prepared.preparation.request
+                prepared.request
                 .wake_data.value.payload_json,
                 constructed.request.wake_context.payload_json,
             )
             for boundary in (
                 constructed.request.use_boundary,
-                prepared.preparation.request.use_boundary,
+                prepared.request.use_boundary,
             ):
                 for name in (
                     "instruction_authority",
