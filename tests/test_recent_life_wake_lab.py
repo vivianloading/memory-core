@@ -196,6 +196,25 @@ class SyntheticRecentLifeWakeLabTests(
             }.issubset(room_keys)
         )
 
+    def test_baseline_room_now_preserves_first_wake_blue_cup_detail(
+        self,
+    ) -> None:
+        _, prepared = self._prepare()
+        room_now = self._layer(
+            self._payload(prepared),
+            "room_now",
+        )
+        by_key = {
+            block["key"]: block
+            for block in room_now["blocks"]
+        }
+        blue = by_key["preference.blue_cup"]
+        self.assertEqual(
+            blue["candidates"][0]["value"],
+            "During late-night work, the blue ceramic cup is usually "
+            "left beside the window.",
+        )
+
     def test_recent_life_exact_content_time_and_provenance(
         self,
     ) -> None:
