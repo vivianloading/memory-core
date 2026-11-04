@@ -86,8 +86,10 @@ A Room with no eligible item produces a READY empty Recent Life layer with:
 
 Each carried Recent Life item retains:
 
+- projection kind `room_current_state_assertion`;
 - Current state id;
 - live Current admission id;
+- the state's `supersedes_state_id` when this assertion explicitly revises an earlier Current state;
 - Room id;
 - historical Episode id;
 - historical PerspectiveInstance id;
@@ -105,6 +107,12 @@ Each carried Recent Life item retains:
 Recent Life does not write a new summary over those sources. The carried
 description is the already-admitted Current value whose provenance and
 authority were established upstream.
+
+Recent Life also does not collapse a recent supersession chain into a silent
+last-write-wins view. If state B explicitly supersedes state A and both changes
+fall inside the recent window, both may be carried; B retains
+`supersedes_state_id = A`. The projection therefore presents recent Current
+assertions as historical changes, not as a bag of mutually compatible facts.
 
 ## Late Room correction
 
@@ -166,6 +174,7 @@ does not become:
 Recent Life v0.1 does not yet support:
 
 - arbitrary life-event writes;
+- Current end-event projection;
 - chat-history replay;
 - automatic summarization;
 - historical backfill as Recent Life;
