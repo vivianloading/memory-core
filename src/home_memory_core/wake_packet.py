@@ -24,6 +24,8 @@ from home_memory_core.recent_life import (
     RECENT_LIFE_HORIZON,
     RECENT_LIFE_POLICY_VERSION,
     RecentLifeEvent,
+    RecentLifeSelection,
+    RecentLifeSelectionStatus,
 )
 from home_memory_core.living_continuity import (
     ContinuityEdge,
@@ -1335,7 +1337,7 @@ def assemble_wake_packet_v0_2(
     route: RoomAttachmentResolution,
     continuity_edges: tuple[ContinuityEdge, ...] = (),
     room_current: CurrentResolvedView | None = None,
-    recent_life_events: tuple[RecentLifeEvent, ...] | None = None,
+    recent_life_selection: RecentLifeSelection | None = None,
 ) -> tuple[WakePacket, WakeAssemblyReceipt]:
     """Assemble v0.2 by extending the exact v0.1 Map/Room semantics."""
 
@@ -1356,7 +1358,7 @@ def assemble_wake_packet_v0_2(
                 "EPISODE_NOT_ATTACHED_TO_ROOM",
             ),
         )
-    elif recent_life_events is None:
+    elif recent_life_selection is None:
         recent = WakeRecentLifeSection(
             availability=WakeLayerAvailability.UNAVAILABLE,
             items=(),
@@ -1365,36 +1367,23 @@ def assemble_wake_packet_v0_2(
             ),
         )
     else:
-        if (
-            not isinstance(recent_life_events, tuple)
-            or any(
-                not isinstance(
-                    item,
-                    RecentLifeEvent,
-                )
-                for item in recent_life_events
-            )
+        if not isinstance(
+            recent_life_selection,
+            RecentLifeSelection,
         ):
             raise WakePacketError(
-                "recent_life_events must contain RecentLifeEvent values"
+                "recent_life_selection must be RecentLifeSelection"
+            )
+        if (
+            recent_life_selection.policy_version
+            != RECENT_LIFE_POLICY_VERSION
+        ):
+            raise WakePacketError(
+                "Recent Life selection policy version is invalid"
             )
         assert route.room_id is not None
-        if len(recent_life_events) > 4:
-            raise WakePacketError(
-                "Wake v0.2 Recent Life window exceeds four events"
-            )
 
-        ordered = tuple(
-            sorted(
-                recent_life_events,
-                key=lambda item: (
-                    _instant(item.occurred_at),
-                    _instant(item.recorded_at),
-                    item.event_id,
-                ),
-                reverse=True,
-            )
-        )
+        ordered = recent_life_selection.events
         items: list[WakeRecentLifeItem] = []
         seen_ids: set[str] = set()
         for event in ordered:
@@ -1464,13 +1453,21 @@ def assemble_wake_packet_v0_2(
                     ),
                 )
             )
+        availability_by_selection = {
+            RecentLifeSelectionStatus.READY:
+                WakeLayerAvailability.READY,
+            RecentLifeSelectionStatus.PARTIAL:
+                WakeLayerAvailability.PARTIAL,
+            RecentLifeSelectionStatus.UNAVAILABLE:
+                WakeLayerAvailability.UNAVAILABLE,
+        }
         recent = WakeRecentLifeSection(
-            availability=WakeLayerAvailability.READY,
+            availability=availability_by_selection[
+                recent_life_selection.status
+            ],
             items=tuple(items),
             reason_codes=(
-                ()
-                if items
-                else ("NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",)
+                recent_life_selection.reason_codes
             ),
         )
 
