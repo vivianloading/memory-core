@@ -1,116 +1,181 @@
 # Recent Life v0.1
 
-Status: synthetic/local semantic slice for Wake Packet/Presentation v0.2.
+Status: synthetic/local read-only Wake projection.
 
-Recent Life answers a narrow question:
+Recent Life answers one narrow question:
 
-> What happened shortly before this Wake that is useful for orientation, without
-> turning carried history into the waking subject's current first-person memory?
+> Which already-authorized Room Current changes happened recently enough to
+> help orientation, without turning carried history into the waking subject's
+> current first-person memory?
 
-## Non-goals
+## Core decision
 
-Recent Life is not:
+Recent Life v0.1 is **not a second memory store** and has no write API.
 
-- chat history replay;
-- a personality summary;
-- identity continuity proof;
-- relationship authority;
-- Room residence or Entry/Adoption;
-- a model instruction channel;
-- a memory-write permission;
-- a relevance-ranked semantic memory search.
+It does not accept caller-created:
+- summaries;
+- event times;
+- record times;
+- Room routes;
+- Episode/Perspective attribution;
+- source IDs as loose provenance.
 
-## Canonical producer
+Instead, Wake projects Recent Life only from Room Current state records that
+already crossed the existing live `CurrentAdmissionAuthority` boundary in the
+same HOME process and canonical SQLite snapshot.
 
-Recent Life is persisted in a dedicated append-only canonical store.
+This deliberately reuses an authority path HOME already trusts rather than
+creating a new event-authority system inside Recent Life.
 
-Each event binds:
+## Producer
 
-- one event id;
-- one Room;
-- one historical Episode;
-- one historical PerspectiveInstance;
-- the exact historical Room attachment event that placed that Episode in the Room;
-- summary text;
-- occurred-at time;
-- recorded-at time;
-- one or more source refs.
+The canonical producer is:
 
-The source refs must already exist in the HOME source store and must be scoped to
-the same Room. The historical Room attachment must canonically belong to the
-same Episode and attach that Episode to that same Room. Suppressed sources
-cannot be used to create new Recent Life events. Events whose source refs are
-currently suppressed are omitted from Wake delivery.
+`live_admitted_room_current_history`
 
-Before canonical use, persisted Recent Life data is revalidated against Living,
-source hashes/scopes, timestamps, source-binding order, and historical
-attachment provenance. Contradictory raw persistence fails closed rather than
-becoming Wake evidence.
+For one routed Room and one Wake issuance cut it:
 
-Wake issuance reads Recent Life on the **same SQLite read transaction and
-issuance cut** used for Living topology and Room Current.
+1. obtains the exact live Current admission receipts from the bound
+   `CurrentResolver`;
+2. reads only Current state records backed by those exact live receipts;
+3. keeps only Room records owned by the Wake-routed Room;
+4. requires the record's exact historical Episode/Perspective attribution;
+5. requires the exact Room attachment recorded when Current admission happened;
+6. re-resolves that Episode's Room attachment at the Wake cut and withholds the
+   event if the historical attachment has since been superseded/corrected;
+7. applies Current present-use suppression before carriage;
+8. keeps only records whose **event time**, not ingestion time, falls inside
+   the canonical Recent Life horizon;
+9. carries the exact Current evidence bindings, including source snapshot hash
+   and character locator.
 
-Caller input to `WakeIssuanceAuthority.issue(...)` remains only `episode_id`.
-The caller cannot inject Recent Life events into issuance.
+No durable Current admission row is sufficient by itself. The corresponding
+process-local live admission receipt must still exist.
 
-## Window
+## Time policy
 
-Wake v0.2 carries at most four source-backed Recent Life events for the routed
-Room.
+Recent Life v0.1 uses:
 
-Selection is deterministic:
+- event time as the recency ordering/eligibility time;
+- recorded time only as an as-of visibility guard;
+- a fixed seven-day horizon;
+- a maximum of four items.
 
-1. event occurred at or before the issuance cut;
-2. event was recorded at or before the issuance cut;
-3. current suppression does not block any bound source;
-4. newest occurred-at first, then newest recorded-at, then event id.
+Formally, an item is eligible only when:
 
-A canonical Recent Life store with no eligible events produces a READY empty
-layer with `NO_RECENT_LIFE_IN_WINDOW`.
+`as_of - 7 days <= event_time <= as_of`
 
-A HOME without the Recent Life schema continues to issue Wake Packet v0.1 with
-Recent Life UNAVAILABLE. This preserves the exact semantics of historical v0.1
-First Wake evidence.
+and:
+
+`recorded_at <= as_of`
+
+Selection order is deterministic:
+
+1. newest event time;
+2. newest recorded time;
+3. state id.
+
+A state learned today about an event eight days ago does **not** become recent
+merely because it was recorded today.
+
+A Room with no eligible item produces a READY empty Recent Life layer with:
+
+`NO_RECENT_LIFE_IN_WINDOW`
+
+## Provenance
+
+Each carried Recent Life item retains:
+
+- Current state id;
+- live Current admission id;
+- Room id;
+- historical Episode id;
+- historical PerspectiveInstance id;
+- the exact Room attachment event recorded by Current admission;
+- Current key and state kind;
+- Current value as the carried description;
+- Current event time;
+- Current recorded time;
+- exact `EvidenceRef` values:
+  - source id;
+  - source SHA-256 snapshot;
+  - start character;
+  - end character.
+
+Recent Life does not write a new summary over those sources. The carried
+description is the already-admitted Current value whose provenance and
+authority were established upstream.
+
+## Late Room correction
+
+Room attachment history is not treated as permanent privacy authority.
+
+If Current state S was admitted while Episode E was attached to Room A, and
+Living later supersedes that attachment so E resolves elsewhere, S remains
+historical Current evidence but is no longer automatically eligible for
+Recent Life delivery into Room A.
+
+v0.1 does not auto-rescope it into another Room.
+
+That requires a future explicit re-scope contract.
+
+This is intentionally conservative:
+
+> shared/history evidence may remain, but a superseded route cannot keep
+> authorizing private future delivery.
 
 ## Wake semantics
 
-Wake Packet v0.2 carries Recent Life as typed Room-scoped items.
+Recent Life is enabled explicitly on a Wake issuer by the one canonical
+`RECENT_LIFE_POLICY_V0_1` object.
 
-Every item preserves the historical Episode/Perspective attribution and the
-exact historical Room attachment event that grounded the event's Room scope.
-That attachment is provenance only: it does not grant present Room residence,
-identity, Entry/Adoption, or route authority. Historical attribution is never
-rewritten as the waking Episode/Perspective.
-
-Every item carries the ordinary Wake use boundary, where all six authority axes
-remain NONE.
-
-Wake Presentation v0.2 renders each event with:
-
-- explicit historical Episode/Perspective attribution;
-- exact historical Room-attachment provenance;
-- Room privacy scope;
-- `at_issuance_cut` temporal policy;
-- `no_current_first_person` pronoun policy;
-- `describe_only` authority ceiling;
-- exact source refs.
-
-The carried event may say that Aster and Niko did something. Carrying that event
-does not authorize the current model to rewrite it as “I did this” or “we did
-this”.
-
-## Version boundary
-
-Historical Wake Packet/Presentation v0.1 remains unchanged:
+Without that policy, Wake behavior remains exactly v0.1:
 
 - Shared Now CLOSED;
 - Recent Life UNAVAILABLE;
 - Nearby Doors UNAVAILABLE.
 
-A canonical Recent Life schema upgrades issuance to:
+With the policy, Wake Packet/Presentation become v0.2 and may carry Recent Life.
 
-- Wake Packet v0.2;
-- Wake Presentation v0.2.
+Each Recent Life item still has all six Wake authority axes fixed to NONE.
 
-This is an explicit semantic version boundary rather than a silent change to
-v0.1.
+Wake Presentation renders each item with:
+
+- Room privacy scope;
+- explicit historical Episode/Perspective attribution;
+- exact Current admission / attachment provenance;
+- exact EvidenceRef provenance;
+- `at_issuance_cut` temporal policy;
+- `no_current_first_person` pronoun policy;
+- `describe_only` authority ceiling.
+
+Therefore:
+
+> “This Room's admitted history says A happened recently.”
+
+does not become:
+
+> “I remember doing A.”
+
+## Non-goals
+
+Recent Life v0.1 does not yet support:
+
+- arbitrary life-event writes;
+- chat-history replay;
+- automatic summarization;
+- historical backfill as Recent Life;
+- model-generated Recent Life;
+- relevance ranking;
+- emotional salience ranking;
+- Shared-space Recent Life;
+- cross-Room inheritance;
+- route-based automatic re-scoping;
+- identity continuity;
+- relationship authority;
+- Room residence / Entry / Adoption;
+- real personal data.
+
+A future arbitrary-event producer must establish its own typed observation /
+event-time / exact-evidence admission authority. It may not reuse this read-only
+projection as permission to accept caller-supplied event prose or timestamps.
