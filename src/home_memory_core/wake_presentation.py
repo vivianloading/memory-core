@@ -349,6 +349,8 @@ class WakeRecentLifePresentationBlock:
     event_id: str
     state_id: str
     admission_id: str
+    projection_kind: str
+    supersedes_state_id: str | None
     room_id: str
     episode_id: str
     perspective_instance_id: str
@@ -399,6 +401,7 @@ class WakeRecentLifePresentationBlock:
             "event_id",
             "state_id",
             "admission_id",
+            "projection_kind",
             "room_id",
             "episode_id",
             "perspective_instance_id",
@@ -409,6 +412,21 @@ class WakeRecentLifePresentationBlock:
             "summary",
         ):
             _text(field_name, getattr(self, field_name))
+        if self.projection_kind != "room_current_state_assertion":
+            raise WakePresentationError(
+                "Recent Life presentation projection kind is invalid"
+            )
+        if self.supersedes_state_id is not None:
+            if (
+                type(self.supersedes_state_id)
+                is not str
+                or not self.supersedes_state_id.strip()
+                or self.supersedes_state_id
+                == self.state_id
+            ):
+                raise WakePresentationError(
+                    "Recent Life presentation supersession witness is invalid"
+                )
         _aware("occurred_at", self.occurred_at)
         _aware("recorded_at", self.recorded_at)
         if (
@@ -1016,6 +1034,10 @@ def _recent_life_block_from_item(
         event_id=item.event_id,
         state_id=item.state_id,
         admission_id=item.admission_id,
+        projection_kind=item.projection_kind,
+        supersedes_state_id=(
+            item.supersedes_state_id
+        ),
         room_id=item.room_id,
         episode_id=item.episode_id,
         perspective_instance_id=(
@@ -1211,6 +1233,12 @@ def _block_payload(
                 "event_id": block.event_id,
                 "state_id": block.state_id,
                 "admission_id": block.admission_id,
+                "projection_kind": (
+                    block.projection_kind
+                ),
+                "supersedes_state_id": (
+                    block.supersedes_state_id
+                ),
                 "room_id": block.room_id,
                 "episode_id": block.episode_id,
                 "perspective_instance_id": (
