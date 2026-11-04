@@ -60,8 +60,8 @@ R2_VALUE = (
     "the remaining paper was left pressed at the edge of the desk."
 )
 R3_VALUE = (
-    "For late-night work, the blue ceramic cup's usual place changed "
-    "from beside the desk to beside the window."
+    "During late work, the blue ceramic cup was moved from beside "
+    "the desk to beside the window."
 )
 
 RECENT_LIFE_SPECS = (
@@ -411,6 +411,10 @@ def _validate_frozen_recent_life(payload_json: str) -> dict[str, Any]:
             raise RecentLifeWakeLabError(
                 f"Recent Life presentation boundary drifted for {state_id}"
             )
+        _require_none_axes(
+            policy,
+            label=f"Recent Life {state_id} policy",
+        )
     return layer
 
 
