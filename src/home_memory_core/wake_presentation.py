@@ -355,6 +355,7 @@ class WakeRecentLifePresentationBlock:
     room_attachment_event_id: str
     key: str
     state_kind: str
+    selection_policy_version: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
@@ -404,6 +405,7 @@ class WakeRecentLifePresentationBlock:
             "room_attachment_event_id",
             "key",
             "state_kind",
+            "selection_policy_version",
             "summary",
         ):
             _text(field_name, getattr(self, field_name))
@@ -1024,6 +1026,9 @@ def _recent_life_block_from_item(
         ),
         key=item.key,
         state_kind=item.state_kind,
+        selection_policy_version=(
+            item.selection_policy_version
+        ),
         summary=item.summary,
         occurred_at=item.occurred_at,
         recorded_at=item.recorded_at,
@@ -1216,6 +1221,9 @@ def _block_payload(
                 ),
                 "key": block.key,
                 "state_kind": block.state_kind,
+                "selection_policy_version": (
+                    block.selection_policy_version
+                ),
                 "summary": block.summary,
                 "occurred_at": _datetime_text(
                     block.occurred_at
