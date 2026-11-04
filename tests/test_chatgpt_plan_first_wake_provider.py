@@ -141,7 +141,7 @@ class ChatGPTPlanFirstWakeProviderTests(unittest.TestCase):
         }
         stream = (
             "event: response.created\n"
-            "data: {\"type\":\"response.created\","
+            "data: {\"sequence_number\":1,\"type\":\"response.created\", "
             "\"response\":{\"id\":\"resp_stream_test\","
             "\"status\":\"in_progress\"}}\n\n"
             "event: response.completed\n"
@@ -176,9 +176,11 @@ class ChatGPTPlanFirstWakeProviderTests(unittest.TestCase):
         terminal = json.dumps(
             {
                 "type": "response.completed",
+                "sequence_number": 0,
                 "response": {
                     "id": "resp_duplicate_terminal",
                     "status": "completed",
+                    "output": [],
                 },
             },
             separators=(",", ":"),
