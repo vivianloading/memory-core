@@ -52,6 +52,11 @@ For one routed Room and one Wake issuance cut it:
 No durable Current admission row is sufficient by itself. The corresponding
 process-local live admission receipt must still exist.
 
+This means a process restart does not silently turn durable audit rows into
+delivery authority. A fresh authority may know that recent durable candidates
+exist while still reporting the Recent Life layer as UNAVAILABLE until a future
+cross-process authorization/rehydration contract exists.
+
 ## Time policy
 
 Recent Life v0.1 uses:
@@ -78,9 +83,17 @@ Selection order is deterministic:
 A state learned today about an event eight days ago does **not** become recent
 merely because it was recorded today.
 
-A Room with no eligible item produces a READY empty Recent Life layer with:
+A Room with no eligible item and complete proof produces a READY empty Recent Life layer with:
 
 `NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW`
+
+Proof availability is separate from emptiness:
+
+- `READY`: every otherwise-eligible durable candidate has the live admission proof required for carriage;
+- `PARTIAL`: at least one eligible event can be carried, but one or more otherwise-eligible durable candidates lack live admission proof;
+- `UNAVAILABLE`: otherwise-eligible durable candidates exist, but none can be carried because their live admission proof is unavailable.
+
+The latter two expose only reason codes. Missing-proof candidate content is not copied into Wake merely to explain the holdback.
 
 ## Provenance
 
