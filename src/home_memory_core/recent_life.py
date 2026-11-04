@@ -292,6 +292,13 @@ def select_recent_life_from_current_in_connection(
             raise RecentLifeError(
                 "Recent Life Room state lacks attachment provenance"
             )
+        if (
+            receipt.room_attachment_event_id
+            != attachment_id
+        ):
+            raise RecentLifeError(
+                "Current admission receipt disagrees with stored Room attachment provenance"
+            )
 
         if not _attachment_still_resolves_to_same_room(
             living_store=living_store,
