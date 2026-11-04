@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,12 +14,6 @@ for _path in (str(SRC_ROOT), str(TESTS_ROOT)):
         sys.path.insert(0, _path)
 
 import first_wake_lab
-from home_memory_core.current_admission import (
-    open_current_admission_authority,
-)
-from home_memory_core.current_resolver import (
-    open_current_resolver,
-)
 from home_memory_core.current_view import (
     CurrentNamespace,
     CurrentStateKind,
@@ -134,25 +129,14 @@ class RecentLifeWakeTests(unittest.TestCase):
         self,
     ) -> None:
         with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
-            fresh_admission = open_current_admission_authority(
-                current_store=fixture.current,
-                admission_store=fixture.admission_store,
-                room_authority=fixture.room_authority,
-            )
-            fresh_resolver = open_current_resolver(
-                admission_authority=fresh_admission,
-            )
-            issuer = open_wake_issuance_authority(
-                living_store=fixture.living,
-                current_resolver=fresh_resolver,
-                clock=first_wake_lab.FixedClock(
-                    first_wake_lab.FIXED_AS_OF
-                ),
-                recent_life_policy=RECENT_LIFE_POLICY_V0_1,
-            )
-            issued = issuer.issue(
-                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
-            )
+            with patch.object(
+                fixture.admission,
+                "_snapshot_live_receipts_for_resolution",
+                return_value=(),
+            ):
+                issued = self._recent_issuer(fixture).issue(
+                    episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
+                )
             self.assertEqual(
                 issued.packet.recent_life.availability,
                 WakeLayerAvailability.UNAVAILABLE,
@@ -172,59 +156,36 @@ class RecentLifeWakeTests(unittest.TestCase):
         self,
     ) -> None:
         with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
-            fresh_admission = open_current_admission_authority(
-                current_store=fixture.current,
-                admission_store=fixture.admission_store,
-                room_authority=fixture.room_authority,
+            connection = fixture.resolver._read_connection()
+            try:
+                receipts = (
+                    fixture.admission
+                    ._snapshot_live_receipts_for_resolution(
+                        connection=connection,
+                    )
+                )
+            finally:
+                connection.close()
+            one_receipt = tuple(
+                item
+                for item in receipts
+                if item.effect_id
+                == "state-lantern-project"
             )
-            fresh_resolver = open_current_resolver(
-                admission_authority=fresh_admission,
+            self.assertEqual(
+                len(one_receipt),
+                1,
             )
-            binding = fixture._source_binding(
-                ref="fresh-authority-recent",
-                content="synthetic recent state admitted by fresh authority",
-            )
-            event_time = (
-                first_wake_lab.FIXED_AS_OF
-                - timedelta(minutes=30)
-            )
-            record = CurrentStateRecord(
-                state_id="state-fresh-authority-recent",
-                namespace=CurrentNamespace.ROOM,
-                owner_id=first_wake_lab.ROOM_ID,
-                key="project.fresh_authority",
-                state_kind=CurrentStateKind.PROJECT_STATUS,
-                value="One recent state has fresh live admission proof.",
-                event_time=event_time,
-                recorded_at=event_time,
-                valid_from=event_time,
-                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
-                downgrade_rule=DowngradeRule.NONE,
-                semantic_change_authority=(
-                    SemanticChangeAuthority.ROOM_FIRST_PERSON
-                ),
-                episode_id=first_wake_lab.PREVIOUS_EPISODE_ID,
-                perspective_instance_id=(
-                    first_wake_lab.PREVIOUS_PERSPECTIVE_ID
-                ),
-                source_refs=("fresh-authority-recent",),
-            )
-            fresh_admission.admit_room_state(
-                record=record,
-                source_bindings=(binding,),
-                grant=fixture.previous_grant,
-            )
-            issuer = open_wake_issuance_authority(
-                living_store=fixture.living,
-                current_resolver=fresh_resolver,
-                clock=first_wake_lab.FixedClock(
-                    first_wake_lab.FIXED_AS_OF
-                ),
-                recent_life_policy=RECENT_LIFE_POLICY_V0_1,
-            )
-            issued = issuer.issue(
-                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
-            )
+
+            with patch.object(
+                fixture.admission,
+                "_snapshot_live_receipts_for_resolution",
+                return_value=one_receipt,
+            ):
+                issued = self._recent_issuer(fixture).issue(
+                    episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
+                )
+
             self.assertEqual(
                 issued.packet.recent_life.availability,
                 WakeLayerAvailability.PARTIAL,
@@ -234,7 +195,7 @@ class RecentLifeWakeTests(unittest.TestCase):
                     item.state_id
                     for item in issued.packet.recent_life.items
                 ),
-                (record.state_id,),
+                ("state-lantern-project",),
             )
             self.assertEqual(
                 issued.packet.recent_life.reason_codes,
