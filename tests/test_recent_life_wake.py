@@ -204,6 +204,98 @@ class RecentLifeWakeTests(unittest.TestCase):
                 ),
             )
 
+    def test_missing_live_proof_after_four_carried_items_still_marks_partial(
+        self,
+    ) -> None:
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            binding = fixture._source_binding(
+                ref="fifth-missing-proof",
+                content=(
+                    "synthetic older recent candidate whose live proof is withheld"
+                ),
+            )
+            old_recent_time = (
+                first_wake_lab.FIXED_AS_OF
+                - timedelta(days=6)
+            )
+            missing = CurrentStateRecord(
+                state_id="state-fifth-missing-proof",
+                namespace=CurrentNamespace.ROOM,
+                owner_id=first_wake_lab.ROOM_ID,
+                key="project.fifth_missing_proof",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                value="Older eligible recent candidate.",
+                event_time=old_recent_time,
+                recorded_at=old_recent_time,
+                valid_from=old_recent_time,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id=first_wake_lab.PREVIOUS_EPISODE_ID,
+                perspective_instance_id=(
+                    first_wake_lab.PREVIOUS_PERSPECTIVE_ID
+                ),
+                source_refs=("fifth-missing-proof",),
+            )
+            fixture.admission.admit_room_state(
+                record=missing,
+                source_bindings=(binding,),
+                grant=fixture.previous_grant,
+            )
+
+            connection = fixture.resolver._read_connection()
+            try:
+                receipts = (
+                    fixture.admission
+                    ._snapshot_live_receipts_for_resolution(
+                        connection=connection,
+                    )
+                )
+            finally:
+                connection.close()
+            proved_only = tuple(
+                item
+                for item in receipts
+                if item.effect_id != missing.state_id
+            )
+            self.assertEqual(
+                len(proved_only),
+                4,
+            )
+
+            with patch.object(
+                fixture.admission,
+                "_snapshot_live_receipts_for_resolution",
+                return_value=proved_only,
+            ):
+                issued = self._recent_issuer(fixture).issue(
+                    episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
+                )
+
+            self.assertEqual(
+                len(issued.packet.recent_life.items),
+                4,
+            )
+            self.assertNotIn(
+                missing.state_id,
+                tuple(
+                    item.state_id
+                    for item in issued.packet.recent_life.items
+                ),
+            )
+            self.assertEqual(
+                issued.packet.recent_life.availability,
+                WakeLayerAvailability.PARTIAL,
+            )
+            self.assertEqual(
+                issued.packet.recent_life.reason_codes,
+                (
+                    "RECENT_LIFE_LIVE_ADMISSION_PROOF_PARTIAL",
+                ),
+            )
+
     def test_live_admitted_current_projects_exact_recent_life(
         self,
     ) -> None:
