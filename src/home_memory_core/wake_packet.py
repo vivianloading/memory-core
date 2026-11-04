@@ -658,6 +658,8 @@ class WakeRecentLifeItem:
     event_id: str
     state_id: str
     admission_id: str
+    projection_kind: str
+    supersedes_state_id: str | None
     room_id: str
     episode_id: str
     perspective_instance_id: str
@@ -681,6 +683,7 @@ class WakeRecentLifeItem:
             "event_id",
             "state_id",
             "admission_id",
+            "projection_kind",
             "room_id",
             "episode_id",
             "perspective_instance_id",
@@ -694,6 +697,20 @@ class WakeRecentLifeItem:
                 field_name,
                 getattr(self, field_name),
             )
+        if self.projection_kind != "room_current_state_assertion":
+            raise WakePacketError(
+                "Recent Life projection kind is invalid"
+            )
+        if self.supersedes_state_id is not None:
+            if (
+                type(self.supersedes_state_id) is not str
+                or not self.supersedes_state_id.strip()
+                or self.supersedes_state_id
+                == self.state_id
+            ):
+                raise WakePacketError(
+                    "Recent Life supersession witness is invalid"
+                )
         if (
             self.selection_policy_version
             != RECENT_LIFE_POLICY_VERSION
@@ -1417,6 +1434,12 @@ def assemble_wake_packet_v0_2(
                     event_id=event.event_id,
                     state_id=event.state_id,
                     admission_id=event.admission_id,
+                    projection_kind=(
+                        event.projection_kind
+                    ),
+                    supersedes_state_id=(
+                        event.supersedes_state_id
+                    ),
                     room_id=event.room_id,
                     episode_id=event.episode_id,
                     perspective_instance_id=(
