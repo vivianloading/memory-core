@@ -401,6 +401,107 @@ class RecentLifeWakeTests(unittest.TestCase):
                 ("NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",),
             )
 
+    def test_recent_supersession_chain_is_not_flattened(
+        self,
+    ) -> None:
+        with first_wake_lab.SyntheticFirstWakeFixture() as fixture:
+            self._suppress_fixture_recent_sources(
+                fixture
+            )
+            parent_binding = fixture._source_binding(
+                ref="recent-supersession-parent",
+                content="synthetic recent assertion: lantern plan A",
+            )
+            child_binding = fixture._source_binding(
+                ref="recent-supersession-child",
+                content="synthetic recent correction: lantern plan B",
+            )
+            parent_time = (
+                first_wake_lab.FIXED_AS_OF
+                - timedelta(hours=2)
+            )
+            child_time = (
+                first_wake_lab.FIXED_AS_OF
+                - timedelta(hours=1)
+            )
+            parent = CurrentStateRecord(
+                state_id="state-recent-plan-a",
+                namespace=CurrentNamespace.ROOM,
+                owner_id=first_wake_lab.ROOM_ID,
+                key="project.recent_plan",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                value="Recent plan A.",
+                event_time=parent_time,
+                recorded_at=parent_time,
+                valid_from=parent_time,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id=first_wake_lab.PREVIOUS_EPISODE_ID,
+                perspective_instance_id=(
+                    first_wake_lab.PREVIOUS_PERSPECTIVE_ID
+                ),
+                source_refs=("recent-supersession-parent",),
+            )
+            parent_receipt = fixture.admission.admit_room_state(
+                record=parent,
+                source_bindings=(parent_binding,),
+                grant=fixture.previous_grant,
+            )
+            child = CurrentStateRecord(
+                state_id="state-recent-plan-b",
+                namespace=CurrentNamespace.ROOM,
+                owner_id=first_wake_lab.ROOM_ID,
+                key="project.recent_plan",
+                state_kind=CurrentStateKind.PROJECT_STATUS,
+                value="Recent plan B.",
+                event_time=child_time,
+                recorded_at=child_time,
+                valid_from=child_time,
+                validity_rule=ValidityRule.DURABLE_UNTIL_CHANGED,
+                downgrade_rule=DowngradeRule.NONE,
+                semantic_change_authority=(
+                    SemanticChangeAuthority.ROOM_FIRST_PERSON
+                ),
+                episode_id=first_wake_lab.PREVIOUS_EPISODE_ID,
+                perspective_instance_id=(
+                    first_wake_lab.PREVIOUS_PERSPECTIVE_ID
+                ),
+                source_refs=("recent-supersession-child",),
+                supersedes_state_id=parent.state_id,
+            )
+            fixture.admission.admit_room_state(
+                record=child,
+                source_bindings=(child_binding,),
+                grant=fixture.previous_grant,
+                supersedes_receipt=parent_receipt,
+            )
+
+            issued = self._recent_issuer(fixture).issue(
+                episode_id=first_wake_lab.FIRST_WAKE_EPISODE_ID
+            )
+            items = issued.packet.recent_life.items
+            self.assertEqual(
+                tuple(item.state_id for item in items),
+                (
+                    child.state_id,
+                    parent.state_id,
+                ),
+            )
+            self.assertEqual(
+                items[0].projection_kind,
+                "room_current_state_assertion",
+            )
+            self.assertEqual(
+                items[0].supersedes_state_id,
+                parent.state_id,
+            )
+            self.assertIsNone(
+                items[1].supersedes_state_id
+            )
+
     def test_old_but_still_standing_current_state_is_not_recent(
         self,
     ) -> None:
@@ -465,6 +566,8 @@ class RecentLifeWakeTests(unittest.TestCase):
                 event_id="caller-event",
                 state_id="caller-state",
                 admission_id="caller-admission",
+                projection_kind="room_current_state_assertion",
+                supersedes_state_id=None,
                 room_id="room-x",
                 episode_id="episode-x",
                 perspective_instance_id="perspective-x",
