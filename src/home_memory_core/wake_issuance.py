@@ -27,7 +27,11 @@ from home_memory_core.living_store import (
 from home_memory_core.process_boundary import (
     current_home_process_instance_id,
 )
-from home_memory_core.recent_life import RecentLifeStore
+from home_memory_core.recent_life import (
+    RECENT_LIFE_POLICY_V0_1,
+    RecentLifePolicy,
+    select_recent_life_from_current_in_connection,
+)
 from home_memory_core.wake_packet import (
     WakeAssemblyReceipt,
     WakePacket,
@@ -167,6 +171,7 @@ class _LiveAuthorityOriginState:
     bound_living_store: LivingStore
     living_store: LivingStore
     current_resolver: CurrentResolver
+    recent_life_policy: RecentLifePolicy | None
     clock: Callable[[], datetime]
     canonical_db_path: Path
     canonical_db_binding_digest: str
@@ -195,6 +200,7 @@ class WakeIssuanceAuthority:
         living_store: LivingStore,
         current_resolver: CurrentResolver,
         clock: Callable[[], datetime],
+        recent_life_policy: RecentLifePolicy | None,
         _marker: object,
     ) -> None:
         if _marker is not _WAKE_ISSUANCE_AUTHORITY_MARKER:
@@ -207,6 +213,14 @@ class WakeIssuanceAuthority:
             raise TypeError("current_resolver must be CurrentResolver")
         if not callable(clock):
             raise TypeError("clock must be callable")
+        if (
+            recent_life_policy is not None
+            and recent_life_policy
+            is not RECENT_LIFE_POLICY_V0_1
+        ):
+            raise WakeIssuanceAuthorizationError(
+                "Wake issuance accepts only the canonical Recent Life policy"
+            )
 
         CurrentResolver._assert_live_binding(current_resolver)
         living_path = Path(living_store.db_path).resolve()
@@ -224,6 +238,9 @@ class WakeIssuanceAuthority:
         # mutable caller configuration cannot become producer authority.
         self._living_store = LivingStore(current_path)
         self._current_resolver = current_resolver
+        self._recent_life_policy = (
+            recent_life_policy
+        )
         self._clock = clock
         self._canonical_db_path = current_path
         self._canonical_db_binding_digest = _database_binding_digest(
@@ -254,6 +271,9 @@ class WakeIssuanceAuthority:
                 bound_living_store=self._bound_living_store,
                 living_store=self._living_store,
                 current_resolver=self._current_resolver,
+                recent_life_policy=(
+                    self._recent_life_policy
+                ),
                 clock=self._clock,
                 canonical_db_path=self._canonical_db_path,
                 canonical_db_binding_digest=(
@@ -345,28 +365,26 @@ class WakeIssuanceAuthority:
                     )
                 )
 
-            recent_schema_available = (
-                RecentLifeStore.schema_available(
-                    connection
-                )
-            )
             recent_life_events = None
             if (
-                recent_schema_available
+                self._recent_life_policy
+                is not None
                 and route.decision == "attached"
             ):
                 assert route.room_id is not None
                 recent_life_events = (
-                    RecentLifeStore
-                    .read_recent_for_room_in_connection(
-                        connection,
+                    select_recent_life_from_current_in_connection(
+                        resolver=self._current_resolver,
+                        living_store=self._living_store,
+                        connection=connection,
                         room_id=route.room_id,
                         as_of=as_of,
+                        policy=self._recent_life_policy,
                     )
                 )
 
             wake_id = f"wake-{secrets.token_hex(16)}"
-            if recent_schema_available:
+            if self._recent_life_policy is not None:
                 packet, assembly_receipt = (
                     assemble_wake_packet_v0_2(
                         wake_id=wake_id,
@@ -508,6 +526,8 @@ class WakeIssuanceAuthority:
             self._bound_living_store is not origin.bound_living_store
             or self._living_store is not origin.living_store
             or self._current_resolver is not origin.current_resolver
+            or self._recent_life_policy
+            is not origin.recent_life_policy
             or self._clock is not origin.clock
             or self._receipt_guard is not origin.receipt_guard
             or self._receipts is not origin.receipts
@@ -557,6 +577,7 @@ def open_wake_issuance_authority(
     living_store: LivingStore,
     current_resolver: CurrentResolver,
     clock: Callable[[], datetime],
+    recent_life_policy: RecentLifePolicy | None = None,
 ) -> WakeIssuanceAuthority:
     """Open one live process-local Wake issuer.
 
@@ -570,6 +591,14 @@ def open_wake_issuance_authority(
         raise TypeError("current_resolver must be CurrentResolver")
     if not callable(clock):
         raise TypeError("clock must be callable")
+    if (
+        recent_life_policy is not None
+        and recent_life_policy
+        is not RECENT_LIFE_POLICY_V0_1
+    ):
+        raise WakeIssuanceAuthorizationError(
+            "Wake issuance accepts only the canonical Recent Life policy"
+        )
     CurrentResolver._assert_live_binding(current_resolver)
 
     living_path = Path(living_store.db_path).resolve()
@@ -584,6 +613,7 @@ def open_wake_issuance_authority(
         living_store=living_store,
         current_resolver=current_resolver,
         clock=clock,
+        recent_life_policy=recent_life_policy,
         _marker=_WAKE_ISSUANCE_AUTHORITY_MARKER,
     )
 
