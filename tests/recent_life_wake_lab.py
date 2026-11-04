@@ -411,16 +411,6 @@ def _validate_frozen_recent_life(payload_json: str) -> dict[str, Any]:
             raise RecentLifeWakeLabError(
                 f"Recent Life presentation boundary drifted for {state_id}"
             )
-        use_boundary = policy.get("use_boundary")
-        if not isinstance(use_boundary, dict):
-            raise RecentLifeWakeLabError(
-                f"Recent Life use boundary missing for {state_id}"
-            )
-        _require_none_axes(
-            use_boundary,
-            label=f"Recent Life {state_id}",
-        )
-
     return layer
 
 
