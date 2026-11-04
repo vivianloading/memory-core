@@ -103,6 +103,25 @@ class SyntheticRecentLifeWakeLabTests(
             first_wake_lab.FIRST_WAKE_PERSPECTIVE_ID,
         )
 
+    def test_frozen_recent_life_wording_matches_issue_103(
+        self,
+    ) -> None:
+        self.assertEqual(
+            lab.R1_VALUE,
+            "Lantern Atlas was powered on for another complete wiring test. "
+            "The light came on normally and was turned off afterward.",
+        )
+        self.assertEqual(
+            lab.R2_VALUE,
+            "A small section of the paper shade edge was folded; "
+            "the remaining paper was left pressed at the edge of the desk.",
+        )
+        self.assertEqual(
+            lab.R3_VALUE,
+            "During late work, the blue ceramic cup was moved from beside "
+            "the desk to beside the window.",
+        )
+
     def test_recent_life_is_ready_with_exact_r3_r2_r1_order(
         self,
     ) -> None:
@@ -295,6 +314,11 @@ class SyntheticRecentLifeWakeLabTests(
                 policy["authority_ceiling"],
                 "describe_only",
             )
+            for field in lab._AUTHORITY_FIELDS:
+                self.assertEqual(
+                    policy[field],
+                    "none",
+                )
 
     def test_prepare_only_evidence_freezes_issue_103_and_stop_line(
         self,
