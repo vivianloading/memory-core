@@ -14,6 +14,7 @@ from home_memory_core.wake_issuance import (
     IssuedWakePacket,
     WakeIssuanceAuthority,
 )
+from home_memory_core.evidence import EvidenceRef
 from home_memory_core.wake_packet import (
     WakeAuthority,
     WakeLayer,
@@ -346,13 +347,18 @@ class WakeRecentLifePresentationBlock:
     block_kind: WakePresentationBlockKind
     policy: WakePresentationPolicy
     event_id: str
+    state_id: str
+    admission_id: str
     room_id: str
     episode_id: str
     perspective_instance_id: str
     room_attachment_event_id: str
+    key: str
+    state_kind: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
+    evidence: tuple[EvidenceRef, ...]
     source_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -390,19 +396,40 @@ class WakeRecentLifePresentationBlock:
             )
         for field_name in (
             "event_id",
+            "state_id",
+            "admission_id",
             "room_id",
             "episode_id",
             "perspective_instance_id",
             "room_attachment_event_id",
+            "key",
+            "state_kind",
             "summary",
         ):
             _text(field_name, getattr(self, field_name))
         _aware("occurred_at", self.occurred_at)
         _aware("recorded_at", self.recorded_at)
-        _refs("source_refs", self.source_refs)
-        if not self.source_refs:
+        if (
+            not isinstance(self.evidence, tuple)
+            or not self.evidence
+            or any(
+                not isinstance(item, EvidenceRef)
+                for item in self.evidence
+            )
+        ):
             raise WakePresentationError(
-                "Recent Life presentation requires provenance refs"
+                "Recent Life presentation requires exact EvidenceRef provenance"
+            )
+        _refs("source_refs", self.source_refs)
+        expected_source_refs = tuple(
+            dict.fromkeys(
+                item.source_id
+                for item in self.evidence
+            )
+        )
+        if self.source_refs != expected_source_refs:
+            raise WakePresentationError(
+                "Recent Life presentation source refs differ from exact evidence"
             )
 
 
@@ -985,6 +1012,8 @@ def _recent_life_block_from_item(
             use_boundary=item.use_boundary,
         ),
         event_id=item.event_id,
+        state_id=item.state_id,
+        admission_id=item.admission_id,
         room_id=item.room_id,
         episode_id=item.episode_id,
         perspective_instance_id=(
@@ -993,9 +1022,12 @@ def _recent_life_block_from_item(
         room_attachment_event_id=(
             item.room_attachment_event_id
         ),
+        key=item.key,
+        state_kind=item.state_kind,
         summary=item.summary,
         occurred_at=item.occurred_at,
         recorded_at=item.recorded_at,
+        evidence=item.evidence,
         source_refs=item.source_refs,
     )
 
@@ -1172,6 +1204,8 @@ def _block_payload(
         common.update(
             {
                 "event_id": block.event_id,
+                "state_id": block.state_id,
+                "admission_id": block.admission_id,
                 "room_id": block.room_id,
                 "episode_id": block.episode_id,
                 "perspective_instance_id": (
@@ -1180,6 +1214,8 @@ def _block_payload(
                 "room_attachment_event_id": (
                     block.room_attachment_event_id
                 ),
+                "key": block.key,
+                "state_kind": block.state_kind,
                 "summary": block.summary,
                 "occurred_at": _datetime_text(
                     block.occurred_at
@@ -1187,6 +1223,15 @@ def _block_payload(
                 "recorded_at": _datetime_text(
                     block.recorded_at
                 ),
+                "evidence": [
+                    {
+                        "source_id": item.source_id,
+                        "source_sha256": item.source_sha256,
+                        "start_char": item.start_char,
+                        "end_char": item.end_char,
+                    }
+                    for item in block.evidence
+                ],
                 "source_refs": list(
                     block.source_refs
                 ),
