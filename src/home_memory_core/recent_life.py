@@ -41,6 +41,7 @@ RECENT_LIFE_WINDOW_LIMIT = 4
 RECENT_LIFE_HORIZON = timedelta(days=7)
 
 _RECENT_LIFE_POLICY_MARKER = object()
+_RECENT_LIFE_EVENT_MARKER = object()
 
 
 class RecentLifeError(RuntimeError):
@@ -114,8 +115,13 @@ class RecentLifeEvent:
     occurred_at: datetime
     recorded_at: datetime
     evidence: tuple[EvidenceRef, ...]
+    _marker: object
 
     def __post_init__(self) -> None:
+        if self._marker is not _RECENT_LIFE_EVENT_MARKER:
+            raise RecentLifeError(
+                "Recent Life event must come from the canonical projector"
+            )
         for name in (
             "event_id",
             "state_id",
@@ -333,6 +339,7 @@ def select_recent_life_from_current_in_connection(
             occurred_at=record.event_time,
             recorded_at=record.recorded_at,
             evidence=evidence,
+            _marker=_RECENT_LIFE_EVENT_MARKER,
         )
         result.append(event)
         if len(result) >= policy.limit:
