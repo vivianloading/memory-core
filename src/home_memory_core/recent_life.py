@@ -1,73 +1,131 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta
 import sqlite3
 
-from home_memory_core.home_state_ordering import (
-    home_state_coordinator_for_path,
+from home_memory_core.current_admission import (
+    CurrentAdmissionEffectKind,
+    CurrentAdmissionReceipt,
 )
-from home_memory_core.interpretation import (
-    SYNTHETIC_UNATTRIBUTED_INSTANCE_ID,
+from home_memory_core.current_resolver import (
+    CurrentResolver,
+    _read_live_admitted_history,
+)
+from home_memory_core.current_store import (
+    _read_bindings,
+)
+from home_memory_core.current_store_schema import (
+    CURRENT_STATE_EVIDENCE_TABLE,
+    CURRENT_STATE_TABLE,
+)
+from home_memory_core.current_use import (
+    CurrentPresentUseStatus,
+    CurrentUseEffectKind,
+    _current_effect_use_decision,
+)
+from home_memory_core.current_view import CurrentNamespace
+from home_memory_core.evidence import EvidenceRef
+from home_memory_core.living_continuity import (
+    LivingContinuityError,
+    resolve_room_attachment,
 )
 from home_memory_core.living_store import (
-    assert_living_data_integrity,
-    assert_living_schema,
-)
-from home_memory_core.storage import (
-    MemoryStore,
-    assert_source_suppression_ledger,
-)
-from home_memory_core.store_domain import (
-    assert_synthetic_store_domain,
+    LivingStore,
+    LivingStoreIntegrityError,
 )
 
 
-RECENT_LIFE_SCHEMA_VERSION = "recent-life-v0.1"
-RECENT_LIFE_SCHEMA_MARKER_TABLE = "recent_life_schema_marker"
-RECENT_LIFE_EVENT_TABLE = "recent_life_events"
-RECENT_LIFE_SOURCE_TABLE = "recent_life_event_sources"
+RECENT_LIFE_POLICY_VERSION = "recent-life-current-history-v0.1"
 RECENT_LIFE_WINDOW_LIMIT = 4
+RECENT_LIFE_HORIZON = timedelta(days=7)
 
-RECENT_LIFE_SCHEMA_TABLES = frozenset(
-    {
-        RECENT_LIFE_SCHEMA_MARKER_TABLE,
-        RECENT_LIFE_EVENT_TABLE,
-        RECENT_LIFE_SOURCE_TABLE,
-    }
-)
+_RECENT_LIFE_POLICY_MARKER = object()
 
 
 class RecentLifeError(RuntimeError):
-    """Recent Life persistence or provenance is invalid."""
+    """Recent Life projection cannot be established safely."""
 
 
-class RecentLifeIntegrityError(RecentLifeError):
-    """Persisted Recent Life schema/data is inconsistent."""
+@dataclass(frozen=True)
+class RecentLifePolicy:
+    """Fixed selector policy over already-admitted Room Current history."""
+
+    policy_version: str
+    horizon: timedelta
+    limit: int
+    producer_kind: str
+    _marker: object
+
+    def __post_init__(self) -> None:
+        if self._marker is not _RECENT_LIFE_POLICY_MARKER:
+            raise RecentLifeError(
+                "Recent Life policy must be HOME-owned"
+            )
+        if self.policy_version != RECENT_LIFE_POLICY_VERSION:
+            raise RecentLifeError(
+                "Recent Life policy version is invalid"
+            )
+        if self.horizon != RECENT_LIFE_HORIZON:
+            raise RecentLifeError(
+                "Recent Life horizon is not canonical"
+            )
+        if self.limit != RECENT_LIFE_WINDOW_LIMIT:
+            raise RecentLifeError(
+                "Recent Life limit is not canonical"
+            )
+        if (
+            self.producer_kind
+            != "live_admitted_room_current_history"
+        ):
+            raise RecentLifeError(
+                "Recent Life producer kind is invalid"
+            )
+
+
+RECENT_LIFE_POLICY_V0_1 = RecentLifePolicy(
+    policy_version=RECENT_LIFE_POLICY_VERSION,
+    horizon=RECENT_LIFE_HORIZON,
+    limit=RECENT_LIFE_WINDOW_LIMIT,
+    producer_kind="live_admitted_room_current_history",
+    _marker=_RECENT_LIFE_POLICY_MARKER,
+)
 
 
 @dataclass(frozen=True)
 class RecentLifeEvent:
+    """One recent, live-admitted Room Current change projected for Wake.
+
+    This object is derived from already-admitted Current history. It is not a
+    second write path and cannot mint a new event time, summary, Room route,
+    Perspective, or evidence binding.
+    """
+
     event_id: str
+    state_id: str
+    admission_id: str
     room_id: str
     episode_id: str
     perspective_instance_id: str
     room_attachment_event_id: str
+    key: str
+    state_kind: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
-    source_refs: tuple[str, ...]
+    evidence: tuple[EvidenceRef, ...]
 
     def __post_init__(self) -> None:
         for name in (
             "event_id",
+            "state_id",
+            "admission_id",
             "room_id",
             "episode_id",
             "perspective_instance_id",
             "room_attachment_event_id",
+            "key",
+            "state_kind",
             "summary",
         ):
             value = getattr(self, name)
@@ -75,13 +133,6 @@ class RecentLifeEvent:
                 raise RecentLifeError(
                     f"{name} must be non-empty exact str"
                 )
-        if (
-            self.perspective_instance_id
-            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
-        ):
-            raise RecentLifeError(
-                "Recent Life requires concrete Perspective attribution"
-            )
         _aware("occurred_at", self.occurred_at)
         _aware("recorded_at", self.recorded_at)
         if _instant(self.occurred_at) > _instant(self.recorded_at):
@@ -89,706 +140,252 @@ class RecentLifeEvent:
                 "Recent Life event cannot be recorded before it occurred"
             )
         if (
-            not isinstance(self.source_refs, tuple)
-            or not self.source_refs
+            not isinstance(self.evidence, tuple)
+            or not self.evidence
             or any(
-                type(item) is not str
-                or not item.strip()
-                for item in self.source_refs
+                not isinstance(item, EvidenceRef)
+                for item in self.evidence
             )
-            or len(set(self.source_refs)) != len(self.source_refs)
         ):
             raise RecentLifeError(
-                "Recent Life requires unique source provenance refs"
+                "Recent Life requires exact EvidenceRef provenance"
             )
 
-
-class RecentLifeStore:
-    """Append-only, source-backed recent-life events for one HOME database."""
-
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = Path(db_path)
-        self._coordinator = home_state_coordinator_for_path(
-            self.db_path
-        )
-
-    def initialize(self) -> None:
-        connection = self._connect()
-        try:
-            assert_synthetic_store_domain(connection)
-            assert_living_schema(connection)
-            assert_living_data_integrity(connection)
-            assert_source_suppression_ledger(connection)
-            existing = _existing_tables(connection)
-            if existing:
-                if existing != RECENT_LIFE_SCHEMA_TABLES:
-                    raise RecentLifeIntegrityError(
-                        "partial Recent Life schema exists"
-                    )
-                assert_recent_life_schema(connection)
-                assert_recent_life_data_integrity(connection)
-                return
-            connection.executescript(_schema_script())
-            assert_recent_life_schema(connection)
-            assert_recent_life_data_integrity(connection)
-            connection.commit()
-        except Exception:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    def add_event(self, event: RecentLifeEvent) -> None:
-        if not isinstance(event, RecentLifeEvent):
-            raise TypeError(
-                "event must be RecentLifeEvent"
-            )
-        with self._write_transaction() as connection:
-            episode = connection.execute(
-                """
-                SELECT perspective_instance_id
-                FROM living_episodes
-                WHERE episode_id = ?
-                """,
-                (event.episode_id,),
-            ).fetchone()
-            if (
-                episode is None
-                or episode["perspective_instance_id"]
-                != event.perspective_instance_id
-            ):
-                raise RecentLifeError(
-                    "Recent Life Episode/Perspective attribution is not canonical"
-                )
-            room = connection.execute(
-                """
-                SELECT 1
-                FROM living_rooms
-                WHERE room_id = ?
-                """,
-                (event.room_id,),
-            ).fetchone()
-            if room is None:
-                raise RecentLifeError(
-                    "Recent Life Room does not exist"
-                )
-            attachment = connection.execute(
-                """
-                SELECT
-                    episode_id,
-                    route_kind,
-                    room_id
-                FROM living_room_attachment_events
-                WHERE attachment_event_id = ?
-                """,
-                (
-                    event.room_attachment_event_id,
-                ),
-            ).fetchone()
-            if (
-                attachment is None
-                or attachment["episode_id"]
-                != event.episode_id
-                or attachment["route_kind"]
-                != "attached"
-                or attachment["room_id"]
-                != event.room_id
-            ):
-                raise RecentLifeError(
-                    "Recent Life Room attribution lacks matching attachment evidence"
-                )
-
-            memory = MemoryStore(self.db_path)
-            suppressed = (
-                memory._get_suppressed_source_ids_from_connection(
-                    connection=connection
-                )
-            )
-            for source_id in event.source_refs:
-                source = memory._get_source_from_connection(
-                    connection=connection,
-                    source_id=source_id,
-                )
-                if source.scope != event.room_id:
-                    raise RecentLifeError(
-                        "Recent Life source scope differs from Room"
-                    )
-                if source_id in suppressed:
-                    raise RecentLifeError(
-                        "Recent Life cannot be created from suppressed source"
-                    )
-
-            try:
-                connection.execute(
-                    f"""
-                    INSERT INTO {RECENT_LIFE_EVENT_TABLE} (
-                        event_id,
-                        room_id,
-                        episode_id,
-                        perspective_instance_id,
-                        room_attachment_event_id,
-                        summary,
-                        occurred_instant_us,
-                        occurred_at_iso,
-                        recorded_instant_us,
-                        recorded_at_iso
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.event_id,
-                        event.room_id,
-                        event.episode_id,
-                        event.perspective_instance_id,
-                        event.room_attachment_event_id,
-                        event.summary,
-                        _instant(event.occurred_at),
-                        _iso(event.occurred_at),
-                        _instant(event.recorded_at),
-                        _iso(event.recorded_at),
-                    ),
-                )
-                for position, source_id in enumerate(
-                    event.source_refs
-                ):
-                    connection.execute(
-                        f"""
-                        INSERT INTO {RECENT_LIFE_SOURCE_TABLE} (
-                            event_id,
-                            position,
-                            source_id
-                        ) VALUES (?, ?, ?)
-                        """,
-                        (
-                            event.event_id,
-                            position,
-                            source_id,
-                        ),
-                    )
-            except sqlite3.IntegrityError as exc:
-                raise RecentLifeError(
-                    "Recent Life event conflicts with canonical persistence"
-                ) from exc
-            assert_recent_life_data_integrity(connection)
-
-    @staticmethod
-    def schema_available(
-        connection: sqlite3.Connection,
-    ) -> bool:
-        existing = _existing_tables(connection)
-        if not existing:
-            return False
-        if existing != RECENT_LIFE_SCHEMA_TABLES:
-            raise RecentLifeIntegrityError(
-                "partial Recent Life schema exists"
-            )
-        assert_recent_life_schema(connection)
-        assert_recent_life_data_integrity(connection)
-        return True
-
-    @staticmethod
-    def read_recent_for_room_in_connection(
-        connection: sqlite3.Connection,
-        *,
-        room_id: str,
-        as_of: datetime,
-        limit: int = RECENT_LIFE_WINDOW_LIMIT,
-    ) -> tuple[RecentLifeEvent, ...]:
-        if type(room_id) is not str or not room_id.strip():
-            raise RecentLifeError(
-                "room_id must be non-empty exact str"
-            )
-        _aware("as_of", as_of)
-        if type(limit) is not int or limit < 1 or limit > 12:
-            raise RecentLifeError(
-                "Recent Life limit must be exact int in 1..12"
-            )
-        if not RecentLifeStore.schema_available(connection):
-            return ()
-
-        assert_source_suppression_ledger(connection)
-        rows = connection.execute(
-            f"""
-            SELECT
-                event_id,
-                room_id,
-                episode_id,
-                perspective_instance_id,
-                room_attachment_event_id,
-                summary,
-                occurred_instant_us,
-                occurred_at_iso,
-                recorded_instant_us,
-                recorded_at_iso
-            FROM {RECENT_LIFE_EVENT_TABLE}
-            WHERE room_id = ?
-              AND occurred_instant_us <= ?
-              AND recorded_instant_us <= ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM {RECENT_LIFE_SOURCE_TABLE} AS event_sources
-                  JOIN source_suppressions AS suppressions
-                    ON suppressions.source_id = event_sources.source_id
-                  WHERE event_sources.event_id =
-                        {RECENT_LIFE_EVENT_TABLE}.event_id
-              )
-            ORDER BY
-                occurred_instant_us DESC,
-                recorded_instant_us DESC,
-                event_id DESC
-            LIMIT ?
-            """,
-            (
-                room_id,
-                _instant(as_of),
-                _instant(as_of),
-                limit,
-            ),
-        ).fetchall()
-
-        result: list[RecentLifeEvent] = []
-        for row in rows:
-            source_rows = connection.execute(
-                f"""
-                SELECT source_id
-                FROM {RECENT_LIFE_SOURCE_TABLE}
-                WHERE event_id = ?
-                ORDER BY position
-                """,
-                (row["event_id"],),
-            ).fetchall()
-            result.append(
-                RecentLifeEvent(
-                    event_id=row["event_id"],
-                    room_id=row["room_id"],
-                    episode_id=row["episode_id"],
-                    perspective_instance_id=(
-                        row["perspective_instance_id"]
-                    ),
-                    room_attachment_event_id=(
-                        row["room_attachment_event_id"]
-                    ),
-                    summary=row["summary"],
-                    occurred_at=_from_iso(
-                        row["occurred_at_iso"]
-                    ),
-                    recorded_at=_from_iso(
-                        row["recorded_at_iso"]
-                    ),
-                    source_refs=tuple(
-                        item["source_id"]
-                        for item in source_rows
-                    ),
-                )
-            )
+    @property
+    def source_refs(self) -> tuple[str, ...]:
+        result: list[str] = []
+        for item in self.evidence:
+            if item.source_id not in result:
+                result.append(item.source_id)
         return tuple(result)
 
-    @contextmanager
-    def _write_transaction(
-        self,
-    ) -> Iterator[sqlite3.Connection]:
-        permit = self._coordinator.acquire_writer()
-        connection: sqlite3.Connection | None = None
-        try:
-            connection = self._connect()
-            connection.execute("BEGIN IMMEDIATE")
-            assert_synthetic_store_domain(connection)
-            assert_living_schema(connection)
-            assert_living_data_integrity(connection)
-            assert_source_suppression_ledger(connection)
-            assert_recent_life_schema(connection)
-            assert_recent_life_data_integrity(connection)
-            yield connection
-            assert_recent_life_data_integrity(connection)
-            connection.commit()
-            permit.record_successful_commit()
-        except BaseException:
-            if (
-                connection is not None
-                and connection.in_transaction
-            ):
-                connection.rollback()
-            raise
-        finally:
-            if connection is not None:
-                connection.close()
-            permit.release()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
-
-
-def assert_recent_life_schema(
+def select_recent_life_from_current_in_connection(
+    *,
+    resolver: CurrentResolver,
+    living_store: LivingStore,
     connection: sqlite3.Connection,
-) -> None:
-    expected = {
-        item["name"]: _normalize(item["sql"])
-        for item in _reference_schema_objects()
-    }
-    rows = connection.execute(
-        """
-        SELECT name, sql
-        FROM sqlite_master
-        WHERE (
-            type = 'table'
-            AND name IN (?, ?, ?)
-        ) OR (
-            type = 'trigger'
-            AND name LIKE 'recent_life_%'
-        )
-        """,
-        (
-            RECENT_LIFE_SCHEMA_MARKER_TABLE,
-            RECENT_LIFE_EVENT_TABLE,
-            RECENT_LIFE_SOURCE_TABLE,
-        ),
-    ).fetchall()
-    actual = {
-        row["name"]: _normalize(row["sql"])
-        for row in rows
-        if row["sql"] is not None
-    }
-    if actual != expected:
-        raise RecentLifeIntegrityError(
-            "Recent Life schema definitions drifted"
-        )
+    room_id: str,
+    as_of: datetime,
+    policy: RecentLifePolicy,
+) -> tuple[RecentLifeEvent, ...]:
+    """Project recent Room Current changes from one already-pinned HOME cut.
 
-
-def assert_recent_life_data_integrity(
-    connection: sqlite3.Connection,
-) -> None:
-    """Fail closed if persisted Recent Life contradicts canonical provenance."""
-
-    assert_recent_life_schema(connection)
-    assert_living_data_integrity(connection)
-    assert_source_suppression_ledger(connection)
-
-    rows = connection.execute(
-        f"""
-        SELECT
-            recent.event_id,
-            recent.room_id,
-            recent.episode_id,
-            recent.perspective_instance_id,
-            recent.room_attachment_event_id,
-            recent.summary,
-            recent.occurred_instant_us,
-            recent.occurred_at_iso,
-            recent.recorded_instant_us,
-            recent.recorded_at_iso,
-            episodes.perspective_instance_id AS canonical_perspective,
-            attachments.episode_id AS attachment_episode_id,
-            attachments.route_kind AS attachment_route_kind,
-            attachments.room_id AS attachment_room_id
-        FROM {RECENT_LIFE_EVENT_TABLE} AS recent
-        LEFT JOIN living_episodes AS episodes
-          ON episodes.episode_id = recent.episode_id
-        LEFT JOIN living_room_attachment_events AS attachments
-          ON attachments.attachment_event_id =
-             recent.room_attachment_event_id
-        ORDER BY recent.event_id
-        """
-    ).fetchall()
-
-    memory = MemoryStore(":memory:")
-    for row in rows:
-        if (
-            row["canonical_perspective"] is None
-            or row["perspective_instance_id"]
-            != row["canonical_perspective"]
-            or row["perspective_instance_id"]
-            == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
-        ):
-            raise RecentLifeIntegrityError(
-                "Recent Life Episode/Perspective attribution drifted"
-            )
-        if (
-            row["attachment_episode_id"] is None
-            or row["attachment_episode_id"]
-            != row["episode_id"]
-            or row["attachment_route_kind"] != "attached"
-            or row["attachment_room_id"]
-            != row["room_id"]
-        ):
-            raise RecentLifeIntegrityError(
-                "Recent Life Room attachment provenance drifted"
-            )
-
-        try:
-            occurred = _from_iso(
-                row["occurred_at_iso"]
-            )
-            recorded = _from_iso(
-                row["recorded_at_iso"]
-            )
-        except RecentLifeIntegrityError:
-            raise
-        if (
-            _instant(occurred)
-            != row["occurred_instant_us"]
-            or _instant(recorded)
-            != row["recorded_instant_us"]
-            or _instant(occurred)
-            > _instant(recorded)
-        ):
-            raise RecentLifeIntegrityError(
-                "Recent Life timestamp witness drifted"
-            )
-        if (
-            type(row["summary"]) is not str
-            or not row["summary"].strip()
-        ):
-            raise RecentLifeIntegrityError(
-                "Recent Life summary is invalid"
-            )
-
-        source_rows = connection.execute(
-            f"""
-            SELECT
-                bindings.position,
-                bindings.source_id
-            FROM {RECENT_LIFE_SOURCE_TABLE} AS bindings
-            WHERE bindings.event_id = ?
-            ORDER BY bindings.position
-            """,
-            (row["event_id"],),
-        ).fetchall()
-        if not source_rows:
-            raise RecentLifeIntegrityError(
-                "Recent Life event lacks source provenance"
-            )
-        if tuple(
-            item["position"]
-            for item in source_rows
-        ) != tuple(range(len(source_rows))):
-            raise RecentLifeIntegrityError(
-                "Recent Life source positions are not contiguous"
-            )
-        seen: set[str] = set()
-        for source_row in source_rows:
-            source_id = source_row["source_id"]
-            if source_id in seen:
-                raise RecentLifeIntegrityError(
-                    "Recent Life repeats source provenance"
-                )
-            seen.add(source_id)
-            try:
-                source = (
-                    memory._get_source_from_connection(
-                        connection=connection,
-                        source_id=source_id,
-                    )
-                )
-            except (KeyError, ValueError) as exc:
-                raise RecentLifeIntegrityError(
-                    "Recent Life source provenance is unavailable or damaged"
-                ) from exc
-            if source.scope != row["room_id"]:
-                raise RecentLifeIntegrityError(
-                    "Recent Life source scope differs from Room"
-                )
-
-
-def _schema_script() -> str:
-    return f"""
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE {RECENT_LIFE_SCHEMA_MARKER_TABLE} (
-            marker_key TEXT PRIMARY KEY
-                CHECK(marker_key = 'recent_life_schema'),
-            schema_version TEXT NOT NULL
-                CHECK(schema_version = '{RECENT_LIFE_SCHEMA_VERSION}')
-        );
-
-        INSERT INTO {RECENT_LIFE_SCHEMA_MARKER_TABLE} (
-            marker_key,
-            schema_version
-        ) VALUES (
-            'recent_life_schema',
-            '{RECENT_LIFE_SCHEMA_VERSION}'
-        );
-
-        CREATE TABLE {RECENT_LIFE_EVENT_TABLE} (
-            event_id TEXT PRIMARY KEY
-                CHECK(length(trim(event_id)) > 0),
-            room_id TEXT NOT NULL,
-            episode_id TEXT NOT NULL,
-            perspective_instance_id TEXT NOT NULL
-                CHECK(length(trim(perspective_instance_id)) > 0),
-            room_attachment_event_id TEXT NOT NULL
-                CHECK(length(trim(room_attachment_event_id)) > 0),
-            summary TEXT NOT NULL
-                CHECK(length(trim(summary)) > 0),
-            occurred_instant_us INTEGER NOT NULL,
-            occurred_at_iso TEXT NOT NULL
-                CHECK(length(trim(occurred_at_iso)) > 0),
-            recorded_instant_us INTEGER NOT NULL,
-            recorded_at_iso TEXT NOT NULL
-                CHECK(length(trim(recorded_at_iso)) > 0),
-            CHECK(occurred_instant_us <= recorded_instant_us),
-            FOREIGN KEY(room_id)
-                REFERENCES living_rooms(room_id)
-                ON UPDATE RESTRICT ON DELETE RESTRICT,
-            FOREIGN KEY(episode_id)
-                REFERENCES living_episodes(episode_id)
-                ON UPDATE RESTRICT ON DELETE RESTRICT,
-            FOREIGN KEY(room_attachment_event_id)
-                REFERENCES living_room_attachment_events(attachment_event_id)
-                ON UPDATE RESTRICT ON DELETE RESTRICT
-        );
-
-        CREATE TABLE {RECENT_LIFE_SOURCE_TABLE} (
-            event_id TEXT NOT NULL,
-            position INTEGER NOT NULL
-                CHECK(position >= 0),
-            source_id TEXT NOT NULL,
-            PRIMARY KEY(event_id, position),
-            UNIQUE(event_id, source_id),
-            FOREIGN KEY(event_id)
-                REFERENCES {RECENT_LIFE_EVENT_TABLE}(event_id)
-                ON UPDATE RESTRICT ON DELETE RESTRICT,
-            FOREIGN KEY(source_id)
-                REFERENCES sources(source_id)
-                ON UPDATE RESTRICT ON DELETE RESTRICT
-        ) WITHOUT ROWID;
-
-        CREATE TRIGGER recent_life_schema_marker_no_update
-        BEFORE UPDATE ON {RECENT_LIFE_SCHEMA_MARKER_TABLE}
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life schema marker is immutable');
-        END;
-
-        CREATE TRIGGER recent_life_schema_marker_no_delete
-        BEFORE DELETE ON {RECENT_LIFE_SCHEMA_MARKER_TABLE}
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life schema marker is immutable');
-        END;
-
-        CREATE TRIGGER recent_life_events_no_replace
-        BEFORE INSERT ON {RECENT_LIFE_EVENT_TABLE}
-        WHEN EXISTS(
-            SELECT 1 FROM {RECENT_LIFE_EVENT_TABLE}
-            WHERE event_id = NEW.event_id
-        )
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life event id already exists');
-        END;
-
-        CREATE TRIGGER recent_life_events_no_update
-        BEFORE UPDATE ON {RECENT_LIFE_EVENT_TABLE}
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life events are append-only');
-        END;
-
-        CREATE TRIGGER recent_life_events_no_delete
-        BEFORE DELETE ON {RECENT_LIFE_EVENT_TABLE}
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life events are append-only');
-        END;
-
-        CREATE TRIGGER recent_life_event_sources_no_replace
-        BEFORE INSERT ON {RECENT_LIFE_SOURCE_TABLE}
-        WHEN EXISTS(
-            SELECT 1 FROM {RECENT_LIFE_SOURCE_TABLE}
-            WHERE event_id = NEW.event_id
-              AND (
-                  position = NEW.position
-                  OR source_id = NEW.source_id
-              )
-        )
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life source binding already exists');
-        END;
-
-        CREATE TRIGGER recent_life_event_sources_no_update
-        BEFORE UPDATE ON {RECENT_LIFE_SOURCE_TABLE}
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life source bindings are append-only');
-        END;
-
-        CREATE TRIGGER recent_life_event_sources_no_delete
-        BEFORE DELETE ON {RECENT_LIFE_SOURCE_TABLE}
-        BEGIN
-            SELECT RAISE(ABORT,'Recent Life source bindings are append-only');
-        END;
-
-        COMMIT;
+    No caller may supply Recent Life content or timestamps. The selector uses
+    only exact live Current admissions that already exist in this process and
+    database snapshot.
     """
 
-
-def _reference_schema_objects() -> tuple[sqlite3.Row, ...]:
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    try:
-        connection.executescript(
-            """
-            CREATE TABLE living_rooms(room_id TEXT PRIMARY KEY);
-            CREATE TABLE living_episodes(
-                episode_id TEXT PRIMARY KEY,
-                perspective_instance_id TEXT
-            );
-            CREATE TABLE living_room_attachment_events(
-                attachment_event_id TEXT PRIMARY KEY,
-                episode_id TEXT,
-                route_kind TEXT,
-                room_id TEXT
-            );
-            CREATE TABLE sources(source_id TEXT PRIMARY KEY);
-            """
+    if policy is not RECENT_LIFE_POLICY_V0_1:
+        raise RecentLifeError(
+            "Recent Life v0.1 accepts only the canonical policy"
         )
-        connection.executescript(_schema_script())
-        return tuple(
-            connection.execute(
-                """
-                SELECT name, sql
-                FROM sqlite_master
-                WHERE (
-                    type = 'table'
-                    AND name IN (?, ?, ?)
-                ) OR (
-                    type = 'trigger'
-                    AND name LIKE 'recent_life_%'
-                )
-                ORDER BY name
-                """,
-                (
-                    RECENT_LIFE_SCHEMA_MARKER_TABLE,
-                    RECENT_LIFE_EVENT_TABLE,
-                    RECENT_LIFE_SOURCE_TABLE,
-                ),
-            ).fetchall()
+    if not isinstance(resolver, CurrentResolver):
+        raise TypeError("resolver must be CurrentResolver")
+    if not isinstance(living_store, LivingStore):
+        raise TypeError("living_store must be LivingStore")
+    if not isinstance(connection, sqlite3.Connection):
+        raise TypeError("connection must be sqlite3.Connection")
+    if not connection.in_transaction:
+        raise RecentLifeError(
+            "Recent Life requires the active Wake SQLite snapshot"
         )
-    finally:
-        connection.close()
+    if type(room_id) is not str or not room_id.strip():
+        raise RecentLifeError(
+            "room_id must be non-empty exact str"
+        )
+    _aware("as_of", as_of)
+
+    resolver._assert_live_binding()
+    receipts = (
+        resolver._admission_authority
+        ._snapshot_live_receipts_for_resolution(
+            connection=connection,
+        )
+    )
+    receipt_by_state_id = {
+        item.effect_id: item
+        for item in receipts
+        if item.effect_kind
+        is CurrentAdmissionEffectKind.STATE
+    }
+    records, _ = _read_live_admitted_history(
+        connection=connection,
+        receipts=receipts,
+    )
+
+    cut = _instant(as_of)
+    earliest = cut - _duration_micros(
+        policy.horizon
+    )
+    candidates = [
+        record
+        for record in records
+        if (
+            record.namespace is CurrentNamespace.ROOM
+            and record.owner_id == room_id
+            and record.episode_id is not None
+            and record.perspective_instance_id is not None
+            and earliest <= _instant(record.event_time) <= cut
+            and _instant(record.recorded_at) <= cut
+        )
+    ]
+    candidates.sort(
+        key=lambda item: (
+            _instant(item.event_time),
+            _instant(item.recorded_at),
+            item.state_id,
+        ),
+        reverse=True,
+    )
+
+    result: list[RecentLifeEvent] = []
+    for record in candidates:
+        receipt = receipt_by_state_id.get(
+            record.state_id
+        )
+        if receipt is None:
+            # Durable rows never authorize delivery without the live receipt.
+            continue
+        if not _receipt_matches_record(
+            receipt=receipt,
+            record=record,
+            room_id=room_id,
+        ):
+            raise RecentLifeError(
+                "live Current admission receipt disagrees with Recent Life record"
+            )
+
+        use = _current_effect_use_decision(
+            connection=connection,
+            effect_kind=CurrentUseEffectKind.STATE,
+            effect_id=record.state_id,
+        )
+        if use.status is not CurrentPresentUseStatus.USABLE:
+            continue
+
+        row = connection.execute(
+            f"""
+            SELECT room_attachment_event_id
+            FROM {CURRENT_STATE_TABLE}
+            WHERE state_id = ?
+            """,
+            (record.state_id,),
+        ).fetchone()
+        if row is None:
+            raise RecentLifeError(
+                "Recent Life state disappeared from canonical Current history"
+            )
+        attachment_id = row[
+            "room_attachment_event_id"
+        ]
+        if (
+            type(attachment_id) is not str
+            or not attachment_id.strip()
+        ):
+            raise RecentLifeError(
+                "Recent Life Room state lacks attachment provenance"
+            )
+
+        if not _attachment_still_resolves_to_same_room(
+            living_store=living_store,
+            connection=connection,
+            episode_id=record.episode_id,
+            room_id=room_id,
+            attachment_event_id=attachment_id,
+        ):
+            # Late route correction makes this historical state ineligible for
+            # automatic Room-private delivery until an explicit future re-scope
+            # contract exists.
+            continue
+
+        bindings = _read_bindings(
+            connection,
+            CURRENT_STATE_EVIDENCE_TABLE,
+            "state_id",
+            record.state_id,
+        )
+        if not bindings:
+            raise RecentLifeError(
+                "Recent Life state lacks exact evidence bindings"
+            )
+        evidence = tuple(
+            item.evidence
+            for item in bindings
+        )
+        event = RecentLifeEvent(
+            event_id=(
+                f"recent-current-state:{record.state_id}"
+            ),
+            state_id=record.state_id,
+            admission_id=receipt.admission_id,
+            room_id=room_id,
+            episode_id=record.episode_id,
+            perspective_instance_id=(
+                record.perspective_instance_id
+            ),
+            room_attachment_event_id=(
+                attachment_id
+            ),
+            key=record.key,
+            state_kind=record.state_kind.value,
+            summary=record.value,
+            occurred_at=record.event_time,
+            recorded_at=record.recorded_at,
+            evidence=evidence,
+        )
+        result.append(event)
+        if len(result) >= policy.limit:
+            break
+
+    return tuple(result)
 
 
-def _existing_tables(
-    connection: sqlite3.Connection,
-) -> frozenset[str]:
-    rows = connection.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table'
-        """
-    ).fetchall()
-    names = {row[0] for row in rows}
-    return frozenset(
-        names.intersection(
-            RECENT_LIFE_SCHEMA_TABLES
-        )
+def _receipt_matches_record(
+    *,
+    receipt: CurrentAdmissionReceipt,
+    record,
+    room_id: str,
+) -> bool:
+    return (
+        receipt.effect_kind
+        is CurrentAdmissionEffectKind.STATE
+        and receipt.effect_id == record.state_id
+        and receipt.room_id == room_id
+        and receipt.episode_id == record.episode_id
+        and receipt.perspective_instance_id
+        == record.perspective_instance_id
     )
 
 
-def _normalize(value: str | None) -> str:
-    if value is None:
-        return ""
-    return " ".join(
-        value.replace("\n", " ").split()
-    ).lower()
+def _attachment_still_resolves_to_same_room(
+    *,
+    living_store: LivingStore,
+    connection: sqlite3.Connection,
+    episode_id: str,
+    room_id: str,
+    attachment_event_id: str,
+) -> bool:
+    events = LivingStore._read_room_attachment_events(
+        living_store,
+        connection,
+        episode_id=episode_id,
+    )
+    try:
+        resolution = resolve_room_attachment(
+            episode_id=episode_id,
+            events=events,
+        )
+    except LivingContinuityError as exc:
+        raise LivingStoreIntegrityError(
+            str(exc)
+        ) from exc
+    return (
+        resolution.decision == "attached"
+        and resolution.room_id == room_id
+        and resolution.active_attachment_event_id
+        == attachment_event_id
+    )
 
 
 def _aware(
@@ -807,32 +404,32 @@ def _aware(
 
 def _instant(value: datetime) -> int:
     _aware("datetime", value)
-    utc = value.astimezone(timezone.utc)
-    epoch = datetime(
-        1970,
-        1,
-        1,
-        tzinfo=timezone.utc,
-    )
-    delta = utc - epoch
-    return (
-        (delta.days * 86_400 + delta.seconds)
+    offset = value.utcoffset()
+    assert offset is not None
+    wall_micros = (
+        (
+            (
+                (value.toordinal() * 24 + value.hour)
+                * 60
+                + value.minute
+            )
+            * 60
+            + value.second
+        )
         * 1_000_000
-        + delta.microseconds
+        + value.microsecond
     )
+    offset_micros = (
+        (offset.days * 86_400 + offset.seconds)
+        * 1_000_000
+        + offset.microseconds
+    )
+    return wall_micros - offset_micros
 
 
-def _iso(value: datetime) -> str:
-    _aware("datetime", value)
-    return value.isoformat(timespec="microseconds")
-
-
-def _from_iso(value: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError) as exc:
-        raise RecentLifeIntegrityError(
-            "Recent Life stored datetime is invalid"
-        ) from exc
-    _aware("stored datetime", parsed)
-    return parsed
+def _duration_micros(value: timedelta) -> int:
+    return (
+        (value.days * 86_400 + value.seconds)
+        * 1_000_000
+        + value.microseconds
+    )
