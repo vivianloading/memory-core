@@ -413,6 +413,10 @@ def select_recent_life_from_current_in_connection(
             record.state_id
         )
         if receipt is None:
+            # Proof completeness is a property of the full eligible window,
+            # not merely the payload prefix. Continue scanning even after the
+            # carriage limit is full so a lower-ranked missing proof cannot be
+            # hidden by four newer proved events.
             missing_live_proof = True
             continue
         if not _receipt_matches_record(
@@ -430,6 +434,11 @@ def select_recent_life_from_current_in_connection(
             raise RecentLifeError(
                 "Current admission receipt disagrees with stored Room attachment provenance"
             )
+
+        if len(result) >= policy.limit:
+            # This candidate is fully proved but outside the payload cap. Its
+            # proof still participated in completeness validation above.
+            continue
 
         bindings = _read_bindings(
             connection,
@@ -475,8 +484,6 @@ def select_recent_life_from_current_in_connection(
                 _marker=_RECENT_LIFE_EVENT_MARKER,
             )
         )
-        if len(result) >= policy.limit:
-            break
 
     events = tuple(result)
     if missing_live_proof:
