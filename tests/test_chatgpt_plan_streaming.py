@@ -199,6 +199,40 @@ class StreamingTests(unittest.TestCase):
                 self.assertNotEqual(output["status"], "completed_text")
                 self.assertIsNone(output["output_text"])
 
+    def test_unhashable_type_tags_raise_integrity_error(self):
+        for index, location in ((1, "item"), (2, "part")):
+            for malformed in ([], {}):
+                with self.subTest(location=location, malformed=malformed):
+                    values = events()
+                    values[index][location]["type"] = malformed
+                    with self.assertRaises(adapter.OpenAIChatGPTPlanAdapterIntegrityError):
+                        adapter._terminal_response_from_sse(stream(values))
+
+    def test_unhashable_type_tags_preserve_rejected_home_evidence(self):
+        for index, location in ((1, "item"), (2, "part")):
+            for malformed in ([], {}):
+                with self.subTest(location=location, malformed=malformed):
+                    values = events()
+                    values[index][location]["type"] = malformed
+                    raw = stream(values)
+                    evidence = run_mocked(raw)
+                    output = evidence["model_output"]
+                    self.assertEqual(output["status"], "rejected_response")
+                    self.assertEqual(output["provider_http_status"], 200)
+                    self.assertIsNone(output["output_text"])
+                    self.assertIsNone(output["refusal_text"])
+                    self.assertNotEqual(output["provider_error"], "transport_exception")
+                    captured = json.loads(output["raw_response_json"])["_home_stream_evidence"]
+                    self.assertEqual(captured["validation"], "rejected")
+                    self.assertEqual(captured["reason"], "unsupported item" if location == "item"
+                                     else "unsupported content part")
+                    self.assertEqual(captured["raw_sse"], raw)
+                    self.assertEqual(captured["raw_sse_sha256"], sha256(raw.encode()).hexdigest())
+                    self.assertEqual(output["raw_response_digest"],
+                                     sha256(output["raw_response_json"].encode()).hexdigest())
+                    self.assertTrue(evidence["db_unchanged_during_model_run"])
+                    self.assertTrue(evidence["no_home_state_write_observed"])
+
     def test_malformed_streams_fail_closed(self):
         mutations = {
             "wrong id": lambda v: v[3].update(item_id="wrong"),

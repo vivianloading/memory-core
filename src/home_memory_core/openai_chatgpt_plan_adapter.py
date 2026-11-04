@@ -447,7 +447,8 @@ def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
             iid = item.get("id")
             _stream_require(type(iid) is str and bool(iid) and
                             all(x["initial"]["id"] != iid for x in items), "duplicate/invalid item id")
-            _stream_require(item.get("type") in {"message", "reasoning"}, "unsupported item")
+            _stream_require(type(item.get("type")) is str and
+                            item["type"] in {"message", "reasoning"}, "unsupported item")
             if item["type"] == "message":
                 _stream_require(item.get("role") == "assistant" and item.get("status") == "in_progress"
                                 and item.get("content") == [], "invalid message addition")
@@ -484,7 +485,8 @@ def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
             ptype = part.get("type")
             allowed = {"summary_text"} if summary else (
                 {"output_text", "refusal"} if state["initial"]["type"] == "message" else {"reasoning_text"})
-            _stream_require(ptype in allowed and (not summary or state["initial"]["type"] == "reasoning"),
+            _stream_require(type(ptype) is str and ptype in allowed and
+                            (not summary or state["initial"]["type"] == "reasoning"),
                             "unsupported content part")
             field = "refusal" if ptype == "refusal" else "text"
             _stream_require(part.get(field) == "", "nonempty initial part")
