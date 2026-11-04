@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 import sqlite3
 
 from home_memory_core.current_admission import (
+    CURRENT_STATE_ADMISSION_TABLE,
     CurrentAdmissionEffectKind,
     CurrentAdmissionReceipt,
 )
 from home_memory_core.current_resolver import (
     CurrentResolver,
-    _read_live_admitted_history,
 )
 from home_memory_core.current_store import (
     _read_bindings,
+    _state_from_row,
 )
 from home_memory_core.current_store_schema import (
     CURRENT_STATE_EVIDENCE_TABLE,
@@ -42,6 +44,7 @@ RECENT_LIFE_HORIZON = timedelta(days=7)
 
 _RECENT_LIFE_POLICY_MARKER = object()
 _RECENT_LIFE_EVENT_MARKER = object()
+_RECENT_LIFE_SELECTION_MARKER = object()
 
 
 class RecentLifeError(RuntimeError):
@@ -182,6 +185,92 @@ class RecentLifeEvent:
         return tuple(result)
 
 
+class RecentLifeSelectionStatus(StrEnum):
+    READY = "ready"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class RecentLifeSelection:
+    policy_version: str
+    status: RecentLifeSelectionStatus
+    events: tuple[RecentLifeEvent, ...]
+    reason_codes: tuple[str, ...]
+    _marker: object
+
+    def __post_init__(self) -> None:
+        if self._marker is not _RECENT_LIFE_SELECTION_MARKER:
+            raise RecentLifeError(
+                "Recent Life selection must come from the canonical projector"
+            )
+        if self.policy_version != RECENT_LIFE_POLICY_VERSION:
+            raise RecentLifeError(
+                "Recent Life selection policy version is invalid"
+            )
+        if not isinstance(
+            self.status,
+            RecentLifeSelectionStatus,
+        ):
+            raise RecentLifeError(
+                "Recent Life selection status is invalid"
+            )
+        if (
+            not isinstance(self.events, tuple)
+            or any(
+                not isinstance(item, RecentLifeEvent)
+                for item in self.events
+            )
+            or len(self.events) > RECENT_LIFE_WINDOW_LIMIT
+        ):
+            raise RecentLifeError(
+                "Recent Life selection events are invalid"
+            )
+        if (
+            not isinstance(self.reason_codes, tuple)
+            or any(
+                type(item) is not str
+                or not item.strip()
+                for item in self.reason_codes
+            )
+            or len(set(self.reason_codes))
+            != len(self.reason_codes)
+        ):
+            raise RecentLifeError(
+                "Recent Life selection reason codes are invalid"
+            )
+        if self.status is RecentLifeSelectionStatus.READY:
+            if self.events and self.reason_codes:
+                raise RecentLifeError(
+                    "ready Recent Life with events cannot carry warning reasons"
+                )
+            if (
+                not self.events
+                and self.reason_codes
+                != ("NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",)
+            ):
+                raise RecentLifeError(
+                    "ready empty Recent Life requires the exact empty-window reason"
+                )
+        elif self.status is RecentLifeSelectionStatus.PARTIAL:
+            if (
+                not self.events
+                or self.reason_codes
+                != ("RECENT_LIFE_LIVE_ADMISSION_PROOF_PARTIAL",)
+            ):
+                raise RecentLifeError(
+                    "partial Recent Life requires carried events and proof warning"
+                )
+        elif (
+            self.events
+            or self.reason_codes
+            != ("RECENT_LIFE_LIVE_ADMISSION_PROOF_UNAVAILABLE",)
+        ):
+            raise RecentLifeError(
+                "unavailable Recent Life requires no events and proof-unavailable reason"
+            )
+
+
 def select_recent_life_from_current_in_connection(
     *,
     resolver: CurrentResolver,
@@ -190,12 +279,12 @@ def select_recent_life_from_current_in_connection(
     room_id: str,
     as_of: datetime,
     policy: RecentLifePolicy,
-) -> tuple[RecentLifeEvent, ...]:
+) -> RecentLifeSelection:
     """Project recent Room Current changes from one already-pinned HOME cut.
 
-    No caller may supply Recent Life content or timestamps. The selector uses
-    only exact live Current admissions that already exist in this process and
-    database snapshot.
+    Durable admission history is inspected only to distinguish a genuinely
+    empty recent window from candidate history whose live admission proof is
+    unavailable. Missing live proof never authorizes payload carriage.
     """
 
     if policy is not RECENT_LIFE_POLICY_V0_1:
@@ -231,52 +320,52 @@ def select_recent_life_from_current_in_connection(
         if item.effect_kind
         is CurrentAdmissionEffectKind.STATE
     }
-    records, _ = _read_live_admitted_history(
-        connection=connection,
-        receipts=receipts,
-    )
 
     cut = _instant(as_of)
     earliest = cut - _duration_micros(
         policy.horizon
     )
-    candidates = [
-        record
-        for record in records
-        if (
-            record.namespace is CurrentNamespace.ROOM
-            and record.owner_id == room_id
-            and record.episode_id is not None
-            and record.perspective_instance_id is not None
-            and earliest <= _instant(record.event_time) <= cut
-            and _instant(record.recorded_at) <= cut
-        )
-    ]
-    candidates.sort(
-        key=lambda item: (
-            _instant(item.event_time),
-            _instant(item.recorded_at),
-            item.state_id,
-        ),
-        reverse=True,
-    )
 
-    result: list[RecentLifeEvent] = []
-    for record in candidates:
-        receipt = receipt_by_state_id.get(
-            record.state_id
+    candidates: list[tuple[object, str]] = []
+    rows = connection.execute(
+        f"""
+        SELECT state.*
+        FROM {CURRENT_STATE_TABLE} AS state
+        JOIN {CURRENT_STATE_ADMISSION_TABLE} AS admission
+          ON admission.state_id = state.state_id
+        WHERE state.namespace = ?
+          AND state.owner_id = ?
+          AND state.recorded_instant_us <= ?
+        ORDER BY state.state_id
+        """,
+        (
+            CurrentNamespace.ROOM.value,
+            room_id,
+            cut,
+        ),
+    ).fetchall()
+    for row in rows:
+        bindings = _read_bindings(
+            connection,
+            CURRENT_STATE_EVIDENCE_TABLE,
+            "state_id",
+            row["state_id"],
         )
-        if receipt is None:
-            # Durable rows never authorize delivery without the live receipt.
-            continue
-        if not _receipt_matches_record(
-            receipt=receipt,
-            record=record,
-            room_id=room_id,
-        ):
-            raise RecentLifeError(
-                "live Current admission receipt disagrees with Recent Life record"
+        record = _state_from_row(
+            row,
+            bindings,
+        )
+        if (
+            record.episode_id is None
+            or record.perspective_instance_id is None
+            or not (
+                earliest
+                <= _instant(record.event_time)
+                <= cut
             )
+            or _instant(record.recorded_at) > cut
+        ):
+            continue
 
         use = _current_effect_use_decision(
             connection=connection,
@@ -286,18 +375,6 @@ def select_recent_life_from_current_in_connection(
         if use.status is not CurrentPresentUseStatus.USABLE:
             continue
 
-        row = connection.execute(
-            f"""
-            SELECT room_attachment_event_id
-            FROM {CURRENT_STATE_TABLE}
-            WHERE state_id = ?
-            """,
-            (record.state_id,),
-        ).fetchone()
-        if row is None:
-            raise RecentLifeError(
-                "Recent Life state disappeared from canonical Current history"
-            )
         attachment_id = row[
             "room_attachment_event_id"
         ]
@@ -308,14 +385,6 @@ def select_recent_life_from_current_in_connection(
             raise RecentLifeError(
                 "Recent Life Room state lacks attachment provenance"
             )
-        if (
-            receipt.room_attachment_event_id
-            != attachment_id
-        ):
-            raise RecentLifeError(
-                "Current admission receipt disagrees with stored Room attachment provenance"
-            )
-
         if not _attachment_still_resolves_to_same_room(
             living_store=living_store,
             connection=connection,
@@ -323,10 +392,44 @@ def select_recent_life_from_current_in_connection(
             room_id=room_id,
             attachment_event_id=attachment_id,
         ):
-            # Late route correction makes this historical state ineligible for
-            # automatic Room-private delivery until an explicit future re-scope
-            # contract exists.
             continue
+        candidates.append(
+            (record, attachment_id)
+        )
+
+    candidates.sort(
+        key=lambda pair: (
+            _instant(pair[0].event_time),
+            _instant(pair[0].recorded_at),
+            pair[0].state_id,
+        ),
+        reverse=True,
+    )
+
+    result: list[RecentLifeEvent] = []
+    missing_live_proof = False
+    for record, attachment_id in candidates:
+        receipt = receipt_by_state_id.get(
+            record.state_id
+        )
+        if receipt is None:
+            missing_live_proof = True
+            continue
+        if not _receipt_matches_record(
+            receipt=receipt,
+            record=record,
+            room_id=room_id,
+        ):
+            raise RecentLifeError(
+                "live Current admission receipt disagrees with Recent Life record"
+            )
+        if (
+            receipt.room_attachment_event_id
+            != attachment_id
+        ):
+            raise RecentLifeError(
+                "Current admission receipt disagrees with stored Room attachment provenance"
+            )
 
         bindings = _read_bindings(
             connection,
@@ -342,39 +445,68 @@ def select_recent_life_from_current_in_connection(
             item.evidence
             for item in bindings
         )
-        event = RecentLifeEvent(
-            event_id=(
-                f"recent-current-state:{record.state_id}"
-            ),
-            state_id=record.state_id,
-            admission_id=receipt.admission_id,
-            projection_kind=(
-                "room_current_state_assertion"
-            ),
-            supersedes_state_id=(
-                record.supersedes_state_id
-            ),
-            room_id=room_id,
-            episode_id=record.episode_id,
-            perspective_instance_id=(
-                record.perspective_instance_id
-            ),
-            room_attachment_event_id=(
-                attachment_id
-            ),
-            key=record.key,
-            state_kind=record.state_kind.value,
-            summary=record.value,
-            occurred_at=record.event_time,
-            recorded_at=record.recorded_at,
-            evidence=evidence,
-            _marker=_RECENT_LIFE_EVENT_MARKER,
+        result.append(
+            RecentLifeEvent(
+                event_id=(
+                    f"recent-current-state:{record.state_id}"
+                ),
+                state_id=record.state_id,
+                admission_id=receipt.admission_id,
+                projection_kind=(
+                    "room_current_state_assertion"
+                ),
+                supersedes_state_id=(
+                    record.supersedes_state_id
+                ),
+                room_id=room_id,
+                episode_id=record.episode_id,
+                perspective_instance_id=(
+                    record.perspective_instance_id
+                ),
+                room_attachment_event_id=(
+                    attachment_id
+                ),
+                key=record.key,
+                state_kind=record.state_kind.value,
+                summary=record.value,
+                occurred_at=record.event_time,
+                recorded_at=record.recorded_at,
+                evidence=evidence,
+                _marker=_RECENT_LIFE_EVENT_MARKER,
+            )
         )
-        result.append(event)
         if len(result) >= policy.limit:
             break
 
-    return tuple(result)
+    events = tuple(result)
+    if missing_live_proof:
+        if events:
+            status = RecentLifeSelectionStatus.PARTIAL
+            reasons = (
+                "RECENT_LIFE_LIVE_ADMISSION_PROOF_PARTIAL",
+            )
+        else:
+            status = RecentLifeSelectionStatus.UNAVAILABLE
+            reasons = (
+                "RECENT_LIFE_LIVE_ADMISSION_PROOF_UNAVAILABLE",
+            )
+    else:
+        status = RecentLifeSelectionStatus.READY
+        reasons = (
+            ()
+            if events
+            else (
+                "NO_ELIGIBLE_RECENT_LIFE_IN_WINDOW",
+            )
+        )
+
+    return RecentLifeSelection(
+        policy_version=RECENT_LIFE_POLICY_VERSION,
+        status=status,
+        events=events,
+        reason_codes=reasons,
+        _marker=_RECENT_LIFE_SELECTION_MARKER,
+    )
 
 
 def _receipt_matches_record(
