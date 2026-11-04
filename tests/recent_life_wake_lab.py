@@ -60,8 +60,8 @@ R2_VALUE = (
     "the remaining paper was left pressed at the edge of the desk."
 )
 R3_VALUE = (
-    "During late work, the blue ceramic cup was moved from beside "
-    "the desk to beside the window."
+    "For late-night work, the blue ceramic cup's usual place changed "
+    "from beside the desk to beside the window."
 )
 
 RECENT_LIFE_SPECS = (
@@ -75,16 +75,16 @@ RECENT_LIFE_SPECS = (
     },
     {
         "state_id": R2_STATE_ID,
-        "key": "history.paper_shade_trace",
-        "kind": first_wake_lab.CurrentStateKind.SHARED_STATE,
+        "key": "unfinished.paper_shade_trace",
+        "kind": first_wake_lab.CurrentStateKind.UNFINISHED_WORK,
         "value": R2_VALUE,
         "event_time": FIXED_AS_OF - timedelta(hours=9),
-        "validity": first_wake_lab.ValidityRule.DURABLE_UNTIL_CHANGED,
+        "validity": first_wake_lab.ValidityRule.OPEN_UNTIL_RESOLVED,
     },
     {
         "state_id": R3_STATE_ID,
-        "key": "history.blue_cup_move",
-        "kind": first_wake_lab.CurrentStateKind.SHARED_STATE,
+        "key": "preference.blue_cup_place",
+        "kind": first_wake_lab.CurrentStateKind.PREFERENCE,
         "value": R3_VALUE,
         "event_time": FIXED_AS_OF - timedelta(hours=3),
         "validity": first_wake_lab.ValidityRule.DURABLE_UNTIL_CHANGED,
@@ -214,8 +214,8 @@ class SyntheticRecentLifeWakeFixture(
                 "state-blue-cup",
                 "preference.blue_cup",
                 first_wake_lab.CurrentStateKind.PREFERENCE,
-                "During late-night work, the blue ceramic cup is usually "
-                "left beside the window.",
+                "During late-night work, the blue ceramic cup is the "
+                "usual cup kept in use.",
                 first_wake_lab.ValidityRule.DURABLE_UNTIL_CHANGED,
             ),
             (
