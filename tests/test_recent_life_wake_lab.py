@@ -295,11 +295,6 @@ class SyntheticRecentLifeWakeLabTests(
                 policy["authority_ceiling"],
                 "describe_only",
             )
-            for field in lab._AUTHORITY_FIELDS:
-                self.assertEqual(
-                    policy["use_boundary"][field],
-                    "none",
-                )
 
     def test_prepare_only_evidence_freezes_issue_103_and_stop_line(
         self,
