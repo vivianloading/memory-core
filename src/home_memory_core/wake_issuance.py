@@ -365,14 +365,14 @@ class WakeIssuanceAuthority:
                     )
                 )
 
-            recent_life_events = None
+            recent_life_selection = None
             if (
                 self._recent_life_policy
                 is not None
                 and route.decision == "attached"
             ):
                 assert route.room_id is not None
-                recent_life_events = (
+                recent_life_selection = (
                     select_recent_life_from_current_in_connection(
                         resolver=self._current_resolver,
                         living_store=self._living_store,
@@ -395,8 +395,8 @@ class WakeIssuanceAuthority:
                             continuity_edges
                         ),
                         room_current=room_current,
-                        recent_life_events=(
-                            recent_life_events
+                        recent_life_selection=(
+                            recent_life_selection
                         ),
                     )
                 )
