@@ -80,6 +80,12 @@ Selection order is deterministic:
 2. newest recorded time;
 3. state id.
 
+Proof completeness is evaluated across the **entire eligible recent window**
+before the four-item payload cap is applied. The cap limits carriage, not
+semantic verification. Therefore a lower-ranked fifth candidate that lacks
+live admission proof still makes the layer PARTIAL even when the four carried
+items are fully proved.
+
 A state learned today about an event eight days ago does **not** become recent
 merely because it was recorded today.
 
