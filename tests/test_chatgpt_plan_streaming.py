@@ -75,6 +75,47 @@ class StreamingTests(unittest.TestCase):
         self.assertTrue(evidence["db_unchanged_during_model_run"])
         self.assertTrue(evidence["no_home_state_write_observed"])
 
+    def test_streamed_items_require_created_anchor(self):
+        for refusal in (False, True):
+            for first_sequence in (0, 7):
+                for prefix in ("missing", "in_progress", "late_created"):
+                    with self.subTest(refusal=refusal, first_sequence=first_sequence,
+                                      prefix=prefix):
+                        values = events(refusal=refusal)
+                        created = values.pop(0)
+                        if prefix == "in_progress":
+                            values.insert(0, {**created, "type": "response.in_progress"})
+                        elif prefix == "late_created":
+                            values.insert(1, created)
+                        for i, event in enumerate(values, first_sequence):
+                            event["sequence_number"] = i
+                        raw = stream(values)
+                        with self.assertRaisesRegex(
+                            adapter.OpenAIChatGPTPlanAdapterIntegrityError,
+                            "streamed item requires prior response.created",
+                        ):
+                            adapter._terminal_response_from_sse(raw)
+                        output = run_mocked(raw)["model_output"]
+                        self.assertEqual(output["status"], "rejected_response")
+                        self.assertIsNone(output["output_text"])
+                        self.assertIsNone(output["refusal_text"])
+                        captured = json.loads(output["raw_response_json"])["_home_stream_evidence"]
+                        self.assertEqual(captured["raw_sse"], raw)
+                        self.assertEqual(captured["raw_sse_sha256"], sha256(raw.encode()).hexdigest())
+                        self.assertEqual(captured["validation"], "rejected")
+
+    def test_terminal_only_response_needs_no_created_anchor(self):
+        for refusal in (False, True):
+            with self.subTest(refusal=refusal):
+                values = events(refusal=refusal)
+                terminal = values[-1]
+                terminal["response"]["output"] = [values[-2]["item"]]
+                terminal["sequence_number"] = 7
+                raw = stream([terminal])
+                self.assertEqual(adapter._terminal_response_from_sse(raw), terminal["response"])
+                output = run_mocked(raw)["model_output"]
+                self.assertEqual(output["refusal_text" if refusal else "output_text"], TEXT)
+
     def test_refusal(self):
         evidence = run_mocked(stream(events(refusal=True)))
         self.assertEqual(evidence["model_output"]["refusal_text"], TEXT)

@@ -12,7 +12,11 @@ Supported reconstruction requires output-item added/done events, content-part
 added/done events, and output-text or refusal delta/done events. Exact text must
 agree at delta, text-done, part-done, and item-done levels. Message IDs, assistant
 roles, contiguous output/content indexes, unique item IDs, and contiguous integer
-sequence numbers are checked. Repeated text chunks with distinct sequence numbers
+sequence numbers are checked. Before any streamed item, `response.created` must
+establish the Response ID, which must match the terminal Response ID. A surviving
+stream suffix without that anchor is rejected even if its sequence numbers are
+contiguous; `response.in_progress` alone cannot substitute for the anchor.
+Repeated text chunks with distinct sequence numbers
 are legitimate; replayed sequence numbers are rejected. Multiple messages and
 parts preserve index order. Reasoning summary/text parts use their corresponding
 part/text events and never become assistant text. Reasoning items with no visible

@@ -437,6 +437,11 @@ def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
         index = event.get("output_index")
         _stream_require(type(index) is int and index >= 0, "invalid output index")
         if kind == "response.output_item.added":
+            # Item/content events carry no enclosing Response id. Require the
+            # lifecycle anchor before accepting any streamed item; terminal-only
+            # responses still pass through without reconstruction.
+            _stream_require("response.created" in lifecycle,
+                            "streamed item requires prior response.created")
             item = event.get("item")
             _stream_require(index == len(items) and type(item) is dict, "invalid item addition")
             iid = item.get("id")
