@@ -19,7 +19,11 @@ from home_memory_core.current_view import (
     SemanticChangeAuthority,
     ValidityRule,
 )
-from home_memory_core.recent_life import RecentLifeEvent
+from home_memory_core.evidence import EvidenceRef
+from home_memory_core.recent_life import (
+    RECENT_LIFE_HORIZON,
+    RecentLifeEvent,
+)
 from home_memory_core.living_continuity import (
     ContinuityEdge,
     ContinuityStatus,
@@ -651,13 +655,18 @@ class WakeRoomNowSection:
 class WakeRecentLifeItem:
     item_id: str
     event_id: str
+    state_id: str
+    admission_id: str
     room_id: str
     episode_id: str
     perspective_instance_id: str
     room_attachment_event_id: str
+    key: str
+    state_kind: str
     summary: str
     occurred_at: datetime
     recorded_at: datetime
+    evidence: tuple[EvidenceRef, ...]
     source_refs: tuple[str, ...]
     privacy_scope: WakePrivacyScope
     use_boundary: WakeUseBoundary = field(
@@ -668,10 +677,14 @@ class WakeRecentLifeItem:
         for field_name in (
             "item_id",
             "event_id",
+            "state_id",
+            "admission_id",
             "room_id",
             "episode_id",
             "perspective_instance_id",
             "room_attachment_event_id",
+            "key",
+            "state_kind",
             "summary",
         ):
             _text(
@@ -694,10 +707,27 @@ class WakeRecentLifeItem:
             raise WakePacketError(
                 "Recent Life cannot be recorded before it occurred"
             )
-        _refs("source_refs", self.source_refs)
-        if not self.source_refs:
+        if (
+            not isinstance(self.evidence, tuple)
+            or not self.evidence
+            or any(
+                not isinstance(item, EvidenceRef)
+                for item in self.evidence
+            )
+        ):
             raise WakePacketError(
-                "Recent Life requires source provenance"
+                "Recent Life requires exact EvidenceRef provenance"
+            )
+        _refs("source_refs", self.source_refs)
+        expected_source_refs = tuple(
+            dict.fromkeys(
+                item.source_id
+                for item in self.evidence
+            )
+        )
+        if self.source_refs != expected_source_refs:
+            raise WakePacketError(
+                "Recent Life source refs differ from exact evidence"
             )
         if not isinstance(
             self.privacy_scope,
@@ -951,6 +981,17 @@ class WakePacket:
                 ):
                     raise WakePacketError(
                         "Recent Life item is future relative to Wake cut"
+                    )
+                if any(
+                    _instant(self.as_of)
+                    - _instant(item.occurred_at)
+                    > _duration_micros(
+                        RECENT_LIFE_HORIZON
+                    )
+                    for item in self.recent_life.items
+                ):
+                    raise WakePacketError(
+                        "Recent Life item is outside the canonical horizon"
                     )
             elif (
                 self.recent_life.items
@@ -1293,7 +1334,7 @@ def assemble_wake_packet_v0_2(
             availability=WakeLayerAvailability.UNAVAILABLE,
             items=(),
             reason_codes=(
-                "NO_CANONICAL_RECENT_LIFE_STORE",
+                "NO_TYPED_RECENT_LIFE_PROJECTION",
             ),
         )
     else:
@@ -1348,12 +1389,24 @@ def assemble_wake_packet_v0_2(
                 raise WakePacketError(
                     "Recent Life event is future relative to Wake cut"
                 )
+            if (
+                _instant(as_of)
+                - _instant(event.occurred_at)
+                > _duration_micros(
+                    RECENT_LIFE_HORIZON
+                )
+            ):
+                raise WakePacketError(
+                    "Recent Life event is outside the canonical horizon"
+                )
             items.append(
                 WakeRecentLifeItem(
                     item_id=(
                         f"recent_life:{event.event_id}"
                     ),
                     event_id=event.event_id,
+                    state_id=event.state_id,
+                    admission_id=event.admission_id,
                     room_id=event.room_id,
                     episode_id=event.episode_id,
                     perspective_instance_id=(
@@ -1362,9 +1415,12 @@ def assemble_wake_packet_v0_2(
                     room_attachment_event_id=(
                         event.room_attachment_event_id
                     ),
+                    key=event.key,
+                    state_kind=event.state_kind,
                     summary=event.summary,
                     occurred_at=event.occurred_at,
                     recorded_at=event.recorded_at,
+                    evidence=event.evidence,
                     source_refs=event.source_refs,
                     privacy_scope=WakePrivacyScope(
                         kind=WakePrivacyScopeKind.ROOM,
@@ -1719,6 +1775,14 @@ def _wake_continuity_evidence(
 
 def _same_instant(left: datetime, right: datetime) -> bool:
     return _instant(left) == _instant(right)
+
+
+def _duration_micros(value: timedelta) -> int:
+    return (
+        (value.days * 86_400 + value.seconds)
+        * 1_000_000
+        + value.microseconds
+    )
 
 
 def _instant(value: datetime) -> int:
