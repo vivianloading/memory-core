@@ -165,13 +165,6 @@ class WakeMapItem:
         if not isinstance(self.route_decision, WakeRouteDecision):
             raise WakePacketError("Map route decision is invalid")
         if (
-            self.selection_policy_version
-            != RECENT_LIFE_POLICY_VERSION
-        ):
-            raise WakePacketError(
-                "Recent Life selection policy version is invalid"
-            )
-        if (
             self.perspective_instance_id
             == SYNTHETIC_UNATTRIBUTED_INSTANCE_ID
         ):
@@ -700,6 +693,13 @@ class WakeRecentLifeItem:
             _text(
                 field_name,
                 getattr(self, field_name),
+            )
+        if (
+            self.selection_policy_version
+            != RECENT_LIFE_POLICY_VERSION
+        ):
+            raise WakePacketError(
+                "Recent Life selection policy version is invalid"
             )
         if (
             self.perspective_instance_id
