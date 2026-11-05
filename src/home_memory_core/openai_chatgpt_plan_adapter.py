@@ -342,11 +342,26 @@ class OpenAIChatGPTPlanResponsesAdapter:
                 or response.status >= 300
             ):
                 return response.status, raw_body
-            terminal_response = (
-                _terminal_response_from_sse(
-                    raw_body
-                )
-            )
+            evidence = {
+                "version": "chatgpt-plan-sse-v1",
+                "raw_sse": raw_body,
+                "raw_sse_sha256": _sha256_text(raw_body),
+            }
+            try:
+                terminal_response = _terminal_response_from_sse(raw_body)
+                _stream_require("_home_stream_evidence" not in terminal_response,
+                                "reserved evidence key in provider response")
+                evidence["validation"] = "validated"
+            except OpenAIChatGPTPlanAdapterIntegrityError as exc:
+                # Preserve received evidence on parse failure. The existing HOME
+                # boundary rejects this non-provider status; no output is admitted.
+                terminal_response = {"status": "stream_integrity_error"}
+                evidence["validation"] = "rejected"
+                evidence["reason"] = str(exc)
+            terminal_response = {
+                **terminal_response,
+                "_home_stream_evidence": evidence,
+            }
             return (
                 response.status,
                 _canonical_json(
@@ -357,107 +372,219 @@ class OpenAIChatGPTPlanResponsesAdapter:
             connection.close()
 
 
-def _terminal_response_from_sse(
-    raw_stream: str,
-) -> dict[str, Any]:
-    if type(raw_stream) is not str:
-        raise OpenAIChatGPTPlanAdapterIntegrityError(
-            "SSE body must remain exact str"
-        )
+def _stream_require(condition: bool, message: str) -> None:
+    if not condition:
+        raise OpenAIChatGPTPlanAdapterIntegrityError(message)
 
-    terminal_event: dict[str, Any] | None = None
-    for data_text in _sse_data_payloads(
-        raw_stream
-    ):
-        if data_text == "[DONE]":
-            continue
-        try:
-            event = json.loads(
-                data_text,
-                object_pairs_hook=(
-                    _reject_duplicate_json_members
-                ),
-            )
-        except (
-            json.JSONDecodeError,
-            ValueError,
-            RecursionError,
-        ) as exc:
-            raise (
-                OpenAIChatGPTPlanAdapterIntegrityError(
-                    "invalid SSE JSON event"
-                )
-            ) from exc
 
-        if not isinstance(event, dict):
-            raise OpenAIChatGPTPlanAdapterIntegrityError(
-                "SSE event root is not object"
-            )
-        event_type = event.get("type")
-        if type(event_type) is not str:
-            raise OpenAIChatGPTPlanAdapterIntegrityError(
-                "SSE event type is not exact str"
-            )
-
-        if event_type in {
-            "response.completed",
-            "response.failed",
-            "response.incomplete",
-        }:
-            if terminal_event is not None:
+def _require_utf8_json_strings(value: Any) -> None:
+    # JSON escapes can introduce lone surrogates despite valid UTF-8 on the
+    # wire. Check keys and nested values before any can enter the HOME envelope.
+    # Valid escaped surrogate pairs are decoded by json.loads into scalar text.
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if type(current) is str:
+            try:
+                current.encode("utf-8", errors="strict")
+            except UnicodeEncodeError as exc:
                 raise OpenAIChatGPTPlanAdapterIntegrityError(
-                    "multiple terminal response events"
-                )
-            terminal_event = event
-        elif event_type == "error":
-            raise OpenAIChatGPTPlanAdapterIntegrityError(
-                "provider stream emitted error event"
-            )
-
-    if terminal_event is None:
-        raise OpenAIChatGPTPlanAdapterIntegrityError(
-            "stream ended without terminal response"
-        )
-
-    response_value = terminal_event.get(
-        "response"
-    )
-    if not isinstance(
-        response_value,
-        dict,
-    ):
-        raise OpenAIChatGPTPlanAdapterIntegrityError(
-            "terminal event lacks response object"
-        )
-    return response_value
+                    "SSE JSON string contains lone Unicode surrogate"
+                ) from exc
+        elif type(current) is dict:
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif type(current) is list:
+            pending.extend(current)
 
 
-def _sse_data_payloads(
-    raw_stream: str,
-) -> tuple[str, ...]:
-    payloads: list[str] = []
-    data_lines: list[str] = []
+def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
+    """Validate a bounded text/refusal Responses stream without guessing output.
 
-    def flush() -> None:
-        nonlocal data_lines
-        if data_lines:
-            payloads.append(
-                "\n".join(data_lines)
-            )
-            data_lines = []
+    Snapshots must agree with deltas at every level. Unknown event families
+    fail closed: tools/audio/annotations are not supported by this HOME route.
+    """
+    _stream_require(type(raw_stream) is str, "SSE body must remain exact str")
+    terminal = None
+    response_id = None
+    previous_sequence = None
+    items: list[dict[str, Any]] = []
+    done_marker = False
+    lifecycle: set[str] = set()
+    for event_name, data_text in _sse_data_payloads(raw_stream):
+        _stream_require(not done_marker, "event after DONE")
+        if data_text == "[DONE]":
+            _stream_require(terminal is not None and event_name is None,
+                            "premature or named DONE")
+            done_marker = True
+            continue
+        _stream_require(terminal is None, "event after terminal response")
+        try:
+            event = json.loads(data_text, object_pairs_hook=_reject_duplicate_json_members,
+                               parse_constant=lambda value: _invalid_constant(value))
+        except (ValueError, RecursionError) as exc:
+            raise OpenAIChatGPTPlanAdapterIntegrityError("invalid SSE JSON event") from exc
+        _stream_require(type(event) is dict, "SSE event root is not object")
+        _require_utf8_json_strings(event)
+        kind = event.get("type")
+        _stream_require(type(kind) is str and bool(kind), "invalid SSE type")
+        _stream_require(event_name is None or event_name == kind, "SSE event name mismatch")
+        seq = event.get("sequence_number")
+        _stream_require(type(seq) is int and seq >= 0, "invalid sequence number")
+        _stream_require(previous_sequence is None or seq == previous_sequence + 1,
+                        "non-contiguous event sequence")
+        previous_sequence = seq
+        if kind in {"response.created", "response.in_progress", "response.completed",
+                    "response.failed", "response.incomplete"}:
+            value = event.get("response")
+            _stream_require(type(value) is dict, "event lacks response object")
+            rid = value.get("id")
+            _stream_require(type(rid) is str and bool(rid), "invalid response id")
+            _stream_require(response_id is None or rid == response_id, "response id changed")
+            response_id = rid
+            status = kind.removeprefix("response.")
+            _stream_require(value.get("status") == ("in_progress" if status == "created" else status),
+                            "event/status mismatch")
+            if status in {"completed", "failed", "incomplete"}:
+                terminal = value
+            else:
+                _stream_require(kind not in lifecycle and not items,
+                                "duplicate or late lifecycle event")
+                _stream_require(status != "created" or not lifecycle, "late created event")
+                _stream_require(value.get("output", []) == [], "nonempty initial output")
+                lifecycle.add(kind)
+            continue
+        if kind == "error":
+            raise OpenAIChatGPTPlanAdapterIntegrityError("provider stream emitted error event")
+        index = event.get("output_index")
+        _stream_require(type(index) is int and index >= 0, "invalid output index")
+        if kind == "response.output_item.added":
+            # Item/content events carry no enclosing Response id. Require the
+            # lifecycle anchor before accepting any streamed item; terminal-only
+            # responses still pass through without reconstruction.
+            _stream_require("response.created" in lifecycle,
+                            "streamed item requires prior response.created")
+            item = event.get("item")
+            _stream_require(index == len(items) and type(item) is dict, "invalid item addition")
+            iid = item.get("id")
+            _stream_require(type(iid) is str and bool(iid) and
+                            all(x["initial"]["id"] != iid for x in items), "duplicate/invalid item id")
+            _stream_require(type(item.get("type")) is str and
+                            item["type"] in {"message", "reasoning"}, "unsupported item")
+            if item["type"] == "message":
+                _stream_require(item.get("role") == "assistant" and item.get("status") == "in_progress"
+                                and item.get("content") == [], "invalid message addition")
+            else:
+                _stream_require(item.get("summary") == [] and item.get("content", []) == [],
+                                "nonempty initial reasoning")
+            items.append({"initial": item, "parts": [], "summary": [], "done": None})
+            continue
+        _stream_require(index < len(items), "unknown output index")
+        state = items[index]
+        _stream_require(state["done"] is None, "event after item done")
+        if kind == "response.output_item.done":
+            item = event.get("item")
+            _stream_require(type(item) is dict, "invalid completed item")
+            initial = state["initial"]
+            for key in ("id", "type", "role"):
+                _stream_require(item.get(key) == initial.get(key), "item identity changed")
+            for field, parts in (("content", state["parts"]), ("summary", state["summary"])):
+                _stream_require(all(p["done"] is not None for p in parts), "unclosed content part")
+                _stream_require(item.get(field, []) == [p["done"] for p in parts], "item snapshot mismatch")
+            if item["type"] == "message":
+                _stream_require(item.get("status") == "completed", "message item not completed")
+            state["done"] = item
+            continue
+        _stream_require(event.get("item_id") == state["initial"]["id"], "item id/index mismatch")
+        summary = kind.startswith("response.reasoning_summary_")
+        parts = state["summary"] if summary else state["parts"]
+        ci = event.get("summary_index" if summary else "content_index")
+        _stream_require(type(ci) is int and ci >= 0, "invalid content index")
+        part_family = "response.reasoning_summary_part" if summary else "response.content_part"
+        if kind == part_family + ".added":
+            part = event.get("part")
+            _stream_require(ci == len(parts) and type(part) is dict, "invalid part addition")
+            ptype = part.get("type")
+            allowed = {"summary_text"} if summary else (
+                {"output_text", "refusal"} if state["initial"]["type"] == "message" else {"reasoning_text"})
+            _stream_require(type(ptype) is str and ptype in allowed and
+                            (not summary or state["initial"]["type"] == "reasoning"),
+                            "unsupported content part")
+            field = "refusal" if ptype == "refusal" else "text"
+            _stream_require(part.get(field) == "", "nonempty initial part")
+            if ptype == "output_text":
+                _stream_require(part.get("annotations") == [] and part.get("logprobs", []) == [],
+                                "unsupported text metadata")
+            parts.append({"type": ptype, "field": field, "text": "", "text_done": False, "done": None})
+            continue
+        _stream_require(ci < len(parts), "unknown content index")
+        part = parts[ci]
+        _stream_require(part["done"] is None, "event after part done")
+        text_family = "response." + ("reasoning_summary_text" if summary else part["type"])
+        if kind == text_family + ".delta":
+            _stream_require(not part["text_done"] and type(event.get("delta")) is str, "invalid text delta")
+            _stream_require(event.get("logprobs", []) == [], "unsupported logprobs")
+            part["text"] += event["delta"]
+        elif kind == text_family + ".done":
+            _stream_require(not part["text_done"] and event.get(part["field"]) == part["text"],
+                            "duplicate/conflicting text done")
+            _stream_require(event.get("logprobs", []) == [], "unsupported logprobs")
+            part["text_done"] = True
+        elif kind == part_family + ".done":
+            snapshot = event.get("part")
+            _stream_require(part["text_done"] and type(snapshot) is dict and
+                            snapshot.get("type") == part["type"] and
+                            snapshot.get(part["field"]) == part["text"], "part snapshot mismatch")
+            if part["type"] == "output_text":
+                _stream_require(snapshot.get("annotations") == [] and snapshot.get("logprobs", []) == [],
+                                "unsupported text metadata")
+            part["done"] = snapshot
+        else:
+            raise OpenAIChatGPTPlanAdapterIntegrityError("unsupported SSE event type")
+    _stream_require(terminal is not None, "stream ended without terminal response")
+    _stream_require(type(terminal.get("output")) is list, "terminal output is not array")
+    # Failure/incomplete semantics remain authoritative; never promote partial text.
+    if terminal["status"] != "completed":
+        return terminal
+    _stream_require(all(x["done"] is not None for x in items), "unclosed output item")
+    output = [x["done"] for x in items]
+    if items:
+        _stream_require(terminal["output"] == [] or terminal["output"] == output,
+                        "terminal output conflicts with stream")
+        return {**terminal, "output": output}
+    return terminal
 
-    for line in raw_stream.splitlines():
+
+def _invalid_constant(value: str) -> None:
+    raise ValueError("non-finite JSON constant")
+
+
+def _sse_data_payloads(raw_stream: str) -> tuple[tuple[str | None, str], ...]:
+    # SSE uses CR/LF, not Python splitlines' additional Unicode separators.
+    lines = raw_stream.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    payloads = []
+    data = []
+    name = None
+    for line in lines:
         if line == "":
-            flush()
+            if data:
+                payloads.append((name, "\n".join(data)))
+            else:
+                _stream_require(name is None, "event without data")
+            data, name = [], None
+        elif line.startswith(":"):
             continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("data:"):
-            value = line[5:]
+        else:
+            field, sep, value = line.partition(":")
             if value.startswith(" "):
                 value = value[1:]
-            data_lines.append(value)
-    flush()
+            _stream_require(bool(sep) and field in {"data", "event"}, "unsupported SSE field")
+            if field == "data":
+                data.append(value)
+            else:
+                _stream_require(name is None and bool(value), "duplicate/empty event name")
+                name = value
+    _stream_require(not data and name is None, "unterminated SSE frame")
     return tuple(payloads)
 
 
