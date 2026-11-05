@@ -23,6 +23,15 @@ part/text events and never become assistant text. Reasoning items with no visibl
 parts (including encrypted content) may be carried through item snapshots; HOME's
 existing reasoning validation still applies.
 
+The observed ChatGPT-plan `response.metadata` event is accepted only after
+`response.created` and before termination, with exactly `type`, `response_id`,
+`sequence_number`, and an object-valued `metadata`. Its Response ID must match
+the active Response. Shared framing, contiguous sequence, JSON and UTF-8 checks
+apply. This bounded route accepts one such event; duplicates, extra event-level
+fields, missing/mismatched association or malformed payloads fail closed. The
+payload is opaque and retained only in raw SSE: its keys/values never become
+output, lifecycle/status changes, item indexes or HOME authority.
+
 A nonempty terminal output must exactly match the streamed item snapshots. An
 empty terminal output may use the validated completed items. No text is inferred
 from usage, done snapshots without their deltas, or partial streams. Existing
