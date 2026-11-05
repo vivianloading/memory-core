@@ -411,6 +411,7 @@ def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     done_marker = False
     lifecycle: set[str] = set()
+    metadata_seen = False
     for event_name, data_text in _sse_data_payloads(raw_stream):
         _stream_require(not done_marker, "event after DONE")
         if data_text == "[DONE]":
@@ -434,6 +435,19 @@ def _terminal_response_from_sse(raw_stream: str) -> dict[str, Any]:
         _stream_require(previous_sequence is None or seq == previous_sequence + 1,
                         "non-contiguous event sequence")
         previous_sequence = seq
+        if kind == "response.metadata":
+            # Observed ChatGPT-plan response-level event, with no item index.
+            # Keep its payload solely in raw SSE; it grants no output/authority.
+            _stream_require(set(event) == {"type", "response_id", "sequence_number", "metadata"},
+                            "invalid response metadata fields")
+            _stream_require("response.created" in lifecycle and
+                            type(event["response_id"]) is str and
+                            event["response_id"] == response_id,
+                            "response metadata lacks matching active response")
+            _stream_require(type(event["metadata"]) is dict, "response metadata is not object")
+            _stream_require(not metadata_seen, "duplicate response metadata event")
+            metadata_seen = True
+            continue
         if kind in {"response.created", "response.in_progress", "response.completed",
                     "response.failed", "response.incomplete"}:
             value = event.get("response")

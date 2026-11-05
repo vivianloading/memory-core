@@ -44,6 +44,20 @@ def stream(values, *, ensure_ascii=False):
         {"sequence_number": i, **e}, ensure_ascii=ensure_ascii) + "\n\n" for i, e in enumerate(values))
 
 
+# Observed sequence-98 shape; only the Response id is synthetic.
+OBSERVED_METADATA = json.loads(
+    '{"type":"response.metadata","response_id":"resp_synthetic","sequence_number":98,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{"omnimod":{"protection_type":"omnimod","outputs":[{"results":[{"category_flags":{"A1":false,"A2":false,"A3":false,"C1":false,"C11":false,"C2":false,"E1":false,"E2":false,"E3":false,"H1":false,"H2":false,"H3":false,"JB1":false,"K1":false,"K2":false,"K3":false,"K4":false,"P1":false,"P2":false,"P3":false,"P4":false,"PD1":false,"PD4":false,"S1":false,"S3+":false,"S4":false,"SH":false,"TXT-C3":false,"TXT-C4":false,"V1":false,"V2+":false,"V4+":false,"REFUSED":false,"CBRN-B1+":false,"IMG-C1":false,"IMG-C11":false,"IMG-C2":false,"IMG-S1":false,"IMG-SH":false,"IMG-V1":false,"IMG-V2+":false,"IMG-V4+":false}}],"is_blocked":false}]}},"generation":{},"tool_call":{},"tool_response":{}}}}'
+)
+
+
+def metadata_events(*, refusal=False, at=8):
+    values = events(refusal=refusal)
+    values.insert(at, deepcopy(OBSERVED_METADATA))
+    for i, event in enumerate(values, 90):
+        event["sequence_number"] = i
+    return values
+
+
 def surrogate_streams():
     # The wire is valid ASCII/UTF-8; only JSON decoding creates the surrogate.
     for malformed in ("\ud800", "prefix\udfff suffix"):
@@ -354,6 +368,120 @@ class StreamingTests(unittest.TestCase):
         captured = json.loads(output["raw_response_json"])["_home_stream_evidence"]
         self.assertEqual(captured["validation"], "rejected")
         self.assertEqual(captured["raw_sse"], raw)
+
+
+class MetadataStreamingTests(unittest.TestCase):
+    def assert_evidence(self, raw, *, rejected):
+        evidence = run_mocked(raw)
+        output = evidence["model_output"]
+        self.assertEqual(output["provider_http_status"], 200)
+        captured = json.loads(output["raw_response_json"])["_home_stream_evidence"]
+        self.assertEqual(captured["raw_sse"], raw)
+        self.assertEqual(captured["raw_sse_sha256"], sha256(raw.encode()).hexdigest())
+        self.assertEqual(captured["validation"], "rejected" if rejected else "validated")
+        self.assertEqual(output["raw_response_digest"],
+                         sha256(output["raw_response_json"].encode()).hexdigest())
+        self.assertTrue(evidence["db_unchanged_during_model_run"])
+        self.assertTrue(evidence["no_home_state_write_observed"])
+        if rejected:
+            self.assertEqual(output["status"], "rejected_response")
+            self.assertIsNone(output["output_text"])
+            self.assertIsNone(output["refusal_text"])
+            self.assertTrue(captured["reason"])
+            self.assertNotEqual(output["provider_error"], "transport_exception")
+        return output
+
+    def test_observed_sequence_98_metadata_preserves_exact_output(self):
+        values = metadata_events()
+        self.assertEqual(values[8], OBSERVED_METADATA)
+        raw = stream(values)
+        self.assertEqual(adapter._terminal_response_from_sse(raw),
+                         adapter._terminal_response_from_sse(stream(events())))
+        output = self.assert_evidence(raw, rejected=False)
+        self.assertEqual(output["status"], "completed_text")
+        self.assertEqual(output["output_text"], TEXT)
+        self.assertNotIn("metadata", json.loads(output["raw_response_json"]))
+
+    def test_metadata_is_inert_during_text_and_refusal_streaming(self):
+        for at in (1, 4, 8):
+            for refusal in (False, True):
+                with self.subTest(at=at, refusal=refusal):
+                    values = metadata_events(at=at, refusal=refusal)
+                    # Payload names confer no output or HOME authority.
+                    values[at]["metadata"] = {"text": "ignored", "reasoning": "ignored",
+                                              "status": "failed", "authority": "all"}
+                    raw = stream(values)
+                    self.assertEqual(adapter._terminal_response_from_sse(raw),
+                                     adapter._terminal_response_from_sse(stream(events(refusal=refusal))))
+                    output = self.assert_evidence(raw, rejected=False)
+                    self.assertEqual(output["refusal_text" if refusal else "output_text"], TEXT)
+
+    def test_malformed_or_conflicting_metadata_rejects_with_evidence(self):
+        mutations = {
+            "missing association": lambda v: v[8].pop("response_id"),
+            "empty association": lambda v: v[8].update(response_id=""),
+            "wrong association": lambda v: v[8].update(response_id="other"),
+            "nonstring association": lambda v: v[8].update(response_id=[]),
+            "missing payload": lambda v: v[8].pop("metadata"),
+            "null payload": lambda v: v[8].update(metadata=None),
+            "array payload": lambda v: v[8].update(metadata=[]),
+            "string payload": lambda v: v[8].update(metadata="wrong"),
+            "output index": lambda v: v[8].update(output_index=0),
+            "status override": lambda v: v[8].update(status="completed"),
+            "response override": lambda v: v[8].update(response={"id": "other"}),
+            "sequence gap": lambda v: v[8].update(sequence_number=99),
+            "sequence replay": lambda v: v[8].update(sequence_number=97),
+            "bool sequence": lambda v: v[8].update(sequence_number=True),
+            "duplicate metadata": lambda v: (v[-1].update(sequence_number=100),
+                                             v.insert(9, {**deepcopy(v[8]), "sequence_number": 99})),
+            "no created anchor": lambda v: v.pop(0),
+            "surrogate payload": lambda v: v[8].update(metadata={"nested": ["\ud800"]}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                values = metadata_events()
+                mutate(values)
+                raw = stream(values, ensure_ascii=True)
+                with self.assertRaises(adapter.OpenAIChatGPTPlanAdapterIntegrityError):
+                    adapter._terminal_response_from_sse(raw)
+                self.assert_evidence(raw, rejected=True)
+        for at in (0, 9):  # Before created / after terminal, with contiguous numbering.
+            values = metadata_events(at=at)
+            raw = stream(values)
+            with self.assertRaises(adapter.OpenAIChatGPTPlanAdapterIntegrityError):
+                adapter._terminal_response_from_sse(raw)
+            self.assert_evidence(raw, rejected=True)
+
+    def test_metadata_still_obeys_json_and_sse_framing(self):
+        raw = stream(metadata_events())
+        for bad in (raw.replace("event: response.metadata", "event: wrong"),
+                    raw.replace('"metadata": {', '"metadata": null, "metadata": {', 1),
+                    raw.replace('"generation": {}', '"generation": NaN', 1),
+                    raw.replace('"generation": {}', '"generation": {bad}', 1)):
+            with self.subTest(raw=bad[bad.find("event: response.metadata"):][:160]):
+                with self.assertRaises(adapter.OpenAIChatGPTPlanAdapterIntegrityError):
+                    adapter._terminal_response_from_sse(bad)
+                self.assert_evidence(bad, rejected=True)
+
+    def test_metadata_cannot_supply_output_or_override_terminal(self):
+        for status in ("completed", "failed", "incomplete"):
+            values = metadata_events()
+            values[-1]["type"] = "response." + status
+            values[-1]["response"]["status"] = status
+            if status == "failed":
+                values[-1]["response"]["error"] = {"code": "server_error", "message": "synthetic"}
+            elif status == "incomplete":
+                values[-1]["response"]["incomplete_details"] = {"reason": "max_output_tokens"}
+            # No output items: metadata alone cannot become assistant output.
+            values = [values[0], values[8], values[9]]
+            for i, event in enumerate(values):
+                event["sequence_number"] = i
+            raw = stream(values)
+            self.assertEqual(adapter._terminal_response_from_sse(raw), values[-1]["response"])
+            output = self.assert_evidence(raw, rejected=False)
+            self.assertEqual(output["status"], {"completed": "rejected_response",
+                                              "failed": "provider_failure", "incomplete": "incomplete"}[status])
+            self.assertIsNone(output["output_text"])
 
 
 if __name__ == "__main__":
